@@ -57,6 +57,11 @@ async def start(client, message):
         await resume_live_jobs(user.id)
     except Exception:
         pass
+    try:
+        from .taskjob import resume_task_jobs
+        await resume_task_jobs(user.id)
+    except Exception:
+        pass
     btns = await _main_buttons(user.id)
     await client.send_message(
         chat_id=message.chat.id,
