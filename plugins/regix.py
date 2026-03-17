@@ -76,6 +76,27 @@ async def pub_(bot, message):
           # Use getattr to safely check for 'continuous' attribute since old STS objects might not have it
           is_continuous = getattr(sts, 'continuous', False)
 
+          # --- Concurrent Download/Upload Worker Pool Setup ---
+          MAX_WORKERS = 5
+          task_queue = asyncio.Queue(maxsize=10) # Bounded queue so we don't fetch millions of messages and OOM
+
+          async def copy_worker():
+              while True:
+                  task = await task_queue.get()
+                  if task is None:
+                      break
+                  bot_client, task_details, task_m, task_sts, task_download_mode, attempt = task
+                  try:
+                      await copy(bot_client, task_details, task_m, task_sts, task_download_mode, attempt)
+                      task_sts.add('total_files')
+                  except Exception as e:
+                      logger.error(f"Worker copy failed: {e}")
+                  finally:
+                      task_queue.task_done()
+
+          workers = [asyncio.create_task(copy_worker()) for _ in range(MAX_WORKERS)]
+          # ---------------------------------------------------
+
           async for message in client.iter_messages(
             client,
             chat_id=sts.get('FROM'), 
@@ -173,9 +194,21 @@ async def pub_(bot, message):
                                 new_caption = new_caption.replace(old_txt, new_txt)
                     
                     details = {"msg_id": message.id, "media": media(message), "caption": new_caption, 'button': button, "protect": protect}
-                    await copy(client, details, m, sts, download_mode)
-                    sts.add('total_files')
-                    await asyncio.sleep(sleep) 
+                    # Put task in queue instead of waiting for it sequentially
+                    await task_queue.put((client, details, m, sts, download_mode, 0))
+                    # Note: sts.add('total_files') is now handled inside the worker after success
+                    await asyncio.sleep(sleep)
+                    
+          # --- Wait for all pending tasks to finish before completing ---
+          if not is_continuous:
+              await task_queue.join()
+          
+          # Tell workers to stop
+          for _ in range(MAX_WORKERS):
+              await task_queue.put(None)
+          await asyncio.gather(*workers)
+          # -------------------------------------------------------------
+          
         except Exception as e:
             await msg_edit(m, f'<b>ERROR:</b>\n<code>{e}</code>', wait=True)
             if sts.TO in temp.IS_FRWD_CHAT:
