@@ -471,7 +471,12 @@ async def msg_edit(msg, text, button=None, wait=None):
         
 async def edit(msg, title, status, sts):
    i = sts.get(full=True)
-   status = 'Forwarding' if status == 10 else f"Sleeping {status} s" if str(status).isnumeric() else status
+   user_id = int(str(sts.id).split('-')[0])
+   
+   if temp.PAUSE.get(user_id) == True:
+      status = 'Paused'
+   else:
+      status = 'Forwarding' if status == 10 else f"Sleeping {status} s" if str(status).isnumeric() else status
    # Handle division by zero if total is 0 (which happens if infinite/continuous without known total)
    total = float(i.total) if float(i.total) > 0 else 1.0
    percentage = "{:.0f}".format(float(i.total_files)*100/total)
@@ -505,7 +510,16 @@ async def edit(msg, title, status, sts):
           InlineKeyboardButton('✦ 𝐔𝐩𝐝𝐚𝐭𝐞𝐬 ✦', url='https://t.me/MeJeetX')
       ]]
    else:
-      button.append([InlineKeyboardButton('• ᴄᴀɴᴄᴇʟ', 'terminate_frwd')])
+      if temp.PAUSE.get(user_id) == True:
+          button.append([
+              InlineKeyboardButton('▶ ʀᴇsᴜᴍᴇ', 'resume_frwd'), 
+              InlineKeyboardButton('• ᴄᴀɴᴄᴇʟ', 'terminate_frwd')
+          ])
+      else:
+          button.append([
+              InlineKeyboardButton('⏸ ᴘᴀᴜsᴇ', 'pause_frwd'), 
+              InlineKeyboardButton('• ᴄᴀɴᴄᴇʟ', 'terminate_frwd')
+          ])
       
    await msg_edit(msg, text, InlineKeyboardMarkup(button))
    
@@ -516,6 +530,12 @@ async def is_cancelled(client, user, msg, sts):
       await send(client, user, "<b>❌ Forwarding Process Cancelled</b>")
       await stop(client, user)
       return True 
+      
+   while temp.PAUSE.get(user) == True:
+      await asyncio.sleep(2)
+      if temp.CANCEL.get(user) == True:
+          return await is_cancelled(client, user, msg, sts)
+          
    return False 
 
 async def stop(client, user):
@@ -585,7 +605,18 @@ async def terminate_frwding(bot, m):
     temp.lock[user_id] = False
     temp.CANCEL[user_id] = True 
     await m.answer("Forwarding cancelled !", show_alert=True)
-          
+
+@Client.on_callback_query(filters.regex(r'^pause_frwd$'))
+async def pause_frwding(bot, m):
+    user_id = m.from_user.id 
+    temp.PAUSE[user_id] = True 
+    await m.answer("Forwarding paused!", show_alert=True)
+
+@Client.on_callback_query(filters.regex(r'^resume_frwd$'))
+async def resume_frwding(bot, m):
+    user_id = m.from_user.id 
+    temp.PAUSE[user_id] = False 
+    await m.answer("Forwarding resumed!", show_alert=True)
 @Client.on_callback_query(filters.regex(r'^fwrdstatus'))
 async def status_msg(bot, msg):
     _, status, est_time, percentage, frwd_id = msg.data.split("#")

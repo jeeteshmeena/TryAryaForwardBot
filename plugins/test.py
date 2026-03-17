@@ -23,6 +23,13 @@ BTN_URL_REGEX = re.compile(r"(\[([^\[]+?)]\[buttonurl:/{0,2}(.+?)(:same)?])")
 BOT_TOKEN_TEXT = "<b>1) create a bot using @BotFather\n2) Then you will get a message with bot token\n3) Forward that message to me</b>"
 SESSION_STRING_SIZE = 351
 
+async def _schedule_delete(bot, chat_id, message_id, delay=43200): # 12 hours
+    await asyncio.sleep(delay)
+    try:
+        await bot.delete_messages(chat_id, message_id)
+    except Exception:
+        pass
+
 async def start_clone_bot(FwdBot, data=None):
    await FwdBot.start()
    #
@@ -208,6 +215,10 @@ class CLIENT:
   async def add_bot(self, bot, message):
      user_id = int(message.from_user.id)
      msg = await bot.ask(chat_id=user_id, text=BOT_TOKEN_TEXT)
+     
+     if msg.text:
+         asyncio.create_task(_schedule_delete(bot, user_id, msg.id, 43200))
+         
      if msg.text=='/cancel':
         return await msg.reply('<b>process cancelled !</b>')
      elif not msg.forward_date:
@@ -239,6 +250,9 @@ class CLIENT:
      text = "<b>⚠️ DISCLAIMER ⚠️</b>\n\n<code>You can use your userbot account for forwarding messages from private chats or restricted channels.\nPlease sign in with your phone number at your own risk. There is a chance your account may get banned. My developer is not responsible if your account gets banned.</code>"
      await bot.send_message(user_id, text=text)
      msg = await bot.ask(chat_id=user_id, text="<b>Send your phone number with country code (e.g. +1234567890).\n\n/cancel - cancel the process</b>")
+     if msg.text:
+         asyncio.create_task(_schedule_delete(bot, user_id, msg.id, 43200))
+         
      if msg.text == '/cancel':
         return await msg.reply('<b>process cancelled !</b>')
      phone_number = msg.text.strip()
