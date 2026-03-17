@@ -229,7 +229,8 @@ async def _cleanmsg_flow(bot, user_id: int):
         ch_reply = await bot.ask(
             user_id,
             "<b>🗑 Step 2/3</b> — Select chats to clean.\n"
-            "Tap a chat to toggle it. Tap <b>▶ Done</b> when finished." + hint,
+            "Tap a chat to toggle, or <b>send a Chat ID/Link to add it manually.</b>\n"
+            "Tap <b>▶ Done</b> when finished." + hint,
             reply_markup=ReplyKeyboardMarkup(ch_btns, resize_keyboard=True, one_time_keyboard=True)
         )
         txt = ch_reply.text.strip()
