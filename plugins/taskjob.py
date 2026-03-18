@@ -75,32 +75,63 @@ def _passes_filters(msg, dis: list) -> bool:
 # Send helper
 # ══════════════════════════════════════════════════════════════════════════════
 
-async def _send_one(client, msg, to_chat: int, remove_caption: bool, caption_tpl):
+async def _send_one(client, msg, to_chat: int, remove_caption: bool, caption_tpl, forward_tag=False, from_chat=None):
     caption = None
     if caption_tpl and msg.media: caption = caption_tpl
     elif remove_caption and msg.media: caption = ""
+    
+    from_id = from_chat or msg.chat.id
+    
     try:
+        if forward_tag:
+            await client.forward_messages(chat_id=to_chat, from_chat_id=from_id, message_ids=msg.id)
+            return True
+
+        try:
+            if msg.media:
+                mo = getattr(msg, msg.media.value, None)
+                if mo and hasattr(mo, "file_id"):
+                    kw = {}
+                    if caption is not None: kw["caption"] = caption
+                    elif msg.caption: kw["caption"] = msg.caption
+                    await client.send_cached_media(chat_id=to_chat, file_id=mo.file_id, **kw)
+                    return True
+        except Exception:
+            pass
+
+        try:
+            if msg.media:
+                mo = getattr(msg, msg.media.value, None)
+                if mo and hasattr(mo, "file_id"):
+                    kw = {}
+                    if caption is not None: kw["caption"] = caption
+                    elif msg.caption: kw["caption"] = msg.caption
+                    await client.send_cached_media(chat_id=to_chat, file_id=mo.file_id, **kw)
+                    return True
+        except Exception:
+            pass
+
         if caption is not None:
-            await client.copy_message(chat_id=to_chat, from_chat_id=msg.chat.id,
+            await client.copy_message(chat_id=to_chat, from_chat_id=from_id,
                                       message_id=msg.id, caption=caption)
         else:
-            await client.copy_message(chat_id=to_chat, from_chat_id=msg.chat.id, message_id=msg.id)
+            await client.copy_message(chat_id=to_chat, from_chat_id=from_id, message_id=msg.id)
         return True
     except FloodWait as fw:
         await asyncio.sleep(fw.value + 2)
-        return await _send_one(client, msg, to_chat, remove_caption, caption_tpl)
+        return await _send_one(client, msg, to_chat, remove_caption, caption_tpl, forward_tag, from_chat)
     except Exception as e:
-        err = str(e).upper()
-        if "RESTRICTED" not in err and "PROTECTED" not in err:
-            try:
-                await client.forward_messages(chat_id=to_chat, from_chat_id=msg.chat.id, message_ids=msg.id)
-                return True
-            except Exception: pass
+        if forward_tag:
+            return False
+
         # Download fallback
         try:
             if msg.media:
                 mo = getattr(msg, msg.media.value, None)
                 orig = getattr(mo, 'file_name', None) if mo else None
+                if orig:
+                    import re
+                    orig = re.sub(r'[\\/*?:"<>|]', "", orig)
                 safe = f"downloads/{msg.id}_{orig}" if orig else f"downloads/{msg.id}"
                 fp = await client.download_media(msg, file_name=safe)
                 if not fp: raise Exception("DownloadFailed")
@@ -166,6 +197,7 @@ async def _run_task_job(job_id: str, user_id: int):
             configs  = await db.get_configs(user_id)
             rm_cap   = 'rm_caption' in dis
             cap_tpl  = configs.get('caption')
+            forward_tag = configs.get('forward_tag', False)
             slp      = max(1, configs.get('duration', 1) or 1)
 
             chunk_end = current + BATCH_SIZE - 1
@@ -208,7 +240,7 @@ async def _run_task_job(job_id: str, user_id: int):
                 f2 = await _tj_get(job_id)
                 if not f2 or f2.get("status") in ("stopped",): return
                 if not _passes_filters(msg, dis): continue
-                ok = await _send_one(client, msg, to_chat, rm_cap, cap_tpl)
+                ok = await _send_one(client, msg, to_chat, rm_cap, cap_tpl, forward_tag=forward_tag, from_chat=fc)
                 if ok: fwd += 1; await _tj_inc(job_id)
                 await asyncio.sleep(slp)
 

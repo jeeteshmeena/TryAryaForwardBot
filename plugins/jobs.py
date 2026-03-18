@@ -117,27 +117,75 @@ def _passes_size(msg, max_mb: int, max_secs: int) -> bool:
 # Send helper — dual destinations + topic threads
 # ══════════════════════════════════════════════════════════════════════════════
 
-async def _fwd(client, msg, chat, thread, cap_empty: bool):
+async def _fwd(client, msg, chat, thread, cap_empty: bool, forward_tag: bool, from_chat=None):
     kw = {"message_thread_id": thread} if thread else {}
+    from_id = from_chat or msg.chat.id
+    
     try:
+        if forward_tag:
+            await client.forward_messages(chat_id=chat, from_chat_id=from_id, message_ids=msg.id, **kw)
+            return True
+
+        try:
+            if msg.media:
+                mo = getattr(msg, msg.media.value, None)
+                if mo and hasattr(mo, "file_id"):
+                    ckw = kw.copy()
+                    if cap_empty: ckw["caption"] = ""
+                    elif msg.caption: ckw["caption"] = msg.caption
+                    await client.send_cached_media(chat_id=chat, file_id=mo.file_id, **ckw)
+                    return True
+        except Exception:
+            pass
+
         if cap_empty and msg.media:
-            await client.copy_message(chat_id=chat, from_chat_id=msg.chat.id,
+            await client.copy_message(chat_id=chat, from_chat_id=from_id,
                                       message_id=msg.id, caption="", **kw)
         else:
-            await client.copy_message(chat_id=chat, from_chat_id=msg.chat.id,
+            await client.copy_message(chat_id=chat, from_chat_id=from_id,
                                       message_id=msg.id, **kw)
+        return True
+    except FloodWait as fw:
+        await asyncio.sleep(fw.value + 2)
+        return await _fwd(client, msg, chat, thread, cap_empty, forward_tag, from_chat)
     except Exception:
+        if forward_tag:
+            return False
+            
+        # Download fallback
         try:
-            await client.forward_messages(chat_id=chat, from_chat_id=msg.chat.id,
-                                          message_ids=msg.id, **kw)
-        except Exception as e:
-            logger.debug(f"[Job fwd] {chat}: {e}")
+            import os
+            if msg.media:
+                mo = getattr(msg, msg.media.value, None)
+                orig = getattr(mo, 'file_name', None) if mo else None
+                if orig:
+                    import re
+                    orig = re.sub(r'[\\/*?:"<>|]', "", orig)
+                safe = f"downloads/{msg.id}_{orig}" if orig else f"downloads/{msg.id}"
+                fp = await client.download_media(msg, file_name=safe)
+                if not fp: raise Exception("DownloadFailed")
+                cap = "" if cap_empty else (msg.caption or "")
+                d_kw = {"chat_id": chat, "caption": cap, **kw}
+                if msg.photo:       await client.send_photo(photo=fp, **d_kw)
+                elif msg.video:     await client.send_video(video=fp, file_name=orig, **d_kw)
+                elif msg.document:  await client.send_document(document=fp, file_name=orig, **d_kw)
+                elif msg.audio:     await client.send_audio(audio=fp, file_name=orig, **d_kw)
+                elif msg.voice:     await client.send_voice(voice=fp, **d_kw)
+                elif msg.animation: await client.send_animation(animation=fp, **d_kw)
+                elif msg.sticker:   await client.send_sticker(sticker=fp, **d_kw)
+                if os.path.exists(fp): os.remove(fp)
+            else:
+                await client.send_message(chat_id=chat, text=msg.text or "", **kw)
+            return True
+        except Exception as e2:
+            logger.debug(f"[Job fwd] {chat}: {e2}")
+            return False
 
-
-async def _forward_message(client, msg, to1, th1, cap_empty, to2=None, th2=None):
-    await _fwd(client, msg, to1, th1, cap_empty)
+async def _forward_message(client, msg, to1, th1, cap_empty, forward_tag, from_chat, to2=None, th2=None):
+    res = await _fwd(client, msg, to1, th1, cap_empty, forward_tag, from_chat)
     if to2:
-        await _fwd(client, msg, to2, th2, cap_empty)
+        await _fwd(client, msg, to2, th2, cap_empty, forward_tag, from_chat)
+    return res
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -182,6 +230,31 @@ async def _get_latest_id(client, chat_id, is_bot: bool) -> int:
 
 BATCH_CHUNK = 200
 
+_active_clients = {}
+
+async def _get_shared_client(acc: dict):
+    from plugins.test import start_clone_bot, _CLIENT
+    acc_id = str(acc.get("_id", acc.get("id")))
+    if acc_id in _active_clients:
+        c, refs = _active_clients[acc_id]
+        _active_clients[acc_id] = (c, refs + 1)
+        return c
+    c = await start_clone_bot(_CLIENT.client(acc))
+    _active_clients[acc_id] = (c, 1)
+    return c
+
+async def _release_shared_client(acc: dict):
+    if not acc: return
+    acc_id = str(acc.get("_id", acc.get("id")))
+    if acc_id in _active_clients:
+        c, refs = _active_clients[acc_id]
+        if refs <= 1:
+            try: await c.stop()
+            except Exception: pass
+            _active_clients.pop(acc_id, None)
+        else:
+            _active_clients[acc_id] = (c, refs - 1)
+
 async def _run_job(job_id: str, user_id: int):
     job = await _get_job(job_id)
     if not job: return
@@ -192,7 +265,7 @@ async def _run_job(job_id: str, user_id: int):
         if not acc:
             await _update_job(job_id, status="error", error="Account not found"); return
 
-        client  = await start_clone_bot(_CLIENT.client(acc))
+        client  = await _get_shared_client(acc)
         is_bot  = acc.get("is_bot", True)
         fc      = job["from_chat"]
         to1     = job["to_chat"];   th1 = job.get("to_thread_id")
@@ -226,8 +299,9 @@ async def _run_job(job_id: str, user_id: int):
                 dis    = await db.get_filters(user_id)
                 cfg    = await db.get_configs(user_id)
                 rm_cap = 'rm_caption' in dis
+                forward_tag = cfg.get('forward_tag', False)
                 slp    = max(1, int(cfg.get('duration', 1) or 1))
-
+                
                 chunk_end = min(cur + BATCH_CHUNK - 1, bend)
                 # Use get_chat_history for private sources because get_messages by ID fails there
                 try:
@@ -254,8 +328,9 @@ async def _run_job(job_id: str, user_id: int):
                     if not _passes_filters(msg, dis): continue
                     if not _passes_size(msg, max_mb, max_sec): continue
                     try:
-                        await _forward_message(client, msg, to1, th1, rm_cap, to2, th2)
-                        fwd_n += 1
+                        ok = await _forward_message(client, msg, to1, th1, rm_cap, forward_tag, fc, to2, th2)
+                        if ok: fwd_n += 1
+
                     except FloodWait as fw: await asyncio.sleep(fw.value + 1)
                     except asyncio.CancelledError: raise
                     except Exception as e: logger.debug(f"[Job {job_id}] Batch fwd {msg.id}: {e}")
@@ -278,6 +353,7 @@ async def _run_job(job_id: str, user_id: int):
             dis    = await db.get_filters(user_id)
             cfg    = await db.get_configs(user_id)
             rm_cap = 'rm_caption' in dis
+            forward_tag = cfg.get('forward_tag', False)
             new: list = []
 
             try:
@@ -319,8 +395,8 @@ async def _run_job(job_id: str, user_id: int):
                 if not _passes_size(msg, max_mb, max_sec):
                     seen = max(seen, msg.id); continue
                 try:
-                    await _forward_message(client, msg, to1, th1, rm_cap, to2, th2)
-                    fwd_n += 1
+                    ok = await _forward_message(client, msg, to1, th1, rm_cap, forward_tag, fc, to2, th2)
+                    if ok: fwd_n += 1
                 except FloodWait as fw: await asyncio.sleep(fw.value + 1)
                 except asyncio.CancelledError: raise
                 except Exception as e: logger.debug(f"[Job {job_id}] Live fwd: {e}")
@@ -337,9 +413,8 @@ async def _run_job(job_id: str, user_id: int):
         await _update_job(job_id, status="error", error=str(e))
     finally:
         _job_tasks.pop(job_id, None)
-        if client:
-            try: await client.stop()
-            except Exception: pass
+        if acc:
+            await _release_shared_client(acc)
 
 
 def _start_job_task(job_id: str, user_id: int) -> asyncio.Task:

@@ -144,16 +144,16 @@ async def pub_(bot, message):
                                   print(f"Uploader fallback error: {e}")
                                   sts.add('deleted')
                           except Exception as e:
-                              # Handle uploader fallback for restricted content gracefully
-                              # If the user forwarded a restricted public channel without Download Mode,
-                              # copy_message fails here. We download/upload sequentially for them to save them.
-                              if "RESTRICTED" in str(e).upper() or "PROTECTED" in str(e).upper():
+                              # Handle uploader fallback gracefully.
+                              # If copy_message fails (Private chats, Bot DMs, Restricted, Error), we download/upload.
+                              if act in ('copy_message', 'send_cached_media'):
                                   try:
                                       import os
-                                      fallback_msg = await client.get_messages(prm.get('from_chat_id'), prm.get('message_id'))
+                                      fallback_msg = prm.get('raw_message') or await client.get_messages(prm.get('from_chat_id'), prm.get('message_id'))
                                       if fallback_msg.media:
                                           safe_name = f"downloads/{fallback_msg.id}"
                                           dp = await client.download_media(fallback_msg, file_name=safe_name)
+                                          if not dp: raise Exception("DownloadFailed")
                                           if getattr(fallback_msg, 'photo', None): await client.send_photo(chat_id=prm.get('chat_id'), photo=dp, caption=prm.get('caption'))
                                           elif getattr(fallback_msg, 'video', None): await client.send_video(chat_id=prm.get('chat_id'), video=dp, caption=prm.get('caption'))
                                           elif getattr(fallback_msg, 'document', None): await client.send_document(chat_id=prm.get('chat_id'), document=dp, caption=prm.get('caption'))
@@ -244,7 +244,7 @@ async def pub_(bot, message):
                       # This is the ONLY way to guarantee ordering for copy_message.
                       # The pipeline approach (task_queue + workers) inherently races
                       # even with a sequence-buffer in the uploader.
-                      details = {"msg_id": message.id, "media": media(message), "caption": new_caption, 'button': button, "protect": protect, "text": message.text.html if message.text else ""}
+                      details = {"msg_id": message.id, "media": media(message), "caption": new_caption, 'button': button, "protect": protect, "text": message.text.html if message.text else "", "raw_message": message}
                       
                       if download_mode:
                           # Download mode: use the worker pipeline (slow, benefits from async)
@@ -275,13 +275,14 @@ async def pub_(bot, message):
                                           sts.add('total_files')
                                       except FloodWait as fw:
                                           await asyncio.sleep(fw.value + 2)
-                                          try:
-                                              if act == 'copy_message': await client.copy_message(**prm)
-                                              sts.add('total_files')
                                           except Exception: sts.add('deleted')
                                       except Exception as e:
                                           print(f"Direct send error: {e}")
-                                          sts.add('deleted')
+                                          if act in ('copy_message', 'send_cached_media'):
+                                              print(f"Falling back to download for msg {prm.get('message_id')} due to {e}")
+                                              await copy(client, details, m, sts, True, 0, seq_counter, upload_queue)
+                                          else:
+                                              sts.add('deleted')
                                   if fpath:
                                       try:
                                           import os
@@ -437,7 +438,8 @@ async def copy(bot, msg, m, sts, download=False, attempt=0, seq_index=None, uplo
             "file_id": msg.get("media"),
             "caption": msg.get("caption"),
             "reply_markup": msg.get('button'),
-            "protect_content": msg.get("protect")
+            "protect_content": msg.get("protect"),
+            "raw_message": msg.get("raw_message")
         }
         await upload_queue.put((seq_index, 'send_cached_media', kwargs, None))
      elif not download:
@@ -447,7 +449,8 @@ async def copy(bot, msg, m, sts, download=False, attempt=0, seq_index=None, uplo
             "caption": msg.get("caption"),
             "message_id": msg.get("msg_id"),
             "reply_markup": msg.get('button'),
-            "protect_content": msg.get("protect")
+            "protect_content": msg.get("protect"),
+            "raw_message": msg.get("raw_message")
         }
         await upload_queue.put((seq_index, 'copy_message', kwargs, None))
      else:
@@ -466,7 +469,7 @@ async def copy(bot, msg, m, sts, download=False, attempt=0, seq_index=None, uplo
          try:
              import os
              print(f"Downloading message {msg.get('msg_id')} due to restriction...")
-             message = await bot.get_messages(sts.get('FROM'), msg.get("msg_id"))
+             message = msg.get("raw_message") or await bot.get_messages(sts.get('FROM'), msg.get("msg_id"))
              if message.empty or message.service: raise Exception("MessageEmpty")
              
              if message.media:
