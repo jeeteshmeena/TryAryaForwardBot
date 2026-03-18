@@ -16,71 +16,78 @@ class Translation(object):
 """
 
 
-  HELP_TXT = """<b><u>🔆 HELP — Aryᴀ Bᴏᴛ</u></b>
+  HELP_TXT = """<b><u>🔆 ʜᴇʟᴘ — Aryᴀ Bᴏᴛ</u></b>
 
-<b>📌 Commands:</b>
-<code>/start</code>  — Check if I'm alive
-<code>/forward</code>  — Start batch forwarding
-<code>/jobs</code>  — Manage Live Jobs (background forwarding)
-<code>/cleanmsg</code>  — Bulk delete messages from chats
-<code>/settings</code>  — Configure all settings
-<code>/reset</code>  — Reset settings to default
+<b>📌 ᴄᴏᴍᴍᴀɴᴅs:</b>
+<code>/start</code>     — ᴄʜᴇᴄᴋ ɪғ ɪ'ᴍ ᴀʟɪᴠᴇ
+<code>/forward</code>   — sᴛᴀʀᴛ ʙᴀᴛᴄʜ ғᴏʀᴡᴀʀᴅɪɴɢ
+<code>/jobs</code>      — ᴍᴀɴᴀɢᴇ ʟɪᴠᴇ ᴊᴏʙs (ʙᴀᴄᴋɢʀᴏᴜɴᴅ ғᴡᴅ)
+<code>/taskjobs</code>  — ᴍᴀɴᴀɢᴇ ᴛᴀsᴋ ᴊᴏʙs (ʙᴜʟᴋ ᴄᴏᴘʏ, ᴘᴀᴜsᴇ/ʀᴇsᴜᴍᴇ)
+<code>/cleanmsg</code>  — ʙᴜʟᴋ ᴅᴇʟᴇᴛᴇ ᴍᴇssᴀɢᴇs
+<code>/settings</code>  — ᴄᴏɴғɪɢᴜʀᴇ ᴀʟʟ sᴇᴛᴛɪɴɢs
+<code>/reset</code>     — ʀᴇsᴇᴛ sᴇᴛᴛɪɴɢs ᴛᴏ ᴅᴇғᴀᴜʟᴛ
 
-<b>⚡ Features:</b>
-<b>►</b> Forward from public channels — no admin needed
-<b>►</b> Forward from private channels — via bot/userbot admin
-<b>►</b> Multi-Account: up to 2 Bots + 2 Userbots
-<b>►</b> Live Jobs — background tasks, run parallel to batch forwards
-<b>►</b> New→Old &amp; Old→New forwarding order
-<b>►</b> Filters — skip audio/video/photo/text/sticker/poll etc.
-<b>►</b> Custom caption / remove caption / add buttons
-<b>►</b> Skip duplicate messages
-<b>►</b> Extension / Keyword / Size filters
-<b>►</b> Download mode — bypasses forward restrictions
-<b>►</b> Clean MSG — bulk delete from target channels
+<b>⚡ ғᴇᴀᴛᴜʀᴇs:</b>
+<b>►</b> ғᴏʀᴡᴀʀᴅ ғʀᴏᴍ ᴘᴜʙʟɪᴄ ᴄʜᴀɴɴᴇʟs — ɴᴏ ᴀᴅᴍɪɴ ɴᴇᴇᴅᴇᴅ
+<b>►</b> ғᴏʀᴡᴀʀᴅ ғʀᴏᴍ ᴘʀɪᴠᴀᴛᴇ ᴄʜᴀɴɴᴇʟs — ᴠɪᴀ ʙᴏᴛ/ᴜsᴇʀʙᴏᴛ ᴀᴅᴍɪɴ
+<b>►</b> ᴍᴜʟᴛɪ-ᴀᴄᴄᴏᴜɴᴛ: ᴜᴘ ᴛᴏ 2 ʙᴏᴛs + 2 ᴜsᴇʀʙᴏᴛs
+<b>►</b> ʟɪᴠᴇ ᴊᴏʙs — ʙᴀᴄᴋɢʀᴏᴜɴᴅ ᴛᴀsᴋs, ᴘᴀʀᴀʟʟᴇʟ ᴛᴏ ʙᴀᴛᴄʜ
+<b>►</b> ᴛᴀsᴋ ᴊᴏʙs — ʙᴜʟᴋ ᴄᴏᴘʏ ᴡɪᴛʜ ᴘᴀᴜsᴇ/ʀᴇsᴜᴍᴇ, ᴍᴜʟᴛɪᴘʟᴇ sɪᴍᴜʟᴛᴀɴᴇᴏᴜsʟʏ
+<b>►</b> ᴅᴜᴀʟ ᴅᴇsᴛɪɴᴀᴛɪᴏɴs — sᴇɴᴅ ᴛᴏ 2 ᴄʜᴀɴɴᴇʟs ᴀᴛ ᴏɴᴄᴇ
+<b>►</b> ɢʀᴏᴜᴘ ᴛᴏᴘɪᴄ sᴜᴘᴘᴏʀᴛ — ᴘᴏsᴛ ɪɴᴛᴏ ᴀ sᴘᴇᴄɪғɪᴄ ᴛʜʀᴇᴀᴅ
+<b>►</b> ɴᴇᴡ→ᴏʟᴅ & ᴏʟᴅ→ɴᴇᴡ ғᴏʀᴡᴀʀᴅɪɴɢ ᴏʀᴅᴇʀ
+<b>►</b> ғɪʟᴛᴇʀs — sᴋɪᴘ ᴀᴜᴅɪᴏ/ᴠɪᴅᴇᴏ/ᴘʜᴏᴛᴏ/ᴛᴇxᴛ/sᴛɪᴄᴋᴇʀ/ᴘᴏʟʟ ᴇᴛᴄ.
+<b>►</b> ᴄᴜsᴛᴏᴍ ᴄᴀᴘᴛɪᴏɴ / ʀᴇᴍᴏᴠᴇ ᴄᴀᴘᴛɪᴏɴ / ᴀᴅᴅ ʙᴜᴛᴛᴏɴs
+<b>►</b> sᴋɪᴘ ᴅᴜᴘʟɪᴄᴀᴛᴇ ᴍᴇssᴀɢᴇs
+<b>►</b> ᴅᴏᴡɴʟᴏᴀᴅ ᴍᴏᴅᴇ — ʙʏᴘᴀssᴇs ᴄᴏɴᴛᴇɴᴛ ʀᴇsᴛʀɪᴄᴛɪᴏɴs
+<b>►</b> ᴄʟᴇᴀɴ ᴍsɢ — ʙᴜʟᴋ ᴅᴇʟᴇᴛᴇ ғʀᴏᴍ ᴛᴀʀɢᴇᴛ ᴄʜᴀɴɴᴇʟs
 """
-  
-  HOW_USE_TXT = """<b><u>📍 How to Use — Aryᴀ Bᴏᴛ</u></b>
 
-<b>1️⃣ Add an Account</b>
-  ‣ Go to /settings → ⚙️ Accounts
-  ‣ Add a Bot (send its token) or a Userbot (send session string)
-  ‣ You can add up to 2 Bots + 2 Userbots
+  HOW_USE_TXT = """<b><u>📍 ʜᴏᴡ ᴛᴏ ᴜsᴇ — Aryᴀ Bᴏᴛ</u></b>
 
-<b>2️⃣ Add a Target Channel</b>
-  ‣ Go to /settings → 📣 Channels
-  ‣ Your Bot/Userbot must be <b>admin</b> in the target
+<b>1️⃣ ᴀᴅᴅ ᴀɴ ᴀᴄᴄᴏᴜɴᴛ</b>
+  ‣ ɢᴏ ᴛᴏ /settings → ⚙️ ᴀᴄᴄᴏᴜɴᴛs
+  ‣ ᴀᴅᴅ ᴀ ʙᴏᴛ (sᴇɴᴅ ᴛᴏᴋᴇɴ) ᴏʀ ᴜsᴇʀʙᴏᴛ (sᴇɴᴅ sᴇssɪᴏɴ sᴛʀɪɴɢ)
+  ‣ ᴜᴘ ᴛᴏ 2 ʙᴏᴛs + 2 ᴜsᴇʀʙᴏᴛs
 
-<b>3️⃣ Configure Settings</b>
-  ‣ <b>Filters</b> — choose what types of messages to skip
-  ‣ <b>Caption</b> — custom caption or remove it
-  ‣ <b>Forward Tag</b> — show or hide forwarded-from label
-  ‣ <b>Download Mode</b> — re-upload files (bypasses restrictions)
-  ‣ <b>Duplicate Skip</b> — avoid re-forwarding same content
+<b>2️⃣ ᴀᴅᴅ ᴀ ᴛᴀʀɢᴇᴛ ᴄʜᴀɴɴᴇʟ</b>
+  ‣ ɢᴏ ᴛᴏ /settings → 📣 ᴄʜᴀɴɴᴇʟs
+  ‣ ʏᴏᴜʀ ʙᴏᴛ/ᴜsᴇʀʙᴏᴛ ᴍᴜsᴛ ʙᴇ <b>ᴀᴅᴍɪɴ</b> ɪɴ ᴛʜᴇ ᴛᴀʀɢᴇᴛ
 
-<b>4️⃣ Batch Forward (/forward)</b>
-  ‣ Choose account → select target → send source link/ID
-  ‣ Choose order (Old→New / New→Old) → set skip count
-  ‣ Verify DOUBLE CHECK → click Yes
+<b>3️⃣ ᴄᴏɴғɪɢᴜʀᴇ sᴇᴛᴛɪɴɢs</b>
+  ‣ <b>ғɪʟᴛᴇʀs</b> — ᴄʜᴏᴏsᴇ ᴡʜᴀᴛ ᴛʏᴘᴇs ᴛᴏ sᴋɪᴘ
+  ‣ <b>ᴄᴀᴘᴛɪᴏɴ</b> — ᴄᴜsᴛᴏᴍ ᴄᴀᴘᴛɪᴏɴ ᴏʀ ʀᴇᴍᴏᴠᴇ ɪᴛ
+  ‣ <b>ғᴏʀᴡᴀʀᴅ ᴛᴀɢ</b> — sʜᴏᴡ ᴏʀ ʜɪᴅᴇ ғᴏʀᴡᴀʀᴅᴇᴅ-ғʀᴏᴍ ʟᴀʙᴇʟ
+  ‣ <b>ᴅᴏᴡɴʟᴏᴀᴅ ᴍᴏᴅᴇ</b> — ʀᴇ-ᴜᴘʟᴏᴀᴅ ғɪʟᴇs (ʙʏᴘᴀssᴇs ʀᴇsᴛʀɪᴄᴛɪᴏɴs)
+  ‣ <b>ᴅᴜᴘʟɪᴄᴀᴛᴇ sᴋɪᴘ</b> — ᴀᴠᴏɪᴅ ʀᴇ-ғᴏʀᴡᴀʀᴅɪɴɢ sᴀᴍᴇ ᴄᴏɴᴛᴇɴᴛ
 
-<b>5️⃣ Live Jobs (/jobs)</b>
-  ‣ Creates a <b>background job</b> that auto-forwards new messages
-  ‣ Works alongside batch forwarding simultaneously
-  ‣ Supports channels, groups, bot private chats, saved messages
-  ‣ Respects your Filters settings
-  ‣ Stop/Start/Delete any job anytime from /jobs
+<b>4️⃣ ʙᴀᴛᴄʜ ғᴏʀᴡᴀʀᴅ (/forward)</b>
+  ‣ ᴄʜᴏᴏsᴇ ᴀᴄᴄᴏᴜɴᴛ → sᴇʟᴇᴄᴛ ᴛᴀʀɢᴇᴛ → sᴇɴᴅ sᴏᴜʀᴄᴇ ʟɪɴᴋ/ɪᴅ
+  ‣ ᴄʜᴏᴏsᴇ ᴏʀᴅᴇʀ (ᴏʟᴅ→ɴᴇᴡ / ɴᴇᴡ→ᴏʟᴅ) → sᴇᴛ sᴋɪᴘ ᴄᴏᴜɴᴛ
 
-<b>6️⃣ Clean MSG (/cleanmsg)</b>
-  ‣ Select account + target chat(s) + message type
-  ‣ Bulk deletes messages in one go
+<b>5️⃣ ʟɪᴠᴇ ᴊᴏʙs (/jobs)</b>
+  ‣ ᴀᴜᴛᴏ-ғᴏʀᴡᴀʀᴅs ɴᴇᴡ ᴍsɢs ɪɴ ᴛʜᴇ ʙᴀᴄᴋɢʀᴏᴜɴᴅ
+  ‣ ᴏᴘᴛɪᴏɴᴀʟ ʙᴀᴛᴄʜ ᴘʜᴀsᴇ: ᴄᴏᴘɪᴇs ᴏʟᴅ ᴍsɢs ғɪʀsᴛ, ᴛʜᴇɴ ɢᴏᴇs ʟɪᴠᴇ
+  ‣ ᴅᴜᴀʟ ᴅᴇsᴛɪɴᴀᴛɪᴏɴs: sᴇɴᴅ ᴛᴏ 2 ᴄʜᴀɴɴᴇʟs ᴀᴛ ᴛʜᴇ sᴀᴍᴇ ᴛɪᴍᴇ
+  ‣ ɢʀᴏᴜᴘ ᴛᴏᴘɪᴄ sᴜᴘᴘᴏʀᴛ — ᴘᴏsᴛ ɪɴᴛᴏ ᴀ sᴘᴇᴄɪғɪᴄ ᴛʜʀᴇᴀᴅ
+  ‣ ᴘᴇʀ-ᴊᴏʙ sɪᴢᴇ/ᴅᴜʀᴀᴛɪᴏɴ ʟɪᴍɪᴛ
 
-<b>⚠️ Notes:</b>
-  ‣ Bot account: needs admin in TARGET (and SOURCE if private)
-  ‣ Userbot: needs membership in SOURCE + admin in TARGET
-  ‣ For public channels, a normal Bot works fine
-  ‣ For private/restricted sources, use a Userbot
+<b>6️⃣ ᴛᴀsᴋ ᴊᴏʙs (/taskjobs)</b>
+  ‣ ʙᴜʟᴋ-ᴄᴏᴘɪᴇs ᴀʟʟ ᴇxɪsᴛɪɴɢ ᴍsɢs ɪɴ ᴛʜᴇ ʙᴀᴄᴋɢʀᴏᴜɴᴅ
+  ‣ ᴘᴀᴜsᴇ / ʀᴇsᴜᴍᴇ ғʀᴏᴍ ᴇxᴀᴄᴛ ᴘᴏsɪᴛɪᴏɴ
+  ‣ ᴍᴜʟᴛɪᴘʟᴇ ᴊᴏʙs ᴄᴀɴ ʀᴜɴ ᴀᴛ ᴛʜᴇ sᴀᴍᴇ ᴛɪᴍᴇ
+  ‣ ᴄᴜsᴛᴏᴍ ᴍᴇssᴀɢᴇ ɪᴅ ʀᴀɴɢᴇ (ᴇ.ɢ. 500:2000)
+
+<b>7️⃣ ᴄʟᴇᴀɴ ᴍsɢ (/cleanmsg)</b>
+  ‣ sᴇʟᴇᴄᴛ ᴀᴄᴄᴏᴜɴᴛ + ᴄʜᴀᴛ + ᴍᴇssᴀɢᴇ ᴛʏᴘᴇ → ʙᴜʟᴋ ᴅᴇʟᴇᴛᴇ
+
+<b>⚠️ ɴᴏᴛᴇs:</b>
+  ‣ ʙᴏᴛ ᴀᴄᴄᴏᴜɴᴛ: ɴᴇᴇᴅs ᴀᴅᴍɪɴ ɪɴ ᴛᴀʀɢᴇᴛ (ᴀɴᴅ sᴏᴜʀᴄᴇ ɪғ ᴘʀɪᴠᴀᴛᴇ)
+  ‣ ᴜsᴇʀʙᴏᴛ: ɴᴇᴇᴅs ᴍᴇᴍʙᴇʀsʜɪᴘ ɪɴ sᴏᴜʀᴄᴇ + ᴀᴅᴍɪɴ ɪɴ ᴛᴀʀɢᴇᴛ
+  ‣ ғᴏʀ ᴘᴜʙʟɪᴄ ᴄʜᴀɴɴᴇʟs, ᴀ ɴᴏʀᴍᴀʟ ʙᴏᴛ ᴡᴏʀᴋs ғɪɴᴇ
+  ‣ ғᴏʀ ᴘʀɪᴠᴀᴛᴇ/ʀᴇsᴛʀɪᴄᴛᴇᴅ sᴏᴜʀᴄᴇs, ᴜsᴇ ᴀ ᴜsᴇʀʙᴏᴛ
 """
-  
+
   ABOUT_TXT = """<b>╭──────❰ 🤖 𝐁𝐨𝐭 𝐃𝐞𝐭𝐚𝐢𝐥𝐬 ❱──────╮
 ┃ 
 ┣⊸ 🤖 Mʏ Nᴀᴍᴇ   : <a href=https://t.me/MeJeetX>Aryᴀ Bᴏᴛ</a>
@@ -93,7 +100,7 @@ class Translation(object):
 ┣⊸ 📚 ʟɪʙʀᴀʀʏ   : ᴘʏʀᴏɢʀᴀᴍ  
 ┃
 ╰─────────────────────────────╯</b>"""
-  
+
   STATUS_TXT = """<b>╭──────❰ 🤖 𝐁𝐨𝐭 𝐒𝐭𝐚𝐭𝐮𝐬 ❱──────╮
 ┃
 ┣⊸ 👨 ᴜsᴇʀs   : <code>{}</code>
@@ -102,8 +109,8 @@ class Translation(object):
 ┣⊸ 📣 ᴄʜᴀɴɴᴇʟ : <code>{}</code>
 ┣⊸ 🚫 ʙᴀɴɴᴇᴅ  : <code>{}</code>
 ┃
-╰─────────────────────────────╯</b>""" 
-  
+╰─────────────────────────────╯</b>"""
+
   FROM_MSG = "<b>❪ SET SOURCE CHAT ❫\n\nForward the last message or link.\nType username/ID (e.g. <code>@somebot</code> or <code>123456</code>) for bot/private chat.\nType <code>me</code> for Saved Messages.\n/cancel - to cancel</b>"
   TO_MSG = "<b>❪ CHOOSE TARGET CHAT ❫\n\nChoose your target chat from the given buttons.\n/cancel - Cancel this process</b>"
   SAVED_MSG_MODE = "<b>❪ SELECT MODE ❫\n\nChoose forwarding mode:\n1. <code>batch</code> - Forward existing messages.\n2. <code>live</code> - Continuous (wait for new messages).</b>"
@@ -111,8 +118,8 @@ class Translation(object):
   SKIP_MSG = "<b>❪ SET MESSAGE SKIPING NUMBER ❫</b>\n\n<b>Skip the message as much as you enter the number and the rest of the message will be forwarded\nDefault Skip Number =</b> <code>0</code>\n<code>eg: You enter 0 = 0 message skiped\n You enter 5 = 5 message skiped</code>\n/cancel <b>- cancel this process</b>"
   CANCEL = "<b>Process Cancelled Succefully !</b>"
   BOT_DETAILS = "<b><u>📄 BOT DETAILS</b></u>\n\n<b>➣ NAME:</b> <code>{}</code>\n<b>➣ BOT ID:</b> <code>{}</code>\n<b>➣ USERNAME:</b> @{}"
-  USER_DETAILS = "<b><u>📄 USERBOT DETAILS</b></u>\n\n<b>➣ NAME:</b> <code>{}</code>\n<b>➣ USER ID:</b> <code>{}</code>\n<b>➣ USERNAME:</b> @{}"  
-         
+  USER_DETAILS = "<b><u>📄 USERBOT DETAILS</b></u>\n\n<b>➣ NAME:</b> <code>{}</code>\n<b>➣ USER ID:</b> <code>{}</code>\n<b>➣ USERNAME:</b> @{}"
+
   TEXT = """<b>╭──────❰ ✦ 𝐀𝐮𝐭𝐨 𝐅𝐨𝐫𝐰𝐚𝐫𝐝𝐞𝐫 ✦ ❱──────╮
 ┃
 ┣⊸ ◈ 𝐅𝐞𝐭𝐜𝐡𝐞𝐝     : <code>{}</code>

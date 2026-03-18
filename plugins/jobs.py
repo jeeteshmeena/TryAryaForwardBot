@@ -1,18 +1,8 @@
 """
 Live Jobs Plugin — v3
 ======================
-Each job runs as an independent asyncio.Task in the background.
-
-New in v3:
-  • Batch Phase (ON/OFF): copy old messages first, then transition seamlessly to live mode.
-  • Dual Destinations: send every message to up to 2 target chats/topics simultaneously.
-  • Per-job Size Limit: skip files above a configured MB or duration threshold.
-
-Flow:
-  /jobs → list → ➕ Create → Step1(account) → Step2(source)
-       → Step3(dest1 + topic1) → Step4(dest2 optional + topic2)
-       → Step5(batch ON/OFF) → Step6(size limit)
-       → job starts
+Unicode-styled to match the rest of Arya Bot (small-caps, box borders, 𝐛𝐨𝐥𝐝 𝐦𝐚𝐭𝐡).
+Features: batch-first mode, dual destinations, per-job size/duration limits, topic threads.
 """
 import time
 import asyncio
@@ -29,8 +19,32 @@ from pyrogram.types import (
 logger = logging.getLogger(__name__)
 _CLIENT = CLIENT()
 
-# In-memory: job_id → asyncio.Task
 _job_tasks: dict[str, asyncio.Task] = {}
+
+# ── Unicode helpers ────────────────────────────────────────────────────────────
+def _box(title: str, lines: list[str]) -> str:
+    """Build a bordered box identical to the bot's existing style."""
+    body = "\n".join(f"┣⊸ {l}" for l in lines)
+    return (
+        f"<b>╭──────❰ {title} ❱──────╮\n"
+        f"┃\n"
+        f"{body}\n"
+        f"┃\n"
+        f"╰────────────────────────────────╯</b>"
+    )
+
+def _st(status: str) -> str:
+    """Status emoji."""
+    return {"running": "🟢", "stopped": "🔴", "error": "⚠️", "done": "✅"}.get(status, "❓")
+
+def _batch_tag(job: dict) -> str:
+    if not job.get("batch_mode"):
+        return ""
+    if job.get("batch_done"):
+        return "  📦✅"
+    cur = job.get("batch_cursor") or job.get("batch_start_id") or "?"
+    end = job.get("batch_end_id") or "…"
+    return f"  📦{cur}/{end}"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -49,8 +63,8 @@ async def _list_jobs(user_id: int) -> list[dict]:
 async def _delete_job_db(job_id: str):
     await db.db.jobs.delete_one({"job_id": job_id})
 
-async def _update_job(job_id: str, **kwargs):
-    await db.db.jobs.update_one({"job_id": job_id}, {"$set": kwargs})
+async def _update_job(job_id: str, **kw):
+    await db.db.jobs.update_one({"job_id": job_id}, {"$set": kw})
 
 async def _inc_forwarded(job_id: str, n: int = 1):
     await db.db.jobs.update_one({"job_id": job_id}, {"$inc": {"forwarded": n}})
@@ -60,11 +74,10 @@ async def _inc_forwarded(job_id: str, n: int = 1):
 # Filter helpers
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _passes_filters(msg, disabled_types: list) -> bool:
-    """Return True if message passes the user's content-type filters."""
+def _passes_filters(msg, disabled: list) -> bool:
     if msg.empty or msg.service:
         return False
-    checks = [
+    for typ, chk in [
         ('text',      lambda m: m.text and not m.media),
         ('audio',     lambda m: m.audio),
         ('voice',     lambda m: m.voice),
@@ -74,81 +87,61 @@ def _passes_filters(msg, disabled_types: list) -> bool:
         ('animation', lambda m: m.animation),
         ('sticker',   lambda m: m.sticker),
         ('poll',      lambda m: m.poll),
-    ]
-    for typ, check in checks:
-        if typ in disabled_types and check(msg):
+    ]:
+        if typ in disabled and chk(msg):
             return False
     return True
 
 
-def _passes_size_limit(msg, max_size_mb: int, max_duration_secs: int) -> bool:
-    """Return True if message is within the per-job size/duration limits.
-    0 means no limit.
-    """
-    if max_size_mb > 0:
-        max_bytes = max_size_mb * 1024 * 1024
-        media_obj = None
+def _passes_size(msg, max_mb: int, max_secs: int) -> bool:
+    if max_mb > 0:
         for attr in ('document', 'video', 'audio', 'voice', 'video_note', 'animation', 'photo'):
-            media_obj = getattr(msg, attr, None)
-            if media_obj:
-                break
-        if media_obj:
-            size = getattr(media_obj, 'file_size', 0) or 0
-            if size > max_bytes:
-                return False
-
-    if max_duration_secs > 0:
-        for attr in ('video', 'audio', 'voice', 'video_note'):
-            media_obj = getattr(msg, attr, None)
-            if media_obj:
-                dur = getattr(media_obj, 'duration', 0) or 0
-                if dur > max_duration_secs:
+            obj = getattr(msg, attr, None)
+            if obj:
+                sz = getattr(obj, 'file_size', 0) or 0
+                if sz > max_mb * 1024 * 1024:
                     return False
                 break
-
+    if max_secs > 0:
+        for attr in ('video', 'audio', 'voice', 'video_note'):
+            obj = getattr(msg, attr, None)
+            if obj:
+                dur = getattr(obj, 'duration', 0) or 0
+                if dur > max_secs:
+                    return False
+                break
     return True
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Forward helper — supports dual destination + topic threads
+# Send helper — dual destinations + topic threads
 # ══════════════════════════════════════════════════════════════════════════════
 
-async def _forward_message(
-    client, msg,
-    to_chat: int, remove_caption: bool, thread_id: int = None,
-    to_chat_2: int = None, thread_id_2: int = None
-):
-    """Copy message to 1 or 2 destinations. Falls back to forward_messages for locked chats."""
-
-    async def _send_one(chat, thread):
-        kw = {"message_thread_id": thread} if thread else {}
+async def _fwd(client, msg, chat, thread, cap_empty: bool):
+    kw = {"message_thread_id": thread} if thread else {}
+    try:
+        if cap_empty and msg.media:
+            await client.copy_message(chat_id=chat, from_chat_id=msg.chat.id,
+                                      message_id=msg.id, caption="", **kw)
+        else:
+            await client.copy_message(chat_id=chat, from_chat_id=msg.chat.id,
+                                      message_id=msg.id, **kw)
+    except Exception:
         try:
-            if remove_caption and msg.media:
-                await client.copy_message(
-                    chat_id=chat, from_chat_id=msg.chat.id,
-                    message_id=msg.id, caption="", **kw
-                )
-            else:
-                await client.copy_message(
-                    chat_id=chat, from_chat_id=msg.chat.id,
-                    message_id=msg.id, **kw
-                )
-        except Exception:
-            try:
-                await client.forward_messages(
-                    chat_id=chat, from_chat_id=msg.chat.id,
-                    message_ids=msg.id, **kw
-                )
-            except Exception as e:
-                logger.debug(f"[Job forward] Failed to {chat}: {e}")
+            await client.forward_messages(chat_id=chat, from_chat_id=msg.chat.id,
+                                          message_ids=msg.id, **kw)
+        except Exception as e:
+            logger.debug(f"[Job fwd] {chat}: {e}")
 
-    await _send_one(to_chat, thread_id)
-    if to_chat_2:
-        await _send_one(to_chat_2, thread_id_2)
+
+async def _forward_message(client, msg, to1, th1, cap_empty, to2=None, th2=None):
+    await _fwd(client, msg, to1, th1, cap_empty)
+    if to2:
+        await _fwd(client, msg, to2, th2, cap_empty)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Find current latest message ID (called once on job init)
+# Latest-ID probe
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def _get_latest_id(client, chat_id, is_bot: bool) -> int:
@@ -158,18 +151,15 @@ async def _get_latest_id(client, chat_id, is_bot: bool) -> int:
                 return msg.id
         else:
             lo, hi = 1, 9_999_999
-            BATCH = 50
             for _ in range(25):
-                if hi - lo <= BATCH:
-                    break
+                if hi - lo <= 50: break
                 mid = (lo + hi) // 2
                 try:
-                    probe = await client.get_messages(chat_id, [mid])
-                    if not isinstance(probe, list): probe = [probe]
-                    if any(m and not m.empty for m in probe):
-                        lo = mid
-                    else:
-                        hi = mid
+                    p = await client.get_messages(chat_id, [mid])
+                    if not isinstance(p, list): p = [p]
+                    lo = mid if any(m and not m.empty for m in p) else hi
+                    if lo == mid: pass
+                    else: hi = mid
                 except Exception:
                     hi = mid
             return hi
@@ -179,333 +169,245 @@ async def _get_latest_id(client, chat_id, is_bot: bool) -> int:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Core job runner
+# Core runner
 # ══════════════════════════════════════════════════════════════════════════════
 
-BATCH_CHUNK = 200  # IDs per get_messages call in batch phase
+BATCH_CHUNK = 200
 
 async def _run_job(job_id: str, user_id: int):
     job = await _get_job(job_id)
-    if not job:
-        return
+    if not job: return
 
     acc = client = None
     try:
         acc = await db.get_bot(user_id, job["account_id"])
         if not acc:
-            await _update_job(job_id, status="error", error="Account not found")
-            return
+            await _update_job(job_id, status="error", error="Account not found"); return
 
-        client = await start_clone_bot(_CLIENT.client(acc))
-        is_bot = acc.get("is_bot", True)
+        client  = await start_clone_bot(_CLIENT.client(acc))
+        is_bot  = acc.get("is_bot", True)
+        fc      = job["from_chat"]
+        to1     = job["to_chat"];   th1 = job.get("to_thread_id")
+        to2     = job.get("to_chat_2"); th2 = job.get("to_thread_id_2")
+        max_mb  = int(job.get("max_size_mb", 0) or 0)
+        max_sec = int(job.get("max_duration_secs", 0) or 0)
+        seen    = job.get("last_seen_id", 0)
 
-        from_chat    = job["from_chat"]
-        to_chat      = job["to_chat"]
-        to_thread    = job.get("to_thread_id", None)
-        to_chat_2    = job.get("to_chat_2", None)
-        to_thread_2  = job.get("to_thread_id_2", None)
-        max_size_mb  = int(job.get("max_size_mb", 0) or 0)
-        max_dur_secs = int(job.get("max_duration_secs", 0) or 0)
-        last_seen    = job.get("last_seen_id", 0)
+        if seen == 0:
+            seen = await _get_latest_id(client, fc, is_bot)
+            await _update_job(job_id, last_seen_id=seen)
 
-        # ── First-run init: snapshot latest ID ────────────────────────────
-        if last_seen == 0:
-            last_seen = await _get_latest_id(client, from_chat, is_bot)
-            await _update_job(job_id, last_seen_id=last_seen)
-            logger.info(f"[Job {job_id}] Initialised at msg ID {last_seen}")
-
-        # ── BATCH PHASE ────────────────────────────────────────────────────
+        # ── Batch phase ────────────────────────────────────────────────────
         if job.get("batch_mode") and not job.get("batch_done"):
-            batch_cursor = int(job.get("batch_cursor") or job.get("batch_start_id") or 1)
-            batch_end    = int(job.get("batch_end_id") or 0)
+            cur     = int(job.get("batch_cursor") or job.get("batch_start_id") or 1)
+            bend    = int(job.get("batch_end_id") or 0)
+            if bend == 0:
+                bend = seen
+                await _update_job(job_id, batch_end_id=bend)
 
-            # If no explicit end was set, use the snapshot we just captured
-            if batch_end == 0:
-                batch_end = last_seen
-                await _update_job(job_id, batch_end_id=batch_end)
-
-            logger.info(f"[Job {job_id}] Batch phase: msg {batch_cursor} → {batch_end}")
-
-            while batch_cursor <= batch_end:
+            while cur <= bend:
                 fresh = await _get_job(job_id)
-                if not fresh or fresh.get("status") != "running":
-                    return
+                if not fresh or fresh.get("status") != "running": return
 
-                disabled_types = await db.get_filters(user_id)
-                configs        = await db.get_configs(user_id)
-                remove_caption = 'rm_caption' in disabled_types
-                sleep_secs     = max(1, int(configs.get('duration', 1) or 1))
+                dis    = await db.get_filters(user_id)
+                cfg    = await db.get_configs(user_id)
+                rm_cap = 'rm_caption' in dis
+                slp    = max(1, int(cfg.get('duration', 1) or 1))
 
-                chunk_end = min(batch_cursor + BATCH_CHUNK - 1, batch_end)
-                batch_ids = list(range(batch_cursor, chunk_end + 1))
+                chunk_end = min(cur + BATCH_CHUNK - 1, bend)
+                ids = list(range(cur, chunk_end + 1))
 
                 try:
-                    msgs = await client.get_messages(from_chat, batch_ids)
+                    msgs = await client.get_messages(fc, ids)
                     if not isinstance(msgs, list): msgs = [msgs]
-                except FloodWait as fw:
-                    await asyncio.sleep(fw.value + 2)
-                    continue
-                except asyncio.CancelledError:
-                    raise
+                except FloodWait as fw: await asyncio.sleep(fw.value + 2); continue
+                except asyncio.CancelledError: raise
                 except Exception as e:
-                    logger.warning(f"[Job {job_id}] Batch fetch error: {e}")
-                    batch_cursor += BATCH_CHUNK
-                    await _update_job(job_id, batch_cursor=batch_cursor)
-                    continue
+                    logger.warning(f"[Job {job_id}] Batch fetch: {e}")
+                    cur += BATCH_CHUNK; await _update_job(job_id, batch_cursor=cur); continue
 
-                valid = [m for m in msgs if m and not m.empty and not m.service]
-                valid.sort(key=lambda m: m.id)
-
-                fwd_count = 0
+                valid = sorted([m for m in msgs if m and not m.empty and not m.service], key=lambda m: m.id)
+                fwd_n = 0
                 for msg in valid:
-                    # Re-check stop between every message
-                    fresh2 = await _get_job(job_id)
-                    if not fresh2 or fresh2.get("status") != "running":
-                        return
-
-                    if not _passes_filters(msg, disabled_types):
-                        continue
-                    if not _passes_size_limit(msg, max_size_mb, max_dur_secs):
-                        logger.debug(f"[Job {job_id}] Batch: skipping msg {msg.id} (size/duration limit)")
-                        continue
-
+                    f2 = await _get_job(job_id)
+                    if not f2 or f2.get("status") != "running": return
+                    if not _passes_filters(msg, dis): continue
+                    if not _passes_size(msg, max_mb, max_sec): continue
                     try:
-                        await _forward_message(client, msg, to_chat, remove_caption,
-                                               to_thread, to_chat_2, to_thread_2)
-                        fwd_count += 1
-                    except FloodWait as fw:
-                        await asyncio.sleep(fw.value + 1)
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception as e:
-                        logger.debug(f"[Job {job_id}] Batch fwd error for {msg.id}: {e}")
+                        await _forward_message(client, msg, to1, th1, rm_cap, to2, th2)
+                        fwd_n += 1
+                    except FloodWait as fw: await asyncio.sleep(fw.value + 1)
+                    except asyncio.CancelledError: raise
+                    except Exception as e: logger.debug(f"[Job {job_id}] Batch fwd {msg.id}: {e}")
+                    await asyncio.sleep(slp)
 
-                    await asyncio.sleep(sleep_secs)
+                cur = chunk_end + 1
+                await _update_job(job_id, batch_cursor=cur)
+                if fwd_n: await _inc_forwarded(job_id, fwd_n)
 
-                batch_cursor = chunk_end + 1
-                await _update_job(job_id, batch_cursor=batch_cursor)
-                if fwd_count > 0:
-                    await _inc_forwarded(job_id, fwd_count)
+            await _update_job(job_id, batch_done=True, batch_cursor=bend,
+                              last_seen_id=max(seen, bend))
+            seen = max(seen, bend)
+            logger.info(f"[Job {job_id}] Batch complete → live mode")
 
-            # Batch complete — mark done, advance last_seen past the batch
-            await _update_job(job_id, batch_done=True, batch_cursor=batch_end,
-                              last_seen_id=max(last_seen, batch_end))
-            last_seen = max(last_seen, batch_end)
-            logger.info(f"[Job {job_id}] Batch phase complete. Switching to live mode.")
-
-        # ── LIVE PHASE ─────────────────────────────────────────────────────
-        logger.info(f"[Job {job_id}] Live polling started. last_seen={last_seen}")
-
+        # ── Live phase ─────────────────────────────────────────────────────
         while True:
             fresh = await _get_job(job_id)
-            if not fresh or fresh.get("status") != "running":
-                break
+            if not fresh or fresh.get("status") != "running": break
 
-            disabled_types: list = await db.get_filters(user_id)
-            configs        = await db.get_configs(user_id)
-            remove_caption = 'rm_caption' in disabled_types
-
-            new_msgs: list = []
+            dis    = await db.get_filters(user_id)
+            cfg    = await db.get_configs(user_id)
+            rm_cap = 'rm_caption' in dis
+            new: list = []
 
             try:
                 if not is_bot:
-                    collected = []
-                    async for msg in client.get_chat_history(from_chat, limit=50):
-                        if msg.id <= last_seen:
-                            break
-                        collected.append(msg)
-                    new_msgs = list(reversed(collected))
+                    col = []
+                    async for msg in client.get_chat_history(fc, limit=50):
+                        if msg.id <= seen: break
+                        col.append(msg)
+                    new = list(reversed(col))
                 else:
-                    probe = last_seen + 1
+                    probe = seen + 1
                     while True:
-                        batch_ids = list(range(probe, probe + 50))
-                        try:
-                            msgs = await client.get_messages(from_chat, batch_ids)
-                        except FloodWait as fw:
-                            await asyncio.sleep(fw.value + 1)
-                            continue
-                        except Exception:
-                            break
-                        if not isinstance(msgs, list):
-                            msgs = [msgs]
-                        valid = [m for m in msgs if m and not m.empty and not m.service]
-                        if not valid:
-                            break
-                        valid.sort(key=lambda m: m.id)
-                        new_msgs.extend(valid)
-                        probe = valid[-1].id + 1
-                        if len(valid) < 49:
-                            break
-
-            except FloodWait as fw:
-                await asyncio.sleep(fw.value + 1)
-                continue
-            except asyncio.CancelledError:
-                raise
+                        bids = list(range(probe, probe + 50))
+                        try: msgs = await client.get_messages(fc, bids)
+                        except FloodWait as fw: await asyncio.sleep(fw.value + 1); continue
+                        except Exception: break
+                        if not isinstance(msgs, list): msgs = [msgs]
+                        v = [m for m in msgs if m and not m.empty and not m.service]
+                        if not v: break
+                        v.sort(key=lambda m: m.id)
+                        new.extend(v)
+                        probe = v[-1].id + 1
+                        if len(v) < 49: break
+            except FloodWait as fw: await asyncio.sleep(fw.value + 1); continue
+            except asyncio.CancelledError: raise
             except Exception as e:
-                logger.warning(f"[Job {job_id}] Fetch error: {e}")
-                await asyncio.sleep(15)
-                continue
+                logger.warning(f"[Job {job_id}] Fetch: {e}"); await asyncio.sleep(15); continue
 
-            fwd_count = 0
-            for msg in new_msgs:
-                if not _passes_filters(msg, disabled_types):
-                    last_seen = max(last_seen, msg.id)
-                    continue
-                if not _passes_size_limit(msg, max_size_mb, max_dur_secs):
-                    logger.debug(f"[Job {job_id}] Live: skipping msg {msg.id} (size/duration limit)")
-                    last_seen = max(last_seen, msg.id)
-                    continue
+            fwd_n = 0
+            for msg in new:
+                if not _passes_filters(msg, dis):
+                    seen = max(seen, msg.id); continue
+                if not _passes_size(msg, max_mb, max_sec):
+                    seen = max(seen, msg.id); continue
                 try:
-                    await _forward_message(client, msg, to_chat, remove_caption,
-                                           to_thread, to_chat_2, to_thread_2)
-                    fwd_count += 1
-                except FloodWait as fw:
-                    await asyncio.sleep(fw.value + 1)
-                except asyncio.CancelledError:
-                    raise
-                except Exception as e:
-                    logger.debug(f"[Job {job_id}] Forward error: {e}")
-                last_seen = max(last_seen, msg.id)
+                    await _forward_message(client, msg, to1, th1, rm_cap, to2, th2)
+                    fwd_n += 1
+                except FloodWait as fw: await asyncio.sleep(fw.value + 1)
+                except asyncio.CancelledError: raise
+                except Exception as e: logger.debug(f"[Job {job_id}] Live fwd: {e}")
+                seen = max(seen, msg.id)
                 await asyncio.sleep(1)
 
-            if new_msgs:
-                await _update_job(job_id, last_seen_id=last_seen)
-            if fwd_count > 0:
-                await _inc_forwarded(job_id, fwd_count)
+            if new: await _update_job(job_id, last_seen_id=seen)
+            if fwd_n: await _inc_forwarded(job_id, fwd_n)
+            await asyncio.sleep(max(5, cfg.get("duration", 5) or 5))
 
-            sleep_secs = configs.get("duration", 5) or 5
-            await asyncio.sleep(max(5, sleep_secs))
-
-    except asyncio.CancelledError:
-        logger.info(f"[Job {job_id}] Cancelled")
+    except asyncio.CancelledError: logger.info(f"[Job {job_id}] Cancelled")
     except Exception as e:
         logger.error(f"[Job {job_id}] Fatal: {e}")
         await _update_job(job_id, status="error", error=str(e))
     finally:
         _job_tasks.pop(job_id, None)
         if client:
-            try:
-                await client.stop()
-            except Exception:
-                pass
+            try: await client.stop()
+            except Exception: pass
 
 
 def _start_job_task(job_id: str, user_id: int) -> asyncio.Task:
-    task = asyncio.create_task(_run_job(job_id, user_id))
-    _job_tasks[job_id] = task
-    return task
+    t = asyncio.create_task(_run_job(job_id, user_id))
+    _job_tasks[job_id] = t
+    return t
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Resume all running jobs on bot restart
-# ══════════════════════════════════════════════════════════════════════════════
 
 async def resume_live_jobs(user_id: int = None):
-    query: dict = {"status": "running"}
-    if user_id:
-        query["user_id"] = user_id
-    async for job in db.db.jobs.find(query):
-        jid = job["job_id"]
-        uid = job["user_id"]
+    q: dict = {"status": "running"}
+    if user_id: q["user_id"] = user_id
+    async for job in db.db.jobs.find(q):
+        jid, uid = job["job_id"], job["user_id"]
         if jid not in _job_tasks:
             _start_job_task(jid, uid)
-            logger.info(f"[Jobs] Resumed job {jid} for user {uid}")
+            logger.info(f"[Jobs] Resumed {jid} for {uid}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# UI helpers
+# UI — render list
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _status_emoji(status: str) -> str:
-    return {"running": "🟢", "stopped": "🔴", "error": "⚠️"}.get(status, "❓")
-
-
-def _batch_progress(job: dict) -> str:
-    """Show batch progress line if batch mode is on and not yet finished."""
-    if not job.get("batch_mode"):
-        return ""
-    if job.get("batch_done"):
-        return "  📦✅"
-    cursor  = job.get("batch_cursor") or job.get("batch_start_id") or "?"
-    end_id  = job.get("batch_end_id") or "?"
-    return f"  📦{cursor}/{end_id}"
-
-
-async def _render_jobs_list(bot, user_id: int, message_or_query):
-    jobs = await _list_jobs(user_id)
-    is_cb = hasattr(message_or_query, "message")
+async def _render_jobs_list(bot, user_id: int, mq):
+    jobs  = await _list_jobs(user_id)
+    is_cb = hasattr(mq, "message")
 
     if not jobs:
-        text = (
-            "<b>📋 Live Jobs</b>\n\n"
-            "<i>No jobs yet. A Live Job continuously watches a source chat\n"
-            "and forwards new messages to your target — running in the background.\n\n"
-            "✅ Batch mode: copy old messages first, then watch live\n"
-            "✅ Dual destinations: send to 2 channels simultaneously\n"
-            "✅ Per-job size limit\n\n"
-            "👇 Create your first job below!</i>"
+        text = _box(
+            "📋 ʟɪᴠᴇ ᴊᴏʙs",
+            [
+                "ɴᴏ ᴊᴏʙs ʏᴇᴛ.",
+                "‣ ᴀᴜᴛᴏ-ғᴏʀᴡᴀʀᴅs ɴᴇᴡ ᴍsɢs ɪɴ ʙᴀᴄᴋɢʀᴏᴜɴᴅ",
+                "‣ ʙᴀᴛᴄʜ ᴍᴏᴅᴇ: ᴄᴏᴘʏ ᴏʟᴅ ᴍsɢs ғɪʀsᴛ",
+                "‣ ᴅᴜᴀʟ ᴅᴇsᴛɪɴᴀᴛɪᴏɴs sᴜᴘᴘᴏʀᴛᴇᴅ",
+                "‣ ᴘᴇʀ-ᴊᴏʙ sɪᴢᴇ / ᴅᴜʀᴀᴛɪᴏɴ ʟɪᴍɪᴛ",
+            ]
         )
         btns = InlineKeyboardMarkup([[
-            InlineKeyboardButton("➕ Create New Job", callback_data="job#new")
+            InlineKeyboardButton("➕ ᴄʀᴇᴀᴛᴇ ɴᴇᴡ ᴊᴏʙ", callback_data="job#new")
         ]])
     else:
-        lines = ["<b>📋 Your Live Jobs</b>\n"]
+        lines = ["<b>╭──────❰ 📋 ʟɪᴠᴇ ᴊᴏʙs ❱──────╮</b>\n┃"]
         for j in jobs:
-            st  = _status_emoji(j.get("status", "stopped"))
+            st  = _st(j.get("status", "stopped"))
             fwd = j.get("forwarded", 0)
-            err = f" <code>[{j.get('error','')}]</code>" if j.get("status") == "error" else ""
-            bp  = _batch_progress(j)
-            dest2 = f" + {j.get('to_title_2','?')}" if j.get("to_chat_2") else ""
+            bp  = _batch_tag(j)
+            d2  = f" ＋ {j.get('to_title_2','?')}" if j.get("to_chat_2") else ""
+            err = f"\n┃  ⚠️ <code>{j.get('error','')}</code>" if j.get("status") == "error" else ""
             lines.append(
-                f"{st} <b>{j.get('from_title','?')} → {j.get('to_title','?')}{dest2}</b>"
-                f"  <code>[{j['job_id'][-6:]}]</code>  ✅{fwd}{bp}{err}"
+                f"┣⊸ {st} <b>{j.get('from_title','?')} → {j.get('to_title','?')}{d2}</b>"
+                f"  <code>[{j['job_id'][-6:]}]</code>"
+                f"\n┃   ◈ 𝐅𝐨𝐫𝐰𝐚𝐫𝐝𝐞𝐝: <code>{fwd}</code>{bp}{err}"
             )
+        lines.append("┃\n<b>╰────────────────────────────────╯</b>")
         text = "\n".join(lines)
 
-        btns_list = []
+        rows = []
         for j in jobs:
             st  = j.get("status", "stopped")
             jid = j["job_id"]
-            short = jid[-6:]
+            s   = jid[-6:]
             row = []
             if st == "running":
-                row.append(InlineKeyboardButton(f"⏹ Stop [{short}]", callback_data=f"job#stop#{jid}"))
+                row.append(InlineKeyboardButton(f"⏹ sᴛᴏᴘ [{s}]",  callback_data=f"job#stop#{jid}"))
             else:
-                row.append(InlineKeyboardButton(f"▶️ Start [{short}]", callback_data=f"job#start#{jid}"))
-            row.append(InlineKeyboardButton(f"ℹ️ [{short}]", callback_data=f"job#info#{jid}"))
-            row.append(InlineKeyboardButton(f"🗑 [{short}]",  callback_data=f"job#del#{jid}"))
-            btns_list.append(row)
-
-        btns_list.append([InlineKeyboardButton("➕ Create New Job", callback_data="job#new")])
-        btns_list.append([InlineKeyboardButton("🔄 Refresh",        callback_data="job#list")])
-        btns = InlineKeyboardMarkup(btns_list)
+                row.append(InlineKeyboardButton(f"▶️ sᴛᴀʀᴛ [{s}]", callback_data=f"job#start#{jid}"))
+            row.append(InlineKeyboardButton(f"ℹ️ [{s}]", callback_data=f"job#info#{jid}"))
+            row.append(InlineKeyboardButton(f"🗑 [{s}]",  callback_data=f"job#del#{jid}"))
+            rows.append(row)
+        rows.append([InlineKeyboardButton("➕ ᴄʀᴇᴀᴛᴇ ɴᴇᴡ ᴊᴏʙ", callback_data="job#new")])
+        rows.append([InlineKeyboardButton("🔄 ʀᴇғʀᴇsʜ",         callback_data="job#list")])
+        btns = InlineKeyboardMarkup(rows)
 
     try:
         if is_cb:
-            await message_or_query.message.edit_text(text, reply_markup=btns)
+            await mq.message.edit_text(text, reply_markup=btns)
         else:
-            await message_or_query.reply_text(text, reply_markup=btns)
+            await mq.reply_text(text, reply_markup=btns)
     except Exception:
         pass
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# /jobs command
+# Commands
 # ══════════════════════════════════════════════════════════════════════════════
 
 @Client.on_message(filters.private & filters.command("jobs"))
-async def jobs_cmd(bot, message):
-    await _render_jobs_list(bot, message.from_user.id, message)
+async def jobs_cmd(bot, msg):
+    await _render_jobs_list(bot, msg.from_user.id, msg)
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Callbacks
-# ══════════════════════════════════════════════════════════════════════════════
 
 @Client.on_callback_query(filters.regex(r'^job#list$'))
-async def job_list_cb(bot, query):
-    await _render_jobs_list(bot, query.from_user.id, query)
+async def job_list_cb(bot, q):
+    await _render_jobs_list(bot, q.from_user.id, q)
 
 
 @Client.on_callback_query(filters.regex(r'^job#info#'))
@@ -513,384 +415,342 @@ async def job_info_cb(bot, query):
     job_id = query.data.split("#", 2)[2]
     job = await _get_job(job_id)
     if not job:
-        return await query.answer("Job not found!", show_alert=True)
+        return await query.answer("ᴊᴏʙ ɴᴏᴛ ғᴏᴜɴᴅ!", show_alert=True)
 
     import datetime
-    created   = datetime.datetime.fromtimestamp(job.get("created", 0)).strftime("%d %b %Y %H:%M")
-    st        = _status_emoji(job.get("status", "stopped"))
-    thread_id = job.get("to_thread_id")
-    topic_lbl = f"\n<b>Topic Thread:</b> <code>{thread_id}</code>" if thread_id else ""
-
-    dest2_lbl = ""
+    created  = datetime.datetime.fromtimestamp(job.get("created", 0)).strftime("%d %b %Y · %H:%M")
+    st       = _st(job.get("status", "stopped"))
+    th1      = job.get("to_thread_id")
+    t1_lbl   = f" [ᴛʜʀᴇᴀᴅ {th1}]" if th1 else ""
+    d2_lbl   = ""
     if job.get("to_chat_2"):
-        t2 = job.get("to_thread_id_2")
-        tp2 = f" [Thread {t2}]" if t2 else ""
-        dest2_lbl = f"\n<b>Dest 2:</b> {job.get('to_title_2','?')}{tp2}"
+        th2   = job.get("to_thread_id_2")
+        d2_lbl = f"\n┣⊸ ◈ 𝐃𝐞𝐬𝐭 𝟐  : {job.get('to_title_2','?')}" + (f" [ᴛʜʀᴇᴀᴅ {th2}]" if th2 else "")
 
-    # Batch info
     batch_lbl = ""
     if job.get("batch_mode"):
         if job.get("batch_done"):
-            batch_lbl = "\n<b>Batch:</b> ✅ Complete"
+            batch_lbl = "\n┣⊸ ◈ 𝐁𝐚𝐭𝐜𝐡   : ✅ ᴄᴏᴍᴘʟᴇᴛᴇ"
         else:
             cur = job.get("batch_cursor") or job.get("batch_start_id") or "?"
-            end = job.get("batch_end_id") or "calculating..."
-            batch_lbl = f"\n<b>Batch:</b> 📦 {cur} / {end}"
+            end = job.get("batch_end_id") or "…"
+            batch_lbl = f"\n┣⊸ ◈ 𝐁𝐚𝐭𝐜𝐡   : 📦 <code>{cur}</code> / <code>{end}</code>"
 
-    # Size limit info
     size_lbl = ""
     if job.get("max_size_mb"):
-        size_lbl += f"\n<b>Max file size:</b> {job['max_size_mb']} MB"
+        size_lbl += f"\n┣⊸ ◈ 𝐌𝐚𝐱 𝐒𝐳   : <code>{job['max_size_mb']} ᴍʙ</code>"
     if job.get("max_duration_secs"):
-        mins = job['max_duration_secs'] // 60
-        secs = job['max_duration_secs'] % 60
-        size_lbl += f"\n<b>Max duration:</b> {mins}m {secs}s"
+        m, s = divmod(job['max_duration_secs'], 60)
+        size_lbl += f"\n┣⊸ ◈ 𝐌𝐚𝐱 𝐃𝐮𝐫  : <code>{m}ᴍ {s}s</code>"
+
+    err_lbl = f"\n┣⊸ ⚠️ ᴇʀʀᴏʀ: <code>{job['error']}</code>" if job.get("error") else ""
 
     text = (
-        f"<b>📋 Job Info</b>\n\n"
-        f"<b>ID:</b> <code>{job_id[-6:]}</code>\n"
-        f"<b>Status:</b> {st} {job.get('status','?')}\n"
-        f"<b>Source:</b> {job.get('from_title','?')}\n"
-        f"<b>Dest 1:</b> {job.get('to_title','?')}{topic_lbl}"
-        f"{dest2_lbl}{batch_lbl}{size_lbl}\n"
-        f"<b>Forwarded:</b> {job.get('forwarded', 0)}\n"
-        f"<b>Last Msg ID:</b> {job.get('last_seen_id', 0)}\n"
-        f"<b>Created:</b> {created}\n"
+        f"<b>╭──────❰ 📋 ʟɪᴠᴇ ᴊᴏʙ ɪɴғᴏ ❱──────╮\n"
+        f"┃\n"
+        f"┣⊸ ◈ 𝐈𝐃      : <code>{job_id[-6:]}</code>\n"
+        f"┣⊸ ◈ 𝐒𝐭𝐚𝐭𝐮𝐬  : {st} {job.get('status','?')}\n"
+        f"┣⊸ ◈ 𝐒𝐨𝐮𝐫𝐜𝐞  : {job.get('from_title','?')}\n"
+        f"┣⊸ ◈ 𝐃𝐞𝐬𝐭 𝟏  : {job.get('to_title','?')}{t1_lbl}"
+        f"{d2_lbl}{batch_lbl}{size_lbl}\n"
+        f"┣⊸ ◈ 𝐅𝐰𝐝     : <code>{job.get('forwarded', 0)}</code>\n"
+        f"┣⊸ ◈ 𝐋𝐚𝐬𝐭 𝐈𝐃 : <code>{job.get('last_seen_id', 0)}</code>\n"
+        f"┣⊸ ◈ 𝐂𝐫𝐞𝐚𝐭𝐞𝐝 : {created}"
+        f"{err_lbl}\n"
+        f"┃\n"
+        f"╰────────────────────────────────╯</b>"
     )
-    if job.get("error"):
-        text += f"\n<b>⚠️ Error:</b> <code>{job['error']}</code>"
-
     await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup([[
-        InlineKeyboardButton("↩ Back", callback_data="job#list")
+        InlineKeyboardButton("↩ ʙᴀᴄᴋ", callback_data="job#list")
     ]]))
 
 
 @Client.on_callback_query(filters.regex(r'^job#stop#'))
-async def job_stop_cb(bot, query):
-    job_id  = query.data.split("#", 2)[2]
-    user_id = query.from_user.id
+async def job_stop_cb(bot, q):
+    job_id, uid = q.data.split("#", 2)[2], q.from_user.id
     job = await _get_job(job_id)
-    if not job or job.get("user_id") != user_id:
-        return await query.answer("⛔ Unauthorized.", show_alert=True)
-    task = _job_tasks.pop(job_id, None)
-    if task and not task.done():
-        task.cancel()
+    if not job or job.get("user_id") != uid:
+        return await q.answer("⛔ ᴜɴᴀᴜᴛʜᴏʀɪᴢᴇᴅ.", show_alert=True)
+    t = _job_tasks.pop(job_id, None)
+    if t and not t.done(): t.cancel()
     await _update_job(job_id, status="stopped")
-    await query.answer("⏹ Job stopped.", show_alert=False)
-    await _render_jobs_list(bot, user_id, query)
+    await q.answer("⏹ ᴊᴏʙ sᴛᴏᴘᴘᴇᴅ.")
+    await _render_jobs_list(bot, uid, q)
 
 
 @Client.on_callback_query(filters.regex(r'^job#start#'))
-async def job_start_cb(bot, query):
-    job_id  = query.data.split("#", 2)[2]
-    user_id = query.from_user.id
+async def job_start_cb(bot, q):
+    job_id, uid = q.data.split("#", 2)[2], q.from_user.id
     job = await _get_job(job_id)
-    if not job or job.get("user_id") != user_id:
-        return await query.answer("⛔ Unauthorized.", show_alert=True)
+    if not job or job.get("user_id") != uid:
+        return await q.answer("⛔ ᴜɴᴀᴜᴛʜᴏʀɪᴢᴇᴅ.", show_alert=True)
     if job_id in _job_tasks and not _job_tasks[job_id].done():
-        return await query.answer("Already running!", show_alert=True)
+        return await q.answer("ᴀʟʀᴇᴀᴅʏ ʀᴜɴɴɪɴɢ!", show_alert=True)
     await _update_job(job_id, status="running")
-    _start_job_task(job_id, user_id)
-    await query.answer("▶️ Job started.", show_alert=False)
-    await _render_jobs_list(bot, user_id, query)
+    _start_job_task(job_id, uid)
+    await q.answer("▶️ ᴊᴏʙ sᴛᴀʀᴛᴇᴅ.")
+    await _render_jobs_list(bot, uid, q)
 
 
 @Client.on_callback_query(filters.regex(r'^job#del#'))
-async def job_del_cb(bot, query):
-    job_id  = query.data.split("#", 2)[2]
-    user_id = query.from_user.id
+async def job_del_cb(bot, q):
+    job_id, uid = q.data.split("#", 2)[2], q.from_user.id
     job = await _get_job(job_id)
-    if not job or job.get("user_id") != user_id:
-        return await query.answer("⛔ Unauthorized.", show_alert=True)
-    task = _job_tasks.pop(job_id, None)
-    if task and not task.done():
-        task.cancel()
+    if not job or job.get("user_id") != uid:
+        return await q.answer("⛔ ᴜɴᴀᴜᴛʜᴏʀɪᴢᴇᴅ.", show_alert=True)
+    t = _job_tasks.pop(job_id, None)
+    if t and not t.done(): t.cancel()
     await _delete_job_db(job_id)
-    await query.answer("🗑 Job deleted.", show_alert=False)
-    await _render_jobs_list(bot, user_id, query)
+    await q.answer("🗑 ᴊᴏʙ ᴅᴇʟᴇᴛᴇᴅ.")
+    await _render_jobs_list(bot, uid, q)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Create Job — Interactive flow
+# Create-job flow
 # ══════════════════════════════════════════════════════════════════════════════
 
 @Client.on_callback_query(filters.regex(r'^job#new$'))
-async def job_new_cb(bot, query):
-    user_id = query.from_user.id
-    await query.message.delete()
-    await _create_job_flow(bot, user_id)
+async def job_new_cb(bot, q):
+    await q.message.delete()
+    await _create_job_flow(bot, q.from_user.id)
 
 
 @Client.on_message(filters.private & filters.command("newjob"))
-async def newjob_cmd(bot, message):
-    await _create_job_flow(bot, message.from_user.id)
+async def newjob_cmd(bot, msg):
+    await _create_job_flow(bot, msg.from_user.id)
 
 
-async def _ask_dest(bot, user_id: int, channels: list, step_label: str, optional: bool = False) -> tuple:
-    """Helper: ask user to pick a channel from their saved list. Returns (chat_id, title) or (None,None)."""
+async def _pick_channel(bot, uid: int, channels: list, prompt: str, optional=False):
+    """Ask user to pick a target channel. Returns (chat_id, title, cancelled)."""
     btns = [[KeyboardButton(ch['title'])] for ch in channels]
     if optional:
-        btns.append([KeyboardButton("⏭ Skip (no second destination)")])
+        btns.append([KeyboardButton("⏭ sᴋɪᴘ (ɴᴏ sᴇᴄᴏɴᴅ ᴅᴇsᴛ)")])
     btns.append([KeyboardButton("/cancel")])
-
-    resp = await bot.ask(user_id, step_label,
-                         reply_markup=ReplyKeyboardMarkup(btns, resize_keyboard=True, one_time_keyboard=True))
-
-    txt = resp.text.strip()
+    r = await bot.ask(uid, prompt, reply_markup=ReplyKeyboardMarkup(btns, resize_keyboard=True, one_time_keyboard=True))
+    txt = r.text.strip()
     if "/cancel" in txt:
-        await resp.reply("<b>Cancelled.</b>", reply_markup=ReplyKeyboardRemove())
-        return None, None, True   # cancelled=True
-
+        await r.reply("<b>╭──────❰ ❌ ᴄᴀɴᴄᴇʟʟᴇᴅ ❱──────╮\n┃\n╰────────────────────────────────╯</b>",
+                      reply_markup=ReplyKeyboardRemove())
+        return None, None, True
     if optional and "skip" in txt.lower():
-        return None, None, False  # skipped, not cancelled
-
+        return None, None, False
     for ch in channels:
         if ch['title'] == txt:
             return ch['chat_id'], ch['title'], False
-
     return None, None, False
 
 
-async def _ask_topic(bot, user_id: int, dest_label: str) -> int | None:
-    """Ask for optional topic thread ID. Returns int or None."""
-    r = await bot.ask(user_id,
-        f"<b>Topic Thread for {dest_label} (Optional)</b>\n\n"
-        "• Send the <b>Thread ID</b> if you want to post inside a specific group topic\n"
-        "• Send <b>0</b> or press 'No Topic' to post in the main chat\n\n"
-        "<i>Find Thread ID: open the topic in Telegram Web → number after <code>/topics/</code> in URL</i>",
+async def _pick_topic(bot, uid: int, label: str):
+    """Ask for an optional topic thread ID."""
+    r = await bot.ask(uid,
+        f"<b>╭──────❰ 💬 ᴛᴏᴘɪᴄ ᴛʜʀᴇᴀᴅ — {label} ❱──────╮\n"
+        f"┃\n"
+        f"┣⊸ sᴇɴᴅ ᴛʜʀᴇᴀᴅ ɪᴅ ᴛᴏ ᴘᴏsᴛ ɪɴᴛᴏ ᴀ ᴛᴏᴘɪᴄ\n"
+        f"┣⊸ sᴇɴᴅ 0 ᴛᴏ ᴘᴏsᴛ ɪɴ ᴍᴀɪɴ ᴄʜᴀᴛ\n"
+        f"┃\n"
+        f"╰────────────────────────────────╯</b>",
         reply_markup=ReplyKeyboardMarkup(
-            [[KeyboardButton("0 (No Topic)")], [KeyboardButton("/cancel")]],
+            [[KeyboardButton("0 (ɴᴏ ᴛᴏᴘɪᴄ)")], [KeyboardButton("/cancel")]],
             resize_keyboard=True, one_time_keyboard=True
         ))
     t = r.text.strip()
-    if "/cancel" in t:
-        return None
-    if t.isdigit() and int(t) > 0:
-        return int(t)
-    return None
+    if "/cancel" in t: return None
+    return int(t) if t.isdigit() and int(t) > 0 else None
 
 
-async def _create_job_flow(bot, user_id: int):
-    # ── Step 1: Account ─────────────────────────────────────────────────────
-    accounts = await db.get_bots(user_id)
+async def _create_job_flow(bot, uid: int):
+    # Step 1 — Account
+    accounts = await db.get_bots(uid)
     if not accounts:
-        return await bot.send_message(user_id,
-            "<b>❌ No accounts. Add one in /settings → Accounts first.</b>")
+        return await bot.send_message(uid,
+            "<b>╭──────❰ ❌ ɴᴏ ᴀᴄᴄᴏᴜɴᴛs ❱──────╮\n"
+            "┃\n┣⊸ ᴀᴅᴅ ᴏɴᴇ ɪɴ /settings → ⚙️ Accounts\n"
+            "┃\n╰────────────────────────────────╯</b>")
 
     acc_btns = [[KeyboardButton(
-        f"{'🤖 Bot' if a.get('is_bot', True) else '👤 Userbot'}: "
+        f"{'🤖 ʙᴏᴛ' if a.get('is_bot', True) else '👤 ᴜsᴇʀʙᴏᴛ'}: "
         f"{a.get('username') or a.get('name', 'Unknown')} [{a['id']}]"
     )] for a in accounts]
     acc_btns.append([KeyboardButton("/cancel")])
 
-    acc_r = await bot.ask(user_id,
-        "<b>📋 Create Live Job — Step 1/6</b>\n\n"
-        "Choose which account to use:\n"
-        "<i>(Userbot required for private chats)</i>",
+    acc_r = await bot.ask(uid,
+        "<b>╭──────❰ 📋 ᴄʀᴇᴀᴛᴇ ʟɪᴠᴇ ᴊᴏʙ — sᴛᴇᴘ 1/6 ❱──────╮\n"
+        "┃\n┣⊸ ᴄʜᴏᴏsᴇ ᴡʜɪᴄʜ ᴀᴄᴄᴏᴜɴᴛ ᴛᴏ ᴜsᴇ\n"
+        "┣⊸ ᴜsᴇʀʙᴏᴛ ʀᴇqᴜɪʀᴇᴅ ғᴏʀ ᴘʀɪᴠᴀᴛᴇ ᴄʜᴀᴛs\n"
+        "┃\n╰────────────────────────────────╯</b>",
         reply_markup=ReplyKeyboardMarkup(acc_btns, resize_keyboard=True, one_time_keyboard=True))
 
     if "/cancel" in acc_r.text:
-        return await acc_r.reply("<b>Cancelled.</b>", reply_markup=ReplyKeyboardRemove())
+        return await acc_r.reply(
+            "<b>╭──────❰ ❌ ᴄᴀɴᴄᴇʟʟᴇᴅ ❱──────╮\n┃\n╰────────────────────────────────╯</b>",
+            reply_markup=ReplyKeyboardRemove())
 
     acc_id = None
     if "[" in acc_r.text and "]" in acc_r.text:
         try: acc_id = int(acc_r.text.split('[')[-1].split(']')[0])
         except Exception: pass
-    sel_acc = (await db.get_bot(user_id, acc_id)) if acc_id else accounts[0]
-    is_bot  = sel_acc.get("is_bot", True)
+    sel  = (await db.get_bot(uid, acc_id)) if acc_id else accounts[0]
+    ibot = sel.get("is_bot", True)
 
-    # ── Step 2: Source ───────────────────────────────────────────────────────
-    src_r = await bot.ask(user_id,
-        "<b>Step 2/6 — Source Chat</b>\n\n"
-        "Send one of:\n"
-        "• <code>@username</code> or channel link\n"
-        "• Numeric ID (e.g. <code>-1001234567890</code>)\n"
-        "• <code>me</code> for Saved Messages (userbot only)\n\n"
-        "/cancel to abort",
+    # Step 2 — Source
+    src_r = await bot.ask(uid,
+        "<b>╭──────❰ 📋 sᴛᴇᴘ 2/6 — sᴏᴜʀᴄᴇ ᴄʜᴀᴛ ❱──────╮\n"
+        "┃\n┣⊸ @ᴜsᴇʀɴᴀᴍᴇ ᴏʀ ᴄʜᴀɴɴᴇʟ ʟɪɴᴋ\n"
+        "┣⊸ ɴᴜᴍᴇʀɪᴄ ɪᴅ  ᴇ.ɢ. -1001234567890\n"
+        "┣⊸ me ᴏʀ saved — sᴀᴠᴇᴅ ᴍᴇssᴀɢᴇs (ᴜsᴇʀʙᴏᴛ ᴏɴʟʏ)\n"
+        "┃\n╰────────────────────────────────╯</b>",
         reply_markup=ReplyKeyboardRemove())
 
     if src_r.text.strip().startswith("/cancel"):
-        return await src_r.reply("<b>Cancelled.</b>")
+        return await src_r.reply(
+            "<b>╭──────❰ ❌ ᴄᴀɴᴄᴇʟʟᴇᴅ ❱──────╮\n┃\n╰────────────────────────────────╯</b>")
 
-    from_chat_raw = src_r.text.strip()
-    if from_chat_raw.lower() in ("me", "saved"):
-        if is_bot:
-            return await src_r.reply("<b>❌ Saved Messages require a Userbot account.</b>")
-        from_chat  = "me"
-        from_title = "Saved Messages"
+    raw = src_r.text.strip()
+    if raw.lower() in ("me", "saved"):
+        if ibot:
+            return await src_r.reply(
+                "<b>❌ sᴀᴠᴇᴅ ᴍᴇssᴀɢᴇs ʀᴇqᴜɪʀᴇs ᴀ ᴜsᴇʀʙᴏᴛ ᴀᴄᴄᴏᴜɴᴛ.</b>")
+        fc, ftitle = "me", "sᴀᴠᴇᴅ ᴍᴇssᴀɢᴇs"
     else:
-        from_chat = from_chat_raw
-        if from_chat.lstrip('-').isdigit():
-            from_chat = int(from_chat)
+        fc = int(raw) if raw.lstrip('-').isdigit() else raw
         try:
-            chat_obj   = await bot.get_chat(from_chat)
-            from_title = getattr(chat_obj, "title", None) or getattr(chat_obj, "first_name", str(from_chat))
+            co     = await bot.get_chat(fc)
+            ftitle = getattr(co, "title", None) or getattr(co, "first_name", str(fc))
         except Exception:
-            from_title = str(from_chat)
+            ftitle = str(fc)
 
-    # ── Step 3: First Destination ────────────────────────────────────────────
-    channels = await db.get_user_channels(user_id)
+    # Step 3 — Dest 1
+    channels = await db.get_user_channels(uid)
     if not channels:
-        return await bot.send_message(user_id,
-            "<b>❌ No target channels saved. Add via /settings → Channels.</b>",
+        return await bot.send_message(uid,
+            "<b>❌ ɴᴏ ᴛᴀʀɢᴇᴛ ᴄʜᴀɴɴᴇʟs. ᴀᴅᴅ ᴏɴᴇ ᴠɪᴀ /settings → Channels.</b>",
             reply_markup=ReplyKeyboardRemove())
 
-    to_chat, to_title, cancelled = await _ask_dest(bot, user_id, channels,
-        "<b>Step 3/6 — Primary Destination</b>\n\nWhere should new messages be forwarded?")
-    if cancelled or not to_chat:
-        return
+    to1, ttl1, cancelled = await _pick_channel(bot, uid, channels,
+        "<b>╭──────❰ 📋 sᴛᴇᴘ 3/6 — ᴘʀɪᴍᴀʀʏ ᴅᴇsᴛɪɴᴀᴛɪᴏɴ ❱──────╮\n"
+        "┃\n┣⊸ ᴡʜᴇʀᴇ sʜᴏᴜʟᴅ ɴᴇᴡ ᴍᴇssᴀɢᴇs ʙᴇ sᴇɴᴛ?\n"
+        "┃\n╰────────────────────────────────╯</b>")
+    if cancelled or not to1: return
 
-    to_thread = await _ask_topic(bot, user_id, "Primary Destination")
+    th1 = await _pick_topic(bot, uid, "ᴅᴇsᴛ 1")
 
-    # ── Step 4: Second Destination (Optional) ──────────────────────────────
-    to_chat_2, to_title_2, cancelled2 = await _ask_dest(bot, user_id, channels,
-        "<b>Step 4/6 — Second Destination (Optional)</b>\n\n"
-        "Messages will be sent to <b>both</b> destinations when a new message arrives.\n"
-        "Press 'Skip' if you only need one destination.",
+    # Step 4 — Dest 2
+    to2, ttl2, cancelled2 = await _pick_channel(bot, uid, channels,
+        "<b>╭──────❰ 📋 sᴛᴇᴘ 4/6 — sᴇᴄᴏɴᴅ ᴅᴇsᴛɪɴᴀᴛɪᴏɴ (ᴏᴘᴛɪᴏɴᴀʟ) ❱──────╮\n"
+        "┃\n┣⊸ ᴍᴇssᴀɢᴇs ᴡɪʟʟ ʙᴇ sᴇɴᴛ ᴛᴏ ʙᴏᴛʜ ᴅᴇsᴛɪɴᴀᴛɪᴏɴs\n"
+        "┣⊸ ᴘʀᴇss sᴋɪᴘ ɪғ ᴏɴᴇ ᴅᴇsᴛɪɴᴀᴛɪᴏɴ ɪs ᴇɴᴏᴜɢʜ\n"
+        "┃\n╰────────────────────────────────╯</b>",
         optional=True)
-    if cancelled2:
-        return
+    if cancelled2: return
 
-    to_thread_2 = None
-    if to_chat_2:
-        to_thread_2 = await _ask_topic(bot, user_id, "Second Destination")
+    th2 = None
+    if to2:
+        th2 = await _pick_topic(bot, uid, "ᴅᴇsᴛ 2")
 
-    # ── Step 5: Batch Mode ───────────────────────────────────────────────────
-    batch_r = await bot.ask(user_id,
-        "<b>Step 5/6 — Batch Mode (Copy Old Messages First)</b>\n\n"
-        "Do you want to copy existing (old) messages before going live?\n\n"
-        "• <b>ON</b> — first copies old messages, then watches for new ones\n"
-        "• <b>OFF</b> — only watches for NEW messages from now on (current behavior)\n\n"
-        "If ON, you will choose a starting message ID next.\n"
-        "<i>Batch runs sequentially before live mode starts.</i>",
+    # Step 5 — Batch mode
+    batch_r = await bot.ask(uid,
+        "<b>╭──────❰ 📋 sᴛᴇᴘ 5/6 — ʙᴀᴛᴄʜ ᴍᴏᴅᴇ ❱──────╮\n"
+        "┃\n┣⊸ ✅ ᴏɴ  — ᴄᴏᴘʏ ᴏʟᴅ ᴍsɢs ғɪʀsᴛ, ᴛʜᴇɴ ɢᴏ ʟɪᴠᴇ\n"
+        "┣⊸ ❌ ᴏFF — ᴏɴʟʏ ᴡᴀᴛᴄʜ ғᴏʀ ɴᴇᴡ ᴍsɢs (ᴅᴇғᴀᴜʟᴛ)\n"
+        "┃\n╰────────────────────────────────╯</b>",
         reply_markup=ReplyKeyboardMarkup(
-            [[KeyboardButton("✅ ON (Copy old messages first)")],
-             [KeyboardButton("❌ OFF (Live only)")],
+            [[KeyboardButton("✅ ᴏɴ (ᴄᴏᴘʏ ᴏʟᴅ ᴍsɢs ғɪʀsᴛ)")],
+             [KeyboardButton("❌ ᴏFF (ʟɪᴠᴇ ᴏɴʟʏ)")],
              [KeyboardButton("/cancel")]],
-            resize_keyboard=True, one_time_keyboard=True
-        ))
+            resize_keyboard=True, one_time_keyboard=True))
 
     if "/cancel" in batch_r.text:
-        return await batch_r.reply("<b>Cancelled.</b>", reply_markup=ReplyKeyboardRemove())
-
-    batch_mode    = "on" in batch_r.text.lower()
-    batch_start_id = 1
-    batch_end_id   = 0  # 0 = up to current latest
-
-    if batch_mode:
-        range_r = await bot.ask(user_id,
-            "<b>Batch Range</b>\n\n"
-            "Choose where to start the batch:\n\n"
-            "• Send <b>ALL</b> to start from the very first message\n"
-            "• Send a <b>start ID</b> (e.g. <code>500</code>) to start from that message\n"
-            "• Send <b>start_id:end_id</b> (e.g. <code>500:2000</code>) for a specific range\n\n"
-            "<i>After the batch finishes, the job automatically switches to live mode.</i>",
+        return await batch_r.reply(
+            "<b>╭──────❰ ❌ ᴄᴀɴᴄᴇʟʟᴇᴅ ❱──────╮\n┃\n╰────────────────────────────────╯</b>",
             reply_markup=ReplyKeyboardRemove())
 
-        if "/cancel" in range_r.text:
-            return await range_r.reply("<b>Cancelled.</b>")
+    batch_mode  = "ᴏɴ" in batch_r.text.lower() or "on" in batch_r.text.lower()
+    bstart, bend = 1, 0
 
-        rtext = range_r.text.strip().lower()
-        if rtext != "all":
-            if ":" in rtext:
-                parts = rtext.split(":", 1)
-                try: batch_start_id = int(parts[0].strip())
+    if batch_mode:
+        rng_r = await bot.ask(uid,
+            "<b>╭──────❰ 📋 ʙᴀᴛᴄʜ ʀᴀɴɢᴇ ❱──────╮\n"
+            "┃\n┣⊸ ALL   — ᴀʟʟ ᴍsɢs ғʀᴏᴍ ᴛʜᴇ ʙᴇɢɪɴɴɪɴɢ\n"
+            "┣⊸ 500   — sᴛᴀʀᴛ ғʀᴏᴍ ɪᴅ 500 ᴛᴏ ʟᴀᴛᴇsᴛ\n"
+            "┣⊸ 500:2000 — ᴏɴʟʏ ɪᴅs 500 ᴛʜʀᴏᴜɢʜ 2000\n"
+            "┃\n╰────────────────────────────────╯</b>",
+            reply_markup=ReplyKeyboardRemove())
+        if "/cancel" in rng_r.text:
+            return await rng_r.reply(
+                "<b>╭──────❰ ❌ ᴄᴀɴᴄᴇʟʟᴇᴅ ❱──────╮\n┃\n╰────────────────────────────────╯</b>")
+        rt = rng_r.text.strip().lower()
+        if rt != "all":
+            if ":" in rt:
+                p = rt.split(":", 1)
+                try: bstart = int(p[0])
                 except Exception: pass
-                try: batch_end_id   = int(parts[1].strip())
+                try: bend   = int(p[1])
                 except Exception: pass
             else:
-                try: batch_start_id = int(rtext)
+                try: bstart = int(rt)
                 except Exception: pass
 
-    # ── Step 6: Size / Duration Limit ───────────────────────────────────────
-    limit_r = await bot.ask(user_id,
-        "<b>Step 6/6 — Per-Job Size Limit</b>\n\n"
-        "Set a maximum file size and/or duration for this job.\n"
-        "Files above the limit will be <b>silently skipped</b>.\n\n"
-        "<b>Format options:</b>\n"
-        "• <code>0</code> — no limit (forward everything)\n"
-        "• <code>50</code> — skip files larger than 50 MB\n"
-        "• <code>50:10</code> — skip files larger than 50 MB <b>or</b> longer than 10 minutes\n"
-        "• <code>0:5</code> — no size limit, but skip files longer than 5 minutes\n\n"
-        "<i>Format: <b>max_mb:max_minutes</b>  (0 = no limit)</i>",
+    # Step 6 — Size limit
+    lim_r = await bot.ask(uid,
+        "<b>╭──────❰ 📋 sᴛᴇᴘ 6/6 — sɪᴢᴇ ʟɪᴍɪᴛ ❱──────╮\n"
+        "┃\n┣⊸ 0         — ɴᴏ ʟɪᴍɪᴛ\n"
+        "┣⊸ 50        — sᴋɪᴘ ғɪʟᴇs > 50 ᴍʙ\n"
+        "┣⊸ 50:10     — sᴋɪᴘ > 50ᴍʙ ᴏʀ > 10 ᴍɪɴᴜᴛᴇs\n"
+        "┣⊸ 0:5       — ɴᴏ sɪᴢᴇ ʟɪᴍɪᴛ, sᴋɪᴘ > 5 ᴍɪɴᴜᴛᴇs\n"
+        "┃  ғᴏʀᴍᴀᴛ: max_mb:max_minutes\n"
+        "┃\n╰────────────────────────────────╯</b>",
         reply_markup=ReplyKeyboardMarkup(
-            [[KeyboardButton("0 (No limit)")], [KeyboardButton("/cancel")]],
-            resize_keyboard=True, one_time_keyboard=True
-        ))
+            [[KeyboardButton("0 (ɴᴏ ʟɪᴍɪᴛ)")], [KeyboardButton("/cancel")]],
+            resize_keyboard=True, one_time_keyboard=True))
 
-    if "/cancel" in limit_r.text:
-        return await limit_r.reply("<b>Cancelled.</b>", reply_markup=ReplyKeyboardRemove())
+    if "/cancel" in lim_r.text:
+        return await lim_r.reply(
+            "<b>╭──────❰ ❌ ᴄᴀɴᴄᴇʟʟᴇᴅ ❱──────╮\n┃\n╰────────────────────────────────╯</b>",
+            reply_markup=ReplyKeyboardRemove())
 
-    max_size_mb     = 0
-    max_duration_s  = 0
-    ltext = limit_r.text.strip()
-    if ltext != "0":
-        if ":" in ltext:
-            parts = ltext.split(":", 1)
-            try: max_size_mb    = int(parts[0].strip())
+    max_mb, max_sec = 0, 0
+    lt = lim_r.text.strip()
+    if lt != "0" and lt.lower() != "0 (ɴᴏ ʟɪᴍɪᴛ)":
+        if ":" in lt:
+            p = lt.split(":", 1)
+            try: max_mb  = int(p[0].strip())
             except Exception: pass
-            try: max_duration_s = int(parts[1].strip()) * 60
+            try: max_sec = int(p[1].strip()) * 60
             except Exception: pass
         else:
-            try: max_size_mb = int(ltext)
+            try: max_mb = int(lt)
             except Exception: pass
 
-    # ── Save & Start ─────────────────────────────────────────────────────────
-    job_id = f"{user_id}-{int(time.time())}"
+    # Save & Start
+    job_id = f"{uid}-{int(time.time())}"
     job = {
-        "job_id":             job_id,
-        "user_id":            user_id,
-        "account_id":         sel_acc["id"],
-        "from_chat":          from_chat,
-        "from_title":         from_title,
-        # Primary destination
-        "to_chat":            to_chat,
-        "to_title":           to_title,
-        "to_thread_id":       to_thread,
-        # Second destination (optional)
-        "to_chat_2":          to_chat_2,
-        "to_title_2":         to_title_2,
-        "to_thread_id_2":     to_thread_2,
-        # Batch settings
-        "batch_mode":         batch_mode,
-        "batch_start_id":     batch_start_id,
-        "batch_end_id":       batch_end_id,
-        "batch_cursor":       batch_start_id,
-        "batch_done":         False,
-        # Size limits
-        "max_size_mb":        max_size_mb,
-        "max_duration_secs":  max_duration_s,
-        # Runtime
-        "status":             "running",
-        "created":            int(time.time()),
-        "forwarded":          0,
-        "last_seen_id":       0,
+        "job_id": job_id, "user_id": uid, "account_id": sel["id"],
+        "from_chat": fc, "from_title": ftitle,
+        "to_chat": to1, "to_title": ttl1, "to_thread_id": th1,
+        "to_chat_2": to2, "to_title_2": ttl2, "to_thread_id_2": th2,
+        "batch_mode": batch_mode, "batch_start_id": bstart, "batch_end_id": bend,
+        "batch_cursor": bstart, "batch_done": False,
+        "max_size_mb": max_mb, "max_duration_secs": max_sec,
+        "status": "running", "created": int(time.time()), "forwarded": 0, "last_seen_id": 0,
     }
     await _save_job(job)
-    _start_job_task(job_id, user_id)
+    _start_job_task(job_id, uid)
 
-    # Build summary
-    thread_lbl = f" → Topic <code>{to_thread}</code>" if to_thread else ""
-    dest2_lbl  = f"\n<b>Dest 2:</b> {to_title_2}" + (f" → Topic <code>{to_thread_2}</code>" if to_thread_2 else "") if to_chat_2 else ""
-    batch_lbl  = (f"\n<b>Batch:</b> ✅ ON — copying from ID {batch_start_id}"
-                  + (f" to {batch_end_id}" if batch_end_id else " to latest")
-                  + " first") if batch_mode else "\n<b>Batch:</b> ❌ OFF (live only)"
-    size_lbl   = ""
-    if max_size_mb:
-        size_lbl += f"\n<b>Max size:</b> {max_size_mb} MB"
-    if max_duration_s:
-        size_lbl += f"\n<b>Max duration:</b> {max_duration_s // 60} min"
-    if not size_lbl:
-        size_lbl = "\n<b>Size limit:</b> None"
+    th1_lbl  = f" [ᴛʜʀᴇᴀᴅ {th1}]" if th1 else ""
+    d2_lbl   = f"\n┣⊸ ◈ 𝐃𝐞𝐬𝐭 𝟐  : {ttl2}" + (f" [ᴛʜʀᴇᴀᴅ {th2}]" if th2 else "") if to2 else ""
+    bt_lbl   = (f"\n┣⊸ ◈ 𝐁𝐚𝐭𝐜𝐡   : ✅ ᴏɴ — ɪᴅ {bstart}" +
+                (f" → {bend}" if bend else " → ʟᴀᴛᴇsᴛ")) if batch_mode else "\n┣⊸ ◈ 𝐁𝐚𝐭𝐜𝐡   : ❌ ᴏFF"
+    sz_lbl   = (f"\n┣⊸ ◈ 𝐌𝐚𝐱 𝐒𝐳   : {max_mb} ᴍʙ") if max_mb else ""
+    dur_lbl  = (f"\n┣⊸ ◈ 𝐌𝐚𝐱 𝐃𝐮𝐫  : {max_sec // 60} ᴍɪɴ") if max_sec else ""
 
-    await bot.send_message(
-        user_id,
-        f"<b>✅ Live Job Created & Started!</b>\n\n"
-        f"🟢 <b>{from_title}</b> → <b>{to_title}</b>{thread_lbl}"
-        f"{dest2_lbl}\n"
-        f"<b>Account:</b> {'🤖 Bot' if is_bot else '👤 Userbot'}: {sel_acc.get('name','?')}\n"
-        f"{batch_lbl}{size_lbl}\n"
-        f"<b>Job ID:</b> <code>{job_id[-6:]}</code>\n\n"
-        f"<i>Running in the background. Use /jobs to manage.</i>",
-        reply_markup=ReplyKeyboardRemove()
-    )
+    await bot.send_message(uid,
+        f"<b>╭──────❰ ✅ ʟɪᴠᴇ ᴊᴏʙ ᴄʀᴇᴀᴛᴇᴅ ❱──────╮\n"
+        f"┃\n"
+        f"┣⊸ ◈ 𝐒𝐨𝐮𝐫𝐜𝐞  : {ftitle}\n"
+        f"┣⊸ ◈ 𝐃𝐞𝐬𝐭 𝟏  : {ttl1}{th1_lbl}"
+        f"{d2_lbl}{bt_lbl}{sz_lbl}{dur_lbl}\n"
+        f"┣⊸ ◈ 𝐀𝐜𝐜𝐨𝐮𝐧𝐭 : {'🤖 ʙᴏᴛ' if ibot else '👤 ᴜsᴇʀʙᴏᴛ'} {sel.get('name','?')}\n"
+        f"┣⊸ ◈ 𝐉𝐨𝐛 𝐈𝐃  : <code>{job_id[-6:]}</code>\n"
+        f"┃\n"
+        f"╰────────────────────────────────╯</b>",
+        reply_markup=ReplyKeyboardRemove())
