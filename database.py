@@ -207,13 +207,25 @@ class Database:
        channels = self.chl.find({"user_id": int(user_id)})
        return [channel async for channel in channels]
      
+    # Content-type keys — the ONLY ones that go into the disabled list
+    _CONTENT_TYPES = {'poll', 'text', 'audio', 'voice', 'video', 'photo', 'document', 'animation', 'sticker'}
+
     async def get_filters(self, user_id):
+       """Return list of DISABLED content types only (never modifier flags like rm_caption/links)."""
        filters = []
-       filter = (await self.get_configs(user_id))['filters']
-       for k, v in filter.items():
-          if v == False:
+       filter_cfg = (await self.get_configs(user_id))['filters']
+       for k, v in filter_cfg.items():
+          if k in self._CONTENT_TYPES and v == False:
             filters.append(str(k))
        return filters
+
+    async def get_filter_flags(self, user_id):
+       """Return modifier flags: rm_caption (True = strip), block_links (True = block)."""
+       filter_cfg = (await self.get_configs(user_id))['filters']
+       return {
+           'rm_caption':  filter_cfg.get('rm_caption', False),  # False by default = do NOT remove
+           'block_links': not filter_cfg.get('links', True),    # True by default = allow links; False = block
+       }
               
     async def add_frwd(self, user_id):
        return await self.nfy.insert_one({'user_id': int(user_id)})

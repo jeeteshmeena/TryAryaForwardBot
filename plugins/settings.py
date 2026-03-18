@@ -635,7 +635,12 @@ async def next_filters_buttons(user_id):
        ],[
        InlineKeyboardButton('💾 Extension',
                     callback_data='settings#get_extension')
-       ],[
+              ],[
+       InlineKeyboardButton('🔗 Links',
+                     callback_data=f'settings_#updatefilter-links-{filters.get("links", True)}'),
+       InlineKeyboardButton('✅' if filters.get('links', True) else '❌',
+                     callback_data=f'settings#updatefilter-links-{filters.get("links", True)}')
+],[
        InlineKeyboardButton('♦️ keywords ♦️',
                     callback_data='settings#get_keyword')
        ],[

@@ -11,6 +11,7 @@ import asyncio
 import logging
 from database import db
 from .test import CLIENT, start_clone_bot
+from plugins.jobs import _has_links
 from pyrogram import Client, filters
 from pyrogram.errors import FloodWait
 from pyrogram.types import (
@@ -59,6 +60,7 @@ async def _tj_inc(job_id: str, n: int = 1):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _passes_filters(msg, dis: list) -> bool:
+    """Content-type check only. `dis` must be pure content types (no rm_caption, no links)."""
     if msg.empty or msg.service: return False
     for typ, chk in [
         ('text',      lambda m: m.text and not m.media),
@@ -68,19 +70,6 @@ def _passes_filters(msg, dis: list) -> bool:
         ('sticker',   lambda m: m.sticker), ('poll',      lambda m: m.poll),
     ]:
         if typ in dis and chk(msg): return False
-    # Strict link filter — block if any URL form is detected
-    if 'links' in dis:
-        _LINK_PAT = r'(https?://\S+|t\.me/\S+|@[A-Za-z0-9_]{4,}|\b(?:www\.|bit\.ly/|youtu\.be/)\S+|\b[\w.-]+\.(?:com|net|org|io|co|me|tv|gg|app|xyz|info|news|link|site)(?:/\S*)?)'
-        for _fld in ('text', 'caption'):
-            _c = getattr(msg, _fld, None)
-            if _c:
-                _raw = _c.html if hasattr(_c, 'html') else str(_c)
-                if re.search(_LINK_PAT, _raw, re.IGNORECASE):
-                    return False
-        for _efld in ('entities', 'caption_entities'):
-            for _e in (getattr(msg, _efld, None) or []):
-                if getattr(_e, 'type', '') in ('url', 'text_link', 'mention', 'bot_command'):
-                    return False
     return True
 
 
@@ -208,12 +197,14 @@ async def _run_task_job(job_id: str, user_id: int):
                 await _tj_update(job_id, status="done", current_id=current)
                 break
 
-            dis      = await db.get_filters(user_id)
-            configs  = await db.get_configs(user_id)
-            rm_cap   = 'rm_caption' in dis
-            cap_tpl  = configs.get('caption')
+            dis         = await db.get_filters(user_id)
+            flgs        = await db.get_filter_flags(user_id)
+            configs     = await db.get_configs(user_id)
+            rm_cap      = flgs.get('rm_caption', False)
+            block_links = flgs.get('block_links', False)
+            cap_tpl     = configs.get('caption')
             forward_tag = configs.get('forward_tag', False)
-            slp      = configs.get('duration', 0) or 0
+            slp         = configs.get('duration', 0) or 0
 
             chunk_end = current + BATCH_SIZE - 1
             if end_id > 0: chunk_end = min(chunk_end, end_id)
@@ -255,9 +246,12 @@ async def _run_task_job(job_id: str, user_id: int):
                 f2 = await _tj_get(job_id)
                 if not f2 or f2.get("status") in ("stopped",): return
                 if not _passes_filters(msg, dis): continue
+                # link filter via block_links flag
+                if block_links and _has_links(msg): continue
                 ok = await _send_one(client, msg, to_chat, rm_cap, cap_tpl, forward_tag=forward_tag, from_chat=fc)
                 if ok: fwd += 1; await _tj_inc(job_id)
-                await asyncio.sleep(slp)
+                if slp: await asyncio.sleep(slp)
+                else:   await asyncio.sleep(0)
 
             current = (valid[-1].id + 1) if valid else (current + BATCH_SIZE)
             await _tj_update(job_id, current_id=current)

@@ -39,6 +39,7 @@ class STS:
     
     async def get_data(self, user_id):
         k, filters = self, await db.get_filters(user_id)
+        flgs = await db.get_filter_flags(user_id)
         size, configs = None, await db.get_configs(user_id)
         
         # New explicit selection feature: Use the bot_id selected via the UI, else fallback to active
@@ -66,4 +67,5 @@ class STS:
         if configs['file_size'] != 0:
             size = [configs['file_size'], configs['size_limit']]
         return bot, configs['caption'], configs['forward_tag'], {'download': configs.get('download', False), 'chat_id': k.FROM, 'limit': k.limit, 'offset': k.skip, 'filters': filters,
-                'keywords': configs['keywords'], 'media_size': size, 'extensions': configs['extension'], 'skip_duplicate': duplicate, 'duration': configs.get('duration', 1), 'reverse_order': getattr(k, 'reverse_order', False), 'smart_order': getattr(k, 'smart_order', True)}, configs['protect'], button
+                'keywords': configs['keywords'], 'media_size': size, 'extensions': configs['extension'], 'skip_duplicate': duplicate, 'duration': configs.get('duration', 1), 'reverse_order': getattr(k, 'reverse_order', False), 'smart_order': getattr(k, 'smart_order', True),
+                'rm_caption': flgs.get('rm_caption', False), 'block_links': flgs.get('block_links', False)}, configs['protect'], button

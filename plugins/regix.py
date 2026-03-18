@@ -372,7 +372,7 @@ async def pub_(bot, message):
                 # ── Strict link filter ──────────────────────────────────────────
                 # If 'links' filter is disabled, block any message containing URLs.
                 # Checks text content, captions, AND Pyrogram message entities (text_link, url, mention).
-                _link_disabled = 'links' in _filters
+                _link_disabled = data.get('block_links', False)
                 if not is_filtered and _link_disabled:
                     _has_link = False
                     for _fld in ('text', 'caption'):
@@ -394,7 +394,8 @@ async def pub_(bot, message):
                 # Compute caption & replacements for this message before buffering
                 _filters = data.get('filters', [])
                 new_caption = custom_caption(message, caption)
-                if (message.audio or message.video or message.photo or message.document) and 'rm_caption' in _filters:
+                # rm_caption: read from data flags (set by get_filter_flags in get_data)
+                if (message.audio or message.video or message.photo or message.document) and data.get('rm_caption'):
                     new_caption = ""
 
                 replacements = data.get('replacements', {})
