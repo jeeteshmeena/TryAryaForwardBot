@@ -108,14 +108,17 @@ def _passes_topic(msg, from_topic_id) -> bool:
     """Return True if message belongs to the configured source topic (or no topic is set)."""
     if not from_topic_id:
         return True
-    # Pyrogram exposes reply-to-topic via message_thread_id (forum topics)
-    return getattr(msg, 'message_thread_id', None) == from_topic_id
+    if getattr(msg, 'message_thread_id', None) == from_topic_id:
+        return True
+    if getattr(msg, 'reply_to_top_message_id', None) == from_topic_id:
+        return True
+    rm = getattr(msg, 'reply_to_message', None)
+    rm_id = getattr(rm, 'id', None) if rm else getattr(msg, 'reply_to_message_id', None)
+    return rm_id == from_topic_id
 
 
 def _passes_filters(msg, disabled: list) -> bool:
     """Check content-type filters only. `disabled` must be pure content types (no rm_caption, no links)."""
-    if msg.empty or msg.service:
-        return False
     for typ, chk in [
         ('text',      lambda m: m.text and not m.media),
         ('audio',     lambda m: m.audio),
@@ -219,13 +222,15 @@ async def _fwd(client, msg, chat, thread, cap_empty: bool, forward_tag: bool, fr
     except FloodWait as fw:
         await asyncio.sleep(fw.value + 2)
         return await _fwd(client, msg, chat, thread, cap_empty, forward_tag, from_chat)
-    except Exception:
+    except Exception as e:
         if forward_tag:
+            logger.warning(f"[Job fwd] forward_messages failed for msg {msg.id} -> {chat}: {e}")
             return False
 
         # Download + re-upload fallback (restricted/private channels, forwarding OFF)
         try:
             import os
+            os.makedirs("downloads", exist_ok=True)
             if msg.media:
                 mo = getattr(msg, msg.media.value, None)
                 orig = getattr(mo, 'file_name', None) if mo else None
@@ -330,29 +335,44 @@ async def _get_latest_id(client, chat_id, is_bot: bool) -> int:
 BATCH_CHUNK = 200
 
 _active_clients = {}
+_client_locks = {}
 
 async def _get_shared_client(acc: dict):
     from plugins.test import start_clone_bot
     acc_id = str(acc.get("_id", acc.get("id")))
-    if acc_id in _active_clients:
-        c, refs = _active_clients[acc_id]
-        _active_clients[acc_id] = (c, refs + 1)
+    
+    if acc_id not in _client_locks:
+        _client_locks[acc_id] = asyncio.Lock()
+        
+    async with _client_locks[acc_id]:
+        if acc_id in _active_clients:
+            c, refs = _active_clients[acc_id]
+            # Verify client is somewhat alive (e.g., not fully disconnected)
+            if not c.is_connected:
+                try: await c.connect()
+                except Exception: pass
+            _active_clients[acc_id] = (c, refs + 1)
+            return c
+        c = await start_clone_bot(_CLIENT.client(acc))
+        _active_clients[acc_id] = (c, 1)
         return c
-    c = await start_clone_bot(_CLIENT.client(acc))
-    _active_clients[acc_id] = (c, 1)
-    return c
 
 async def _release_shared_client(acc: dict):
     if not acc: return
     acc_id = str(acc.get("_id", acc.get("id")))
-    if acc_id in _active_clients:
-        c, refs = _active_clients[acc_id]
-        if refs <= 1:
-            try: await c.stop()
-            except Exception: pass
-            _active_clients.pop(acc_id, None)
-        else:
-            _active_clients[acc_id] = (c, refs - 1)
+    
+    if acc_id not in _client_locks:
+        return
+        
+    async with _client_locks[acc_id]:
+        if acc_id in _active_clients:
+            c, refs = _active_clients[acc_id]
+            if refs <= 1:
+                try: await c.stop()
+                except Exception: pass
+                _active_clients.pop(acc_id, None)
+            else:
+                _active_clients[acc_id] = (c, refs - 1)
 
 async def _run_job(job_id: str, user_id: int):
     job = await _get_job(job_id)
@@ -424,19 +444,30 @@ async def _run_job(job_id: str, user_id: int):
                     logger.warning(f"[Job {job_id}] Batch fetch @ {cur}: {e}")
                     cur += BATCH_CHUNK; await _update_job(job_id, batch_cursor=cur); continue
 
-                valid = sorted([m for m in msgs if m and not m.empty and not m.service], key=lambda m: m.id)
+                msgs.sort(key=lambda m: m.id if m else 0)
                 fwd_n = 0
-                for msg in valid:
+                for msg in msgs:
                     f2 = await _get_job(job_id)
                     if not f2 or f2.get("status") != "running": return
-                    if not _passes_topic(msg, from_topic_id): continue
-                    if not _passes_filters(msg, dis):          continue
-                    if not _passes_size(msg, max_mb, max_sec): continue
+                    
+                    if not msg or getattr(msg, 'empty', False) or getattr(msg, 'service', False):
+                        if msg: seen = max(seen, msg.id)
+                        continue
+                        
+                    if not _passes_topic(msg, from_topic_id): 
+                        seen = max(seen, msg.id); continue
+                    if not _passes_filters(msg, dis):          
+                        fwd_filtered += 1; seen = max(seen, msg.id); continue
+                    if not _passes_size(msg, max_mb, max_sec): 
+                        fwd_filtered += 1; seen = max(seen, msg.id); continue
+                    
                     try:
                         ok = await _forward_message(
                             client, msg, to1, th1, rm_cap, forward_tag, fc,
                             to2, th2, block_links=block_links)
-                        if ok: fwd_n += 1
+                        if ok:
+                            fwd_n += 1
+                            seen = max(seen, msg.id)
                     except FloodWait as fw: await asyncio.sleep(fw.value + 1)
                     except asyncio.CancelledError: raise
                     except Exception as e: logger.debug(f"[Job {job_id}] Batch fwd {msg.id}: {e}")
@@ -480,17 +511,18 @@ async def _run_job(job_id: str, user_id: int):
                     new = list(reversed(col))
                 else:
                     probe = seen + 1
-                    while True:
+                    for _ in range(4):  # limit to 4 chunks (200 msgs) per round to match private fetch limit
                         bids = list(range(probe, probe + 50))
                         try: msgs = await client.get_messages(fc, bids)
                         except FloodWait as fw: await asyncio.sleep(fw.value + 1); continue
                         except Exception: break
                         if not isinstance(msgs, list): msgs = [msgs]
-                        v = [m for m in msgs if m and not m.empty and not m.service]
-                        if not v: break
-                        v.sort(key=lambda m: m.id)
-                        new.extend(v)
-                        probe = v[-1].id + 1
+                        
+                        msgs.sort(key=lambda m: m.id if m else 0)
+                        new.extend(msgs)
+                        probe = bids[-1] + 1
+                        
+                        v = [m for m in msgs if m and not getattr(m, 'empty', False)]
                         if len(v) < 49: break
             except FloodWait as fw: await asyncio.sleep(fw.value + 1); continue
             except asyncio.CancelledError: raise
@@ -500,6 +532,10 @@ async def _run_job(job_id: str, user_id: int):
 
             fwd_n = 0
             for msg in new:
+                if not msg or getattr(msg, 'empty', False) or getattr(msg, 'service', False):
+                    if msg: seen = max(seen, msg.id)
+                    continue
+                    
                 # Explicit skip → advance seen so we never reprocess
                 if not _passes_topic(msg, from_topic_id):
                     seen = max(seen, msg.id); continue
@@ -516,6 +552,16 @@ async def _run_job(job_id: str, user_id: int):
                     if ok:
                         fwd_n += 1
                         seen = max(seen, msg.id)
+                        consec_fails = 0
+                    else:
+                        consec_fails = consec_fails + 1 if 'consec_fails' in locals() else 1
+                        if consec_fails >= 3:
+                            logger.warning(f"[Job {job_id}] Message {msg.id} failed 3 times, skipping.")
+                            seen = max(seen, msg.id)
+                            consec_fails = 0
+                        else:
+                            # Log failure and allow retry on next poll
+                            logger.warning(f"[Job {job_id}] Message {msg.id} failed (attempt {consec_fails}/3)")
                 except FloodWait as fw:
                     await asyncio.sleep(fw.value + 1)
                     seen = max(seen, msg.id)   # FloodWait = Telegram accepted it

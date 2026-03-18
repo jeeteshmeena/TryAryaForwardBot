@@ -18,7 +18,18 @@ from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, CallbackQ
 CLIENT = CLIENT()
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
-TEXT = Translation.TEXT
+TEXT = """<b>╭──────❰ ✦ 𝐀𝐮𝐭𝐨 𝐅𝐨𝐫𝐰𝐚𝐫𝐝𝐞𝐫 ✦ ❱──────╮
+┃
+┣⊸ ◈ 𝐅𝐞𝐭𝐜𝐡𝐞𝐝     : <code>{0}</code>
+┣⊸ ◈ 𝐅𝐨𝐫𝐰𝐚𝐫𝐝𝐞𝐝   : <code>{1}</code>
+┣⊸ ◈ 𝐃𝐮𝐩𝐥𝐢𝐜𝐚𝐭𝐞   : <code>{2}</code>
+┣⊸ ◈ 𝐒𝐤𝐢𝐩𝐩𝐞𝐝     : <code>{3}</code>
+┣⊸ ◈ 𝐃𝐞𝐥𝐞𝐭𝐞𝐝     : <code>{4}</code>
+┃
+┣⊸ ◈ 𝐒𝐭𝐚𝐭𝐮𝐬      : {5}
+┣⊸ ◈ 𝐄𝐓𝐀         : <code>{6}</code>
+┃
+╰────────────────────────────────╯</b>"""
 
 @Client.on_callback_query(filters.regex(r'^start_public'))
 async def pub_(bot, message):
@@ -145,10 +156,10 @@ async def pub_(bot, message):
                                   sts.add('deleted')
                           except Exception as e:
                               # Handle uploader fallback gracefully.
-                              # If copy_message fails (Private chats, Bot DMs, Restricted, Error), we download/upload.
                               if act in ('copy_message', 'send_cached_media'):
                                   try:
                                       import os
+                                      os.makedirs("downloads", exist_ok=True)
                                       fallback_msg = prm.get('raw_message') or await client.get_messages(prm.get('from_chat_id'), prm.get('message_id'))
                                       if fallback_msg.media:
                                           safe_name = f"downloads/{fallback_msg.id}"
@@ -168,7 +179,9 @@ async def pub_(bot, message):
                                       sts.add('deleted')
                               else:
                                   print(f"Uploader error payload: {prm}, e: {e}")
-                                  sts.add('deleted')
+                                  # Only mark as deleted if it's a genuine failure to send a message we intended to send
+                                  if act != 'skip':
+                                      sts.add('deleted')
                               
                       if fpath:
                           try:
@@ -586,17 +599,14 @@ async def forward(bot, msg, m, sts, protect):
       sts.add('deleted')
 
 PROGRESS = """
-📈 Percetage: {0} %
+📊 Progress: {0}%
 
-♻️ Feched: {1}
+✅ Fetched: {1}
+✅ Forwarded: {2}
+✅ Remaining: {3}
 
-♻️ Fowarded: {2}
-
-♻️ Remaining: {3}
-
-♻️ Stataus: {4}
-
-⏳️ ETA: {5}
+🔄 Status: {4}
+⏳ ETA: {5}
 """
 
 async def msg_edit(msg, text, button=None, wait=None):
@@ -609,6 +619,10 @@ async def msg_edit(msg, text, button=None, wait=None):
            await asyncio.sleep(e.value)
            return await msg_edit(msg, text, button, wait)
         
+import collections
+
+_speed_windows = {}
+
 async def edit(msg, title, status, sts):
    i = sts.get(full=True)
    user_id = int(str(sts.id).split('-')[0])
@@ -617,38 +631,49 @@ async def edit(msg, title, status, sts):
       status = 'Paused'
    else:
       status = 'Forwarding' if status == 10 else f"Sleeping {status} s" if str(status).isnumeric() else status
-   # Handle division by zero if total is 0 (which happens if infinite/continuous without known total)
+   
    total = float(i.total) if float(i.total) > 0 else 1.0
    percentage = "{:.0f}".format(float(i.total_files)*100/total)
    
    now = time.time()
-   diff = now - float(i.start)
-   speed = i.total_files / diff if diff > 0 else 0
-   time_to_completion = int(round((i.total - i.total_files) / speed * 1000)) if speed > 0 else 0
-   pct = int(percentage)
+   if user_id not in _speed_windows:
+      _speed_windows[user_id] = collections.deque(maxlen=20)
+   _speed_windows[user_id].append((now, i.total_files))
    
-   # Progress bar styling
-   filled  = pct // 10          # 10 blocks total → each block = 10%
+   # Calculate speed over the last 60 seconds (or available window)
+   speed = 0
+   if len(_speed_windows[user_id]) > 1:
+      old_t, old_c = _speed_windows[user_id][0]
+      if (now - old_t) > 0:
+          speed = (i.total_files - old_c) / (now - old_t)
+   
+   if speed > 0:
+       time_to_completion = int(round((i.total - i.total_files) / speed * 1000))
+   else:
+       time_to_completion = 0
+       
+   pct = int(float(percentage))
+   
+   filled  = pct // 10
    empty   = 10 - filled
    bar     = "▰" * filled + "▱" * empty
    progress_str = f"[{bar}] {pct}%"
    
-   # Replace the bottom button text with the progress bar
    button =  [[InlineKeyboardButton(progress_str, f'fwrdstatus#{status}#{time_to_completion}#{percentage}#{i.id}')]]
    
-   # Time formatter
    estimated_total_time = TimeFormatter(milliseconds=time_to_completion)
    estimated_total_time = estimated_total_time if estimated_total_time != '' else '0 s'
+   if speed == 0 and status == 'Forwarding' and i.total_files < 10:
+       estimated_total_time = "calculating..."
 
-   # 7 formatting slots in TEXT now: fetched, total_files, duplicate, skip, deleted, status, ETA
    text = TEXT.format(i.fetched, i.total_files, i.duplicate, i.skip, i.deleted, status, estimated_total_time)
    
-   if status in ["cancelled", "completed"]:
-      # Completed state button override with Support text
+   if status in ["cancelled", "completed", "Cancelled", "Completed"]:
       button = [[
           InlineKeyboardButton('✦ 𝐒𝐮𝐩𝐩𝐨𝐫𝐭 ✦', url='https://t.me/+1p2hcQ4ZaupjNjI1'),
           InlineKeyboardButton('✦ 𝐔𝐩𝐝𝐚𝐭𝐞𝐬 ✦', url='https://t.me/MeJeetX')
       ]]
+      _speed_windows.pop(user_id, None)
    else:
       if temp.PAUSE.get(user_id) == True:
           button.append([
@@ -662,7 +687,7 @@ async def edit(msg, title, status, sts):
           ])
       
    await msg_edit(msg, text, InlineKeyboardMarkup(button))
-   
+
 async def is_cancelled(client, user, msg, sts):
    if temp.CANCEL.get(user)==True:
       temp.IS_FRWD_CHAT.remove(sts.TO)

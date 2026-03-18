@@ -227,16 +227,18 @@ async def _run_task_job(job_id: str, user_id: int):
                 logger.warning(f"[TaskJob {job_id}] Fetch {current}: {e}")
                 current += BATCH_SIZE; await _tj_update(job_id, current_id=current); continue
 
-            valid = sorted([m for m in msgs if m and not m.empty], key=lambda m: m.id)
+            valid = sorted([m for m in msgs if m and not getattr(m, 'empty', False) and not getattr(m, 'service', False)], key=lambda m: m.id)
 
             if not valid:
                 consec = fresh.get("consecutive_empty", 0) + 1
-                if consec >= 3:
+                if consec >= 10:  # Allow up to 500 deleted/service messages in a row before giving up
+                    logger.info(f"[TaskJob {job_id}] Hit {consec} empty chunks. Ending job.")
                     await _tj_update(job_id, status="done", current_id=current)
                     break
+                logger.info(f"[TaskJob {job_id}] Empty chunk {current}->{current+BATCH_SIZE-1} (consec {consec}/10)")
                 current += BATCH_SIZE
                 await _tj_update(job_id, consecutive_empty=consec, current_id=current)
-                await asyncio.sleep(2); continue
+                await asyncio.sleep(1); continue
 
             await _tj_update(job_id, consecutive_empty=0)
 
