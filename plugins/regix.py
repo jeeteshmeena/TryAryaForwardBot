@@ -369,6 +369,28 @@ async def pub_(bot, message):
                     sts.add('filtered')
                     continue
 
+                # ── Strict link filter ──────────────────────────────────────────
+                # If 'links' filter is disabled, block any message containing URLs.
+                # Checks text content, captions, AND Pyrogram message entities (text_link, url, mention).
+                _link_disabled = 'links' in _filters
+                if not is_filtered and _link_disabled:
+                    _has_link = False
+                    for _fld in ('text', 'caption'):
+                        _content = getattr(message, _fld, None)
+                        if _content:
+                            _raw = _content.html if hasattr(_content, 'html') else str(_content)
+                            if re.search(r'(https?://\S+|t\.me/\S+|@[A-Za-z0-9_]{4,}|\b(?:www\.|bit\.ly/|youtu\.be/)\S+|\b[\w.-]+\.(?:com|net|org|io|co|me|tv|gg|app|xyz|info|news|link|site)(?:/\S*)?\b)', _raw, re.IGNORECASE):
+                                _has_link = True; break
+                    if not _has_link:
+                        for _efld in ('entities', 'caption_entities'):
+                            for _e in (getattr(message, _efld, None) or []):
+                                if getattr(_e, 'type', '') in ('url', 'text_link', 'mention', 'bot_command'):
+                                    _has_link = True; break
+                            if _has_link: break
+                    if _has_link:
+                        sts.add('filtered')
+                        continue
+
                 # Compute caption & replacements for this message before buffering
                 _filters = data.get('filters', [])
                 new_caption = custom_caption(message, caption)

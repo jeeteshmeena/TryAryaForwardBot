@@ -74,6 +74,44 @@ async def _inc_forwarded(job_id: str, n: int = 1):
 # Filter helpers
 # ══════════════════════════════════════════════════════════════════════════════
 
+import re as _re
+
+# URL / link detection — catches http(s), t.me, @username, inline bot links,
+# YouTube previews, channel/bot links, raw domains w/ known TLDs, etc.
+_LINK_RE = _re.compile(
+    r'(https?://\S+'
+    r'|t\.me/\S+'
+    r'|@[A-Za-z0-9_]{4,}'
+    r'|\b(?:www\.|bit\.ly/|youtu\.be/)\S+'
+    r'|\b[\w.-]+\.(?:com|net|org|io|co|me|tv|gg|app|xyz|info|news|link|site)(?:/\S*)?\b)',
+    _re.IGNORECASE
+)
+
+def _has_links(msg) -> bool:
+    """Return True if message text or caption contains any URL / link."""
+    for field in ('text', 'caption'):
+        content = getattr(msg, field, None)
+        if content:
+            raw = content.html if hasattr(content, 'html') else str(content)
+            if _LINK_RE.search(raw):
+                return True
+    # Also check Pyrogram entities for URLs/text-mentions
+    for field in ('entities', 'caption_entities'):
+        ents = getattr(msg, field, None) or []
+        for e in ents:
+            if getattr(e, 'type', '') in ('url', 'text_link', 'mention', 'bot_command'):
+                return True
+    return False
+
+
+def _passes_topic(msg, from_topic_id) -> bool:
+    """Return True if message belongs to the configured source topic (or no topic is set)."""
+    if not from_topic_id:
+        return True
+    # Pyrogram exposes reply-to-topic via message_thread_id (forum topics)
+    return getattr(msg, 'message_thread_id', None) == from_topic_id
+
+
 def _passes_filters(msg, disabled: list) -> bool:
     if msg.empty or msg.service:
         return False
@@ -90,6 +128,9 @@ def _passes_filters(msg, disabled: list) -> bool:
     ]:
         if typ in disabled and chk(msg):
             return False
+    # Strict link filter: if 'links' is disabled, block any message containing a URL
+    if 'links' in disabled and _has_links(msg):
+        return False
     return True
 
 
@@ -279,6 +320,7 @@ async def _run_job(job_id: str, user_id: int):
         # Private chats use get_chat_history (works for both bots & userbots via MTProto)
         # Channels use get_messages by ID probing (more reliable, no history limit)
         is_private_src = not str(fc).startswith('-')
+        from_topic_id  = job.get("from_topic_id")  # None means no topic filter
 
         if seen == 0:
             seen = await _get_latest_id(client, fc, is_bot)
@@ -325,6 +367,7 @@ async def _run_job(job_id: str, user_id: int):
                 for msg in valid:
                     f2 = await _get_job(job_id)
                     if not f2 or f2.get("status") != "running": return
+                    if not _passes_topic(msg, from_topic_id): continue
                     if not _passes_filters(msg, dis): continue
                     if not _passes_size(msg, max_mb, max_sec): continue
                     try:
@@ -390,6 +433,8 @@ async def _run_job(job_id: str, user_id: int):
 
             fwd_n = 0
             for msg in new:
+                if not _passes_topic(msg, from_topic_id):
+                    seen = max(seen, msg.id); continue
                 if not _passes_filters(msg, dis):
                     seen = max(seen, msg.id); continue
                 if not _passes_size(msg, max_mb, max_sec):
@@ -730,6 +775,23 @@ async def _create_job_flow(bot, uid: int):
         except Exception:
             ftitle = str(fc)
 
+    # Step 2b — Source Topic (optional, only for forum groups)
+    src_topic_r = await bot.ask(uid,
+        "<b>╭──────❰ 📋 sᴛᴇᴘ 2b — sᴏᴜʀᴄᴇ ᴛᴏᴘɪᴄ ❱──────╮\n"
+        "┃\n"
+        "┣⊸ ɪғ sᴏᴜʀᴄᴇ ɪs ᴀ ɢʀᴏᴜᴘ ᴡɪᴛʜ ᴛᴏᴘɪᴄs, ᴇɴᴛᴇʀ ᴛʜᴇ ᴛᴏᴘɪᴄ ɪᴅ\n"
+        "┣⊸ sᴇɴᴅ 0 ᴛᴏ ғᴏʀᴡᴀʀᴅ ᴀʟʟ ᴍᴇssᴀɢᴇs (ɴᴏ ᴛᴏᴘɪᴄ ғɪʟᴛᴇʀ)\n"
+        "┃\n╰────────────────────────────────╯</b>",
+        reply_markup=ReplyKeyboardMarkup(
+            [[KeyboardButton("0 (ɴᴏ ᴛᴏᴘɪᴄ ғɪʟᴛᴇʀ)")], [KeyboardButton("/cancel")]],
+            resize_keyboard=True, one_time_keyboard=True))
+    if "/cancel" in src_topic_r.text:
+        return await src_topic_r.reply(
+            "<b>╭──────❰ ❌ ᴄᴀɴᴄᴇʟʟᴇᴅ ❱──────╮\n┃\n╰────────────────────────────────╯</b>",
+            reply_markup=ReplyKeyboardRemove())
+    _st_raw = src_topic_r.text.strip()
+    from_topic_id = int(_st_raw) if _st_raw.isdigit() and int(_st_raw) > 0 else None
+
     # Step 3 — Dest 1
     channels = await db.get_user_channels(uid)
     if not channels:
@@ -855,7 +917,7 @@ async def _create_job_flow(bot, uid: int):
     job_id = f"{uid}-{int(time.time())}"
     job = {
         "job_id": job_id, "user_id": uid, "account_id": sel["id"],
-        "from_chat": fc, "from_title": ftitle,
+        "from_chat": fc, "from_title": ftitle, "from_topic_id": from_topic_id,
         "to_chat": to1, "to_title": ttl1, "to_thread_id": th1,
         "to_chat_2": to2, "to_title_2": ttl2, "to_thread_id_2": th2,
         "batch_mode": batch_mode, "batch_start_id": bstart, "batch_end_id": bend,

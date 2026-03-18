@@ -107,7 +107,8 @@ class Database:
                'document': True,
                'animation': True,
                'sticker': True,
-               'rm_caption': False
+               'rm_caption': False,
+               'links': True
             }
         }
         user = await self.col.find_one({'id':int(id)})

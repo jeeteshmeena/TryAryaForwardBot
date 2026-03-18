@@ -68,7 +68,21 @@ def _passes_filters(msg, dis: list) -> bool:
         ('sticker',   lambda m: m.sticker), ('poll',      lambda m: m.poll),
     ]:
         if typ in dis and chk(msg): return False
+    # Strict link filter — block if any URL form is detected
+    if 'links' in dis:
+        _LINK_PAT = r'(https?://\S+|t\.me/\S+|@[A-Za-z0-9_]{4,}|\b(?:www\.|bit\.ly/|youtu\.be/)\S+|\b[\w.-]+\.(?:com|net|org|io|co|me|tv|gg|app|xyz|info|news|link|site)(?:/\S*)?)'
+        for _fld in ('text', 'caption'):
+            _c = getattr(msg, _fld, None)
+            if _c:
+                _raw = _c.html if hasattr(_c, 'html') else str(_c)
+                if re.search(_LINK_PAT, _raw, re.IGNORECASE):
+                    return False
+        for _efld in ('entities', 'caption_entities'):
+            for _e in (getattr(msg, _efld, None) or []):
+                if getattr(_e, 'type', '') in ('url', 'text_link', 'mention', 'bot_command'):
+                    return False
     return True
+
 
 
 # ══════════════════════════════════════════════════════════════════════════════
