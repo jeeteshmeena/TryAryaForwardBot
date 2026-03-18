@@ -197,9 +197,9 @@ async def _get_latest_id(client, chat_id, is_bot: bool) -> int:
     - For private chats (user DMs, saved messages): use get_chat_history (works for all account types via MTProto).
     - For channels/groups with a bot account: binary-search by get_messages.
     """
-    is_private = (chat_id == "me") or (isinstance(chat_id, int) and chat_id > 0)
+    is_private_src = not str(chat_id).startswith('-')
     try:
-        if not is_bot or is_private:
+        if not is_bot or is_private_src:
             # get_chat_history works for userbots always, and for bots in private chats
             async for msg in client.get_chat_history(chat_id, limit=1):
                 return msg.id
@@ -278,7 +278,7 @@ async def _run_job(job_id: str, user_id: int):
         # Channels/supergroups have negative IDs (-100xxxxxxxxxx)
         # Private chats use get_chat_history (works for both bots & userbots via MTProto)
         # Channels use get_messages by ID probing (more reliable, no history limit)
-        is_private_src = (fc == "me") or (isinstance(fc, int) and fc > 0)
+        is_private_src = not str(fc).startswith('-')
 
         if seen == 0:
             seen = await _get_latest_id(client, fc, is_bot)

@@ -204,7 +204,7 @@ async def _run_task_job(job_id: str, user_id: int):
             if end_id > 0: chunk_end = min(chunk_end, end_id)
             batch_ids = list(range(current, chunk_end + 1))
 
-            is_private_src = (fc == "me") or (isinstance(fc, int) and fc > 0)
+            is_private_src = not str(fc).startswith('-')
             try:
                 if not is_bot or is_private_src:
                     col = []
