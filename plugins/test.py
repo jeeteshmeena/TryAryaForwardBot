@@ -58,9 +58,12 @@ async def start_clone_bot(FwdBot, data=None):
 
         BATCH_SIZE = 200  # Max IDs per get_messages call
 
-        # ── USERBOT PATH ─────────────────────────────────────────────────────────
+        # ── USERBOT & PRIVATE PATH ────────────────────────────────────────────────
         # Userbots can freely use get_chat_history for any chat type.
-        if not is_bot:
+        # Bots can ALSO use get_chat_history for private chats (DMs / Saved Messages).
+        is_private_src = (chat_id == "me") or (isinstance(chat_id, int) and chat_id > 0)
+        
+        if not is_bot or is_private_src:
             messages = []
             fetch_limit = limit if limit > 0 else 0
             async for msg in self.get_chat_history(chat_id, limit=fetch_limit):
@@ -90,10 +93,9 @@ async def start_clone_bot(FwdBot, data=None):
                         last_id = new_msgs[-1].id if not reverse_order else new_msgs[0].id
             return
 
-        # ── BOT PATH ──────────────────────────────────────────────────────────────
-        # Normal bots cannot call get_chat_history.
+        # ── BOT CHANNEL PATH ──────────────────────────────────────────────────────
+        # Normal bots cannot call get_chat_history for channels/groups.
         # For channels/supergroups: message IDs are sequential and we can fetch by ID list.
-        # For other chat types (groups, DMs): get_messages by ID also works.
 
         if reverse_order:
             # ── New to Old: binary-search for the actual top message ID ──────────

@@ -172,9 +172,17 @@ async def _run_task_job(job_id: str, user_id: int):
             if end_id > 0: chunk_end = min(chunk_end, end_id)
             batch_ids = list(range(current, chunk_end + 1))
 
+            is_private_src = (fc == "me") or (isinstance(fc, int) and fc > 0)
             try:
-                msgs = await client.get_messages(fc, batch_ids)
-                if not isinstance(msgs, list): msgs = [msgs]
+                if not is_bot or is_private_src:
+                    col = []
+                    async for msg in client.get_chat_history(fc, offset_id=chunk_end + 1, limit=BATCH_SIZE):
+                        if msg.id < current: break
+                        col.append(msg)
+                    msgs = list(reversed(col))
+                else:
+                    msgs = await client.get_messages(fc, batch_ids)
+                    if not isinstance(msgs, list): msgs = [msgs]
             except FloodWait as fw: await asyncio.sleep(fw.value + 2); continue
             except asyncio.CancelledError: raise
             except Exception as e:
@@ -269,9 +277,11 @@ async def _render_taskjob_list(bot, user_id: int, mq):
             end = j.get("end_id", 0)
             rng = f"<code>{cur}</code>/{end if end else '∞'}"
             err = f"\n┃   ⚠️ <code>{j.get('error','')}</code>" if j.get("status") == "error" else ""
+            c_name = j.get("custom_name")
+            name_disp = f" <b>{c_name}</b>" if c_name else ""
             lines.append(
                 f"┣⊸ {st} <b>{j.get('from_title','?')} → {j.get('to_title','?')}</b>"
-                f"  <code>[{j['job_id'][-6:]}]</code>"
+                f"  <code>[{j['job_id'][-6:]}]</code>{name_disp}"
                 f"\n┃   ◈ 𝐅𝐰𝐝: <code>{fwd}</code>  ◈ 𝐏𝐨𝐬: {rng}{err}"
             )
         lines.append("┃\n<b>╰────────────────────────────────╯</b>")
@@ -356,10 +366,13 @@ async def tj_info_cb(bot, query):
     rng_lbl = f"<code>{job.get('start_id',1)}</code> → <code>{end}</code>" if end else f"<code>{job.get('start_id',1)}</code> → ∞"
     err_lbl = f"\n┣⊸ ⚠️ ᴇʀʀᴏʀ : <code>{job['error']}</code>" if job.get("error") else ""
 
+    c_name   = job.get("custom_name")
+    name_lbl = f"\n┣⊸ ◈ 𝐍𝐚𝐦𝐞    : <b>{c_name}</b>" if c_name else ""
+
     text = (
         f"<b>╭──────❰ 📦 ᴛᴀsᴋ ᴊᴏʙ ɪɴғᴏ ❱──────╮\n"
         f"┃\n"
-        f"┣⊸ ◈ 𝐈𝐃      : <code>{job_id[-6:]}</code>\n"
+        f"┣⊸ ◈ 𝐈𝐃      : <code>{job_id[-6:]}</code>{name_lbl}\n"
         f"┣⊸ ◈ 𝐒𝐭𝐚𝐭𝐮𝐬  : {st} {job.get('status','?')}\n"
         f"┣⊸ ◈ 𝐒𝐨𝐮𝐫𝐜𝐞  : {job.get('from_title','?')}\n"
         f"┣⊸ ◈ 𝐓𝐚𝐫𝐠𝐞𝐭  : {job.get('to_title','?')}\n"
@@ -489,10 +502,15 @@ async def _create_taskjob_flow(bot, user_id: int):
 
     # Step 2 — Source
     src_r = await bot.ask(user_id,
-        "<b>╭──────❰ 📦 sᴛᴇᴘ 2/4 — sᴏᴜʀᴄᴇ ᴄʜᴀɴɴᴇʟ ❱──────╮\n"
-        "┃\n┣⊸ @ᴜsᴇʀɴᴀᴍᴇ ᴏʀ ᴄʜᴀɴɴᴇʟ ʟɪɴᴋ\n"
-        "┣⊸ ɴᴜᴍᴇʀɪᴄ ɪᴅ  ᴇ.ɢ. -1001234567890\n"
-        "┣⊸ ᴛ.ᴍᴇ/ᴄ/12345/1  ᴘʀɪᴠᴀᴛᴇ ʟɪɴᴋ\n"
+        "<b>╭──────❰ 📦 sᴛᴇᴘ 2/4 — sᴏᴜʀᴄᴇ ᴄʜᴀᴛ ❱──────╮\n"
+        "┃\n"
+        "┣⊸ @ᴜsᴇʀɴᴀᴍᴇ       — ᴘᴜʙʟɪᴄ ᴄʜᴀɴɴᴇʟ ᴏʀ ɢʀᴏᴜᴘ\n"
+        "┣⊸ -1001234567890   — ɴᴜᴍᴇʀɪᴄ ᴄʜᴀɴɴᴇʟ ɪᴅ\n"
+        "┣⊸ 123456789        — ᴘʀɪᴠᴀᴛᴇ ᴄʜᴀᴛ ɪᴅ (ᴅᴍ ᴡɪᴛʜ ʙᴏᴛ)\n"
+        "┣⊸ me               — sᴀᴠᴇᴅ ᴍᴇssᴀɢᴇs\n"
+        "┃\n"
+        "┣⊸ <i>Pʀɪᴠᴀᴛᴇ ᴄʜᴀᴛ ɪᴅs ᴀʀᴇ ᴘᴏsɪᴛɪᴠᴇ ɴᴜᴍʙᴇʀs (ɴᴏ ᴍɪɴᴜs)</i>\n"
+        "┣⊸ <i>ʙᴏᴛʜ ʙᴏᴛ ᴀɴᴅ ᴜsᴇʀʙᴏᴛ ᴄᴀɴ ᴍᴏɴɪᴛᴏʀ ᴅᴍs ᴠɪᴀ ᴍᴛᴘʀᴏᴛᴏ</i>\n"
         "┃\n╰────────────────────────────────╯</b>",
         reply_markup=ReplyKeyboardRemove())
 
@@ -546,7 +564,7 @@ async def _create_taskjob_flow(bot, user_id: int):
     ch_btns.append([KeyboardButton("/cancel")])
 
     ch_r = await bot.ask(user_id,
-        "<b>╭──────❰ 📦 sᴛᴇᴘ 4/4 — ᴛᴀʀɢᴇᴛ ᴄʜᴀɴɴᴇʟ ❱──────╮\n"
+        "<b>╭──────❰ 📦 sᴛᴇᴘ 4/5 — ᴛᴀʀɢᴇᴛ ᴄʜᴀɴɴᴇʟ ❱──────╮\n"
         "┃\n┣⊸ ᴄʜᴏᴏsᴇ ᴡʜᴇʀᴇ ᴛᴏ ᴄᴏᴘʏ ᴍᴇssᴀɢᴇs\n"
         "┃\n╰────────────────────────────────╯</b>",
         reply_markup=ReplyKeyboardMarkup(ch_btns, resize_keyboard=True, one_time_keyboard=True))
@@ -565,6 +583,23 @@ async def _create_taskjob_flow(bot, user_id: int):
         return await bot.send_message(user_id,
             "<b>❌ ɪɴᴠᴀʟɪᴅ sᴇʟᴇᴄᴛɪᴏɴ.</b>", reply_markup=ReplyKeyboardRemove())
 
+    # Step 5 — Custom Name
+    name_r = await bot.ask(user_id,
+        "<b>╭──────❰ 📋 sᴛᴇᴘ 5/5 — ᴊᴏʙ ɴᴀᴍᴇ (ᴏᴘᴛɪᴏɴᴀʟ) ❱──────╮\n"
+        "┃\n┣⊸ sᴇɴᴅ ᴀ sʜᴏʀᴛ ɴᴀᴍᴇ ғᴏʀ ᴛʜɪs ᴊᴏʙ ᴛᴏ ɪᴅᴇɴᴛɪғʏ ɪᴛ ᴇᴀsɪʟʏ.\n"
+        "┣⊸ ᴏʀ ᴄʟɪᴄᴋ sᴋɪᴘ ᴛᴏ ᴜsᴇ ᴅᴇғᴀᴜʟᴛ.\n"
+        "┃\n╰────────────────────────────────╯</b>",
+        reply_markup=ReplyKeyboardMarkup([
+            [KeyboardButton("sᴋɪᴘ (ᴜsᴇ ᴅᴇғᴀᴜʟᴛ)")], [KeyboardButton("/cancel")]
+        ], resize_keyboard=True, one_time_keyboard=True))
+
+    if "/cancel" in name_r.text:
+        return await name_r.reply(_CANCEL_BOX, reply_markup=ReplyKeyboardRemove())
+
+    cname = None
+    if "sᴋɪᴘ" not in name_r.text.lower() and "skip" not in name_r.text.lower():
+        cname = name_r.text.strip()[:30]
+
     # Save & Start
     job_id = f"tj-{user_id}-{int(time.time())}"
     job = {
@@ -574,6 +609,7 @@ async def _create_taskjob_flow(bot, user_id: int):
         "start_id": start_id, "end_id": end_id, "current_id": start_id,
         "status": "running", "created": int(time.time()),
         "forwarded": 0, "consecutive_empty": 0, "error": "",
+        "custom_name": cname,
     }
     await _tj_save(job)
     _start_task(job_id, user_id)
@@ -586,7 +622,7 @@ async def _create_taskjob_flow(bot, user_id: int):
         f"┣⊸ ◈ 𝐓𝐚𝐫𝐠𝐞𝐭  : {to_title}\n"
         f"┣⊸ ◈ 𝐀𝐜𝐜𝐨𝐮𝐧𝐭 : {'🤖 ʙᴏᴛ' if ibot else '👤 ᴜsᴇʀʙᴏᴛ'} {sel.get('name','?')}\n"
         f"┣⊸ ◈ 𝐑𝐚𝐧𝐠𝐞   : <code>{start_id}</code> → {end_lbl}\n"
-        f"┣⊸ ◈ 𝐉𝐨𝐛 𝐈𝐃  : <code>{job_id[-6:]}</code>\n"
+        f"┣⊸ ◈ 𝐉𝐨𝐛 𝐈𝐃  : <code>{job_id[-6:]}</code>" + (f" (<b>{cname}</b>)\n" if cname else "\n") +
         f"┃\n"
         f"╰────────────────────────────────╯</b>",
         reply_markup=ReplyKeyboardRemove())

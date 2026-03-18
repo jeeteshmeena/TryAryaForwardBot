@@ -11,19 +11,12 @@ async def mongodb_version():
 class Database:
     
     def __init__(self, uri, database_name):
-        self._client = motor.motor_asyncio.AsyncIOMotorClient(
-            uri,
-            tls=True,
-            tlsAllowInvalidCertificates=True,   # Fix for Ubuntu 22.04 OpenSSL 3.0 TLSV1_ALERT_INTERNAL_ERROR
-            serverSelectionTimeoutMS=30000,
-            connectTimeoutMS=30000,
-            socketTimeoutMS=30000,
-        )
+        self._client = motor.motor_asyncio.AsyncIOMotorClient(uri)
         self.db = self._client[database_name]
         self.bot = self.db.bots
         self.col = self.db.users
         self.nfy = self.db.notify
-        self.chl = self.db.channels
+        self.chl = self.db.channels 
         
     def new_user(self, id, name):
         return dict(

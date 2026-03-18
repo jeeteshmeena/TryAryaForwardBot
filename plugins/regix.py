@@ -189,14 +189,43 @@ async def pub_(bot, message):
           SORT_WINDOW = 10 if smart_order else 1
           sort_buffer = []
           
+          def extract_sort_index(message):
+              import re
+              text = ""
+              if message.media:
+                  media_obj = getattr(message, message.media.value if message.media else '', None)
+                  if media_obj and hasattr(media_obj, 'file_name') and media_obj.file_name:
+                      text = media_obj.file_name
+              if not text and message.caption:
+                  text = message.caption
+              if not text and message.text:
+                  text = message.text
+                  
+              if not text:
+                  return float('inf')
+                  
+              text_clean = text.replace(',', '')
+              # Find standalone numbers first
+              matches = re.findall(r'\b(\d+)\b', text_clean)
+              if matches:
+                  # Return last standalone number (often episode number)
+                  return int(matches[-1]) 
+                  
+              # Fallback to any number sequence
+              matches = re.findall(r'(\d+)', text_clean)
+              if matches:
+                  return int(matches[-1])
+                  
+              return float('inf')
+          
           async def flush_buffer():
               nonlocal seq_counter, sort_buffer
               if not sort_buffer: return
               
               if smart_order:
-                  # Sort the collected window strictly by Telegram message ID
-                  # e.g. source sends [42, 43, 45, 44, 46] → sorts to [42, 43, 44, 45, 46]
-                  sort_buffer.sort(key=lambda item: item[0].id)
+                  # Sort by extracted numerical content (like episode numbers), fallback to message.id
+                  # e.g. "Episode 45" before "Episode 46" even if Telegram ID for 45 is higher
+                  sort_buffer.sort(key=lambda item: (extract_sort_index(item[0]), item[0].id))
               
               for message, forward_tag, new_caption, protect, download_mode, sleep in sort_buffer:
                   sts.add('fetched')

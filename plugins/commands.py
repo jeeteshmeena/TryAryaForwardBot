@@ -69,13 +69,100 @@ async def start(client, message):
         text=await t(user.id, 'START_TXT', user.first_name),
     )
 
-# ==================Restart Function==================
+# ══════════════════════════════════════════════════════════════════════════════
+# Restart / Update
+# ══════════════════════════════════════════════════════════════════════════════
 
 @Client.on_message(filters.private & filters.command(['restart']) & filters.user(Config.BOT_OWNER_ID))
 async def restart(client, message):
-    msg = await message.reply_text(text="<i>Trying to restarting.....</i>")
-    await asyncio.sleep(5)
-    await msg.edit("<i>Server restarted successfully ✅</i>")
+    msg = await message.reply_text(
+        "<b>╭──────❰ 🔄 ʀᴇsᴛᴀʀᴛɪɴɢ ❱──────╮\n"
+        "┃\n"
+        "┣⊸ sᴀᴠɪɴɢ ᴊᴏʙ sᴛᴀᴛᴇ ᴛᴏ ᴅʙ...\n"
+        "┃\n"
+        "╰────────────────────────────────╯</b>"
+    )
+    await asyncio.sleep(2)
+    await msg.edit(
+        "<b>╭──────❰ ✅ ʀᴇsᴛᴀʀᴛᴇᴅ ❱──────╮\n"
+        "┃\n"
+        "┣⊸ ʙᴏᴛ ɪs ʙᴀᴄᴋ ᴏɴʟɪɴᴇ ✅\n"
+        "┣⊸ ᴊᴏʙs ᴡɪʟʟ ʀᴇsᴜᴍᴇ ᴀᴜᴛᴏᴍᴀᴛɪᴄᴀʟʟʏ\n"
+        "┃\n"
+        "╰────────────────────────────────╯</b>"
+    )
+    os.execl(sys.executable, sys.executable, *sys.argv)
+
+
+@Client.on_message(filters.private & filters.command(['update']) & filters.user(Config.BOT_OWNER_ID))
+async def update_bot(client, message):
+    """Pull latest code from GitHub and instantly restart the bot."""
+    import subprocess, shutil
+
+    msg = await message.reply_text(
+        "<b>╭──────❰ 🔄 ᴜᴘᴅᴀᴛᴇ ❱──────╮\n"
+        "┃\n"
+        "┣⊸ ᴘᴜʟʟɪɴɢ ʟᴀᴛᴇsᴛ ᴄʜᴀɴɢᴇs ғʀᴏᴍ ɢɪᴛ...\n"
+        "┃\n"
+        "╰────────────────────────────────╯</b>"
+    )
+
+    # -- git pull -------------------------------------------------------
+    git  = shutil.which("git") or "git"
+    cwd  = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    proc = await asyncio.create_subprocess_exec(
+        git, "pull", "origin", "main",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        cwd=cwd,
+    )
+    stdout, stderr = await proc.communicate()
+    out = (stdout or b"").decode().strip()
+    err = (stderr or b"").decode().strip()
+
+    # -- Already up to date? -------------------------------------------
+    if "Already up to date" in out:
+        return await msg.edit(
+            "<b>╭──────❰ ✅ ᴜᴘ ᴛᴏ ᴅᴀᴛᴇ ❱──────╮\n"
+            "┃\n"
+            "┣⊸ ɴᴏ ɴᴇᴡ ᴄʜᴀɴɢᴇs ᴏɴ ɢɪᴛ.\n"
+            "┣⊸ ɴᴏ ʀᴇsᴛᴀʀᴛ ɴᴇᴇᴅᴇᴅ ✅\n"
+            "┃\n"
+            "╰────────────────────────────────╯</b>"
+        )
+
+    # -- Error? ---------------------------------------------------------
+    if proc.returncode != 0:
+        snippet = (err or out)[:500]
+        return await msg.edit(
+            f"<b>╭──────❰ ❌ ᴜᴘᴅᴀᴛᴇ ғᴀɪʟᴇᴅ ❱──────╮\n"
+            f"┃\n"
+            f"┣⊸ ɢɪᴛ ᴇxɪᴛ ᴄᴏᴅᴇ: {proc.returncode}\n"
+            f"┃\n"
+            f"╰────────────────────────────────╯</b>\n"
+            f"<code>{snippet}</code>"
+        )
+
+    # -- Parse changed files -------------------------------------------
+    changed_files = [
+        ln.strip() for ln in out.splitlines()
+        if ln.strip() and not ln.startswith(("From ", "remote:", "Updating", "Fast-forward"))
+        and "|" not in ln and "file" not in ln
+    ]
+    files_str = "\n".join(f"┣⊸ ◈ {f}" for f in changed_files[:10]) or "┣⊸ ◈ (see git log)"
+
+    await msg.edit(
+        f"<b>╭──────❰ ✅ ᴜᴘᴅᴀᴛᴇᴅ ❱──────╮\n"
+        f"┃\n"
+        f"┣⊸ 𝐂𝐡𝐚𝐧𝐠𝐞𝐝 𝐅𝐢𝐥𝐞𝐬:\n"
+        f"{files_str}\n"
+        f"┃\n"
+        f"┣⊸ ʀᴇsᴛᴀʀᴛɪɴɢ ɪɴ 3s...\n"
+        f"┣⊸ ᴊᴏʙs ᴡɪʟʟ ʀᴇsᴜᴍᴇ ᴀᴜᴛᴏᴍᴀᴛɪᴄᴀʟʟʏ\n"
+        f"┃\n"
+        f"╰────────────────────────────────╯</b>"
+    )
+    await asyncio.sleep(3)
     os.execl(sys.executable, sys.executable, *sys.argv)
 
 # ==================Callback Functions==================

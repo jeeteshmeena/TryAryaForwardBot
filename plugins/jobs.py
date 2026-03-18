@@ -229,11 +229,17 @@ async def _run_job(job_id: str, user_id: int):
                 slp    = max(1, int(cfg.get('duration', 1) or 1))
 
                 chunk_end = min(cur + BATCH_CHUNK - 1, bend)
-                ids = list(range(cur, chunk_end + 1))
-
+                # Use get_chat_history for private sources because get_messages by ID fails there
                 try:
-                    msgs = await client.get_messages(fc, ids)
-                    if not isinstance(msgs, list): msgs = [msgs]
+                    if not is_bot or is_private_src:
+                        col = []
+                        async for msg in client.get_chat_history(fc, offset_id=chunk_end + 1, limit=BATCH_CHUNK):
+                            if msg.id < cur: break
+                            col.append(msg)
+                        msgs = list(reversed(col))
+                    else:
+                        msgs = await client.get_messages(fc, list(range(cur, chunk_end + 1)))
+                        if not isinstance(msgs, list): msgs = [msgs]
                 except FloodWait as fw: await asyncio.sleep(fw.value + 2); continue
                 except asyncio.CancelledError: raise
                 except Exception as e:
@@ -382,9 +388,11 @@ async def _render_jobs_list(bot, user_id: int, mq):
             bp  = _batch_tag(j)
             d2  = f" ＋ {j.get('to_title_2','?')}" if j.get("to_chat_2") else ""
             err = f"\n┃  ⚠️ <code>{j.get('error','')}</code>" if j.get("status") == "error" else ""
+            c_name = j.get("custom_name")
+            name_disp = f" <b>{c_name}</b>" if c_name else ""
             lines.append(
                 f"┣⊸ {st} <b>{j.get('from_title','?')} → {j.get('to_title','?')}{d2}</b>"
-                f"  <code>[{j['job_id'][-6:]}]</code>"
+                f"  <code>[{j['job_id'][-6:]}]</code>{name_disp}"
                 f"\n┃   ◈ 𝐅𝐨𝐫𝐰𝐚𝐫𝐝𝐞𝐝: <code>{fwd}</code>{bp}{err}"
             )
         lines.append("┃\n<b>╰────────────────────────────────╯</b>")
@@ -465,10 +473,13 @@ async def job_info_cb(bot, query):
 
     err_lbl = f"\n┣⊸ ⚠️ ᴇʀʀᴏʀ: <code>{job['error']}</code>" if job.get("error") else ""
 
+    c_name   = job.get("custom_name")
+    name_lbl = f"\n┣⊸ ◈ 𝐍𝐚𝐦𝐞    : <b>{c_name}</b>" if c_name else ""
+
     text = (
         f"<b>╭──────❰ 📋 ʟɪᴠᴇ ᴊᴏʙ ɪɴғᴏ ❱──────╮\n"
         f"┃\n"
-        f"┣⊸ ◈ 𝐈𝐃      : <code>{job_id[-6:]}</code>\n"
+        f"┣⊸ ◈ 𝐈𝐃      : <code>{job_id[-6:]}</code>{name_lbl}\n"
         f"┣⊸ ◈ 𝐒𝐭𝐚𝐭𝐮𝐬  : {st} {job.get('status','?')}\n"
         f"┣⊸ ◈ 𝐒𝐨𝐮𝐫𝐜𝐞  : {job.get('from_title','?')}\n"
         f"┣⊸ ◈ 𝐃𝐞𝐬𝐭 𝟏  : {job.get('to_title','?')}{t1_lbl}"
@@ -717,7 +728,7 @@ async def _create_job_flow(bot, uid: int):
 
     # Step 6 — Size limit
     lim_r = await bot.ask(uid,
-        "<b>╭──────❰ 📋 sᴛᴇᴘ 6/6 — sɪᴢᴇ ʟɪᴍɪᴛ ❱──────╮\n"
+        "<b>╭──────❰ 📋 sᴛᴇᴘ 6/7 — sɪᴢᴇ ʟɪᴍɪᴛ ❱──────╮\n"
         "┃\n┣⊸ 0         — ɴᴏ ʟɪᴍɪᴛ\n"
         "┣⊸ 50        — sᴋɪᴘ ғɪʟᴇs > 50 ᴍʙ\n"
         "┣⊸ 50:10     — sᴋɪᴘ > 50ᴍʙ ᴏʀ > 10 ᴍɪɴᴜᴛᴇs\n"
@@ -746,6 +757,25 @@ async def _create_job_flow(bot, uid: int):
             try: max_mb = int(lt)
             except Exception: pass
 
+    # Step 7 — Custom Name
+    name_r = await bot.ask(uid,
+        "<b>╭──────❰ 📋 sᴛᴇᴘ 7/7 — ᴊᴏʙ ɴᴀᴍᴇ (ᴏᴘᴛɪᴏɴᴀʟ) ❱──────╮\n"
+        "┃\n┣⊸ sᴇɴᴅ ᴀ sʜᴏʀᴛ ɴᴀᴍᴇ ғᴏʀ ᴛʜɪs ᴊᴏʙ ᴛᴏ ɪᴅᴇɴᴛɪғʏ ɪᴛ ᴇᴀsɪʟʏ.\n"
+        "┣⊸ ᴏʀ ᴄʟɪᴄᴋ sᴋɪᴘ ᴛᴏ ᴜsᴇ ᴅᴇғᴀᴜʟᴛ.\n"
+        "┃\n╰────────────────────────────────╯</b>",
+        reply_markup=ReplyKeyboardMarkup([
+            [KeyboardButton("sᴋɪᴘ (ᴜsᴇ ᴅᴇғᴀᴜʟᴛ)")], [KeyboardButton("/cancel")]
+        ], resize_keyboard=True, one_time_keyboard=True))
+
+    if "/cancel" in name_r.text:
+        return await name_r.reply(
+            "<b>╭──────❰ ❌ ᴄᴀɴᴄᴇʟʟᴇᴅ ❱──────╮\n┃\n╰────────────────────────────────╯</b>",
+            reply_markup=ReplyKeyboardRemove())
+
+    cname = None
+    if "sᴋɪᴘ" not in name_r.text.lower() and "skip" not in name_r.text.lower():
+        cname = name_r.text.strip()[:30]
+
     # Save & Start
     job_id = f"{uid}-{int(time.time())}"
     job = {
@@ -757,6 +787,7 @@ async def _create_job_flow(bot, uid: int):
         "batch_cursor": bstart, "batch_done": False,
         "max_size_mb": max_mb, "max_duration_secs": max_sec,
         "status": "running", "created": int(time.time()), "forwarded": 0, "last_seen_id": 0,
+        "custom_name": cname,
     }
     await _save_job(job)
     _start_job_task(job_id, uid)
@@ -775,7 +806,7 @@ async def _create_job_flow(bot, uid: int):
         f"┣⊸ ◈ 𝐃𝐞𝐬𝐭 𝟏  : {ttl1}{th1_lbl}"
         f"{d2_lbl}{bt_lbl}{sz_lbl}{dur_lbl}\n"
         f"┣⊸ ◈ 𝐀𝐜𝐜𝐨𝐮𝐧𝐭 : {'🤖 ʙᴏᴛ' if ibot else '👤 ᴜsᴇʀʙᴏᴛ'} {sel.get('name','?')}\n"
-        f"┣⊸ ◈ 𝐉𝐨𝐛 𝐈𝐃  : <code>{job_id[-6:]}</code>\n"
+        f"┣⊸ ◈ 𝐉𝐨𝐛 𝐈𝐃  : <code>{job_id[-6:]}</code>" + (f" (<b>{cname}</b>)\n" if cname else "\n") +
         f"┃\n"
         f"╰────────────────────────────────╯</b>",
         reply_markup=ReplyKeyboardRemove())
