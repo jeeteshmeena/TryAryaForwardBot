@@ -233,7 +233,7 @@ BATCH_CHUNK = 200
 _active_clients = {}
 
 async def _get_shared_client(acc: dict):
-    from plugins.test import start_clone_bot, _CLIENT
+    from plugins.test import start_clone_bot
     acc_id = str(acc.get("_id", acc.get("id")))
     if acc_id in _active_clients:
         c, refs = _active_clients[acc_id]

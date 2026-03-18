@@ -174,7 +174,8 @@ async def _run_task_job(job_id: str, user_id: int):
         if not acc:
             await _tj_update(job_id, status="error", error="Account not found"); return
 
-        client  = await start_clone_bot(_CLIENT.client(acc))
+        from plugins.jobs import _get_shared_client
+        client  = await _get_shared_client(acc)
         is_bot  = acc.get("is_bot", True)
         fc      = job["from_chat"]
         to_chat = job["to_chat"]
@@ -198,7 +199,7 @@ async def _run_task_job(job_id: str, user_id: int):
             rm_cap   = 'rm_caption' in dis
             cap_tpl  = configs.get('caption')
             forward_tag = configs.get('forward_tag', False)
-            slp      = max(1, configs.get('duration', 1) or 1)
+            slp      = configs.get('duration', 0) or 0
 
             chunk_end = current + BATCH_SIZE - 1
             if end_id > 0: chunk_end = min(chunk_end, end_id)
@@ -255,9 +256,9 @@ async def _run_task_job(job_id: str, user_id: int):
         await _tj_update(job_id, status="error", error=str(e))
     finally:
         _task_jobs.pop(job_id, None); _pause_events.pop(job_id, None)
-        if client:
-            try: await client.stop()
-            except Exception: pass
+        if acc:
+            from plugins.jobs import _release_shared_client
+            await _release_shared_client(acc)
 
 
 def _start_task(job_id: str, user_id: int):
