@@ -275,6 +275,10 @@ async def pub_(bot, message):
                                           sts.add('total_files')
                                       except FloodWait as fw:
                                           await asyncio.sleep(fw.value + 2)
+                                          try:
+                                              if act == 'copy_message': await client.copy_message(**prm)
+                                              elif act == 'send_cached_media': await client.send_cached_media(**prm)
+                                              sts.add('total_files')
                                           except Exception: sts.add('deleted')
                                       except Exception as e:
                                           print(f"Direct send error: {e}")
