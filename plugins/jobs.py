@@ -145,11 +145,18 @@ async def _forward_message(client, msg, to1, th1, cap_empty, to2=None, th2=None)
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def _get_latest_id(client, chat_id, is_bot: bool) -> int:
+    """Get the latest message ID in a chat.
+    - For private chats (user DMs, saved messages): use get_chat_history (works for all account types via MTProto).
+    - For channels/groups with a bot account: binary-search by get_messages.
+    """
+    is_private = (chat_id == "me") or (isinstance(chat_id, int) and chat_id > 0)
     try:
-        if not is_bot:
+        if not is_bot or is_private:
+            # get_chat_history works for userbots always, and for bots in private chats
             async for msg in client.get_chat_history(chat_id, limit=1):
                 return msg.id
         else:
+            # Binary search via get_messages — efficient for channels
             lo, hi = 1, 9_999_999
             for _ in range(25):
                 if hi - lo <= 50: break
@@ -157,9 +164,10 @@ async def _get_latest_id(client, chat_id, is_bot: bool) -> int:
                 try:
                     p = await client.get_messages(chat_id, [mid])
                     if not isinstance(p, list): p = [p]
-                    lo = mid if any(m and not m.empty for m in p) else hi
-                    if lo == mid: pass
-                    else: hi = mid
+                    if any(m and not m.empty for m in p):
+                        lo = mid
+                    else:
+                        hi = mid
                 except Exception:
                     hi = mid
             return hi
@@ -192,6 +200,12 @@ async def _run_job(job_id: str, user_id: int):
         max_mb  = int(job.get("max_size_mb", 0) or 0)
         max_sec = int(job.get("max_duration_secs", 0) or 0)
         seen    = job.get("last_seen_id", 0)
+
+        # Private chat = user DM (positive int ID) or Saved Messages ("me")
+        # Channels/supergroups have negative IDs (-100xxxxxxxxxx)
+        # Private chats use get_chat_history (works for both bots & userbots via MTProto)
+        # Channels use get_messages by ID probing (more reliable, no history limit)
+        is_private_src = (fc == "me") or (isinstance(fc, int) and fc > 0)
 
         if seen == 0:
             seen = await _get_latest_id(client, fc, is_bot)
@@ -261,13 +275,19 @@ async def _run_job(job_id: str, user_id: int):
             new: list = []
 
             try:
-                if not is_bot:
+                if not is_bot or is_private_src:
+                    # ── get_chat_history path ──────────────────────────────
+                    # Used for: all userbots, AND bots with private chats.
+                    # Pyrogram exposes this via MTProto even for bot accounts.
                     col = []
                     async for msg in client.get_chat_history(fc, limit=50):
                         if msg.id <= seen: break
                         col.append(msg)
                     new = list(reversed(col))
                 else:
+                    # ── ID-probing path (bots + channels only) ─────────────
+                    # Works because channel message IDs are globally sequential.
+                    # Does NOT work for private user chats.
                     probe = seen + 1
                     while True:
                         bids = list(range(probe, probe + 50))
@@ -595,9 +615,14 @@ async def _create_job_flow(bot, uid: int):
     # Step 2 — Source
     src_r = await bot.ask(uid,
         "<b>╭──────❰ 📋 sᴛᴇᴘ 2/6 — sᴏᴜʀᴄᴇ ᴄʜᴀᴛ ❱──────╮\n"
-        "┃\n┣⊸ @ᴜsᴇʀɴᴀᴍᴇ ᴏʀ ᴄʜᴀɴɴᴇʟ ʟɪɴᴋ\n"
-        "┣⊸ ɴᴜᴍᴇʀɪᴄ ɪᴅ  ᴇ.ɢ. -1001234567890\n"
-        "┣⊸ me ᴏʀ saved — sᴀᴠᴇᴅ ᴍᴇssᴀɢᴇs (ᴜsᴇʀʙᴏᴛ ᴏɴʟʏ)\n"
+        "┃\n"
+        "┣⊸ @ᴜsᴇʀɴᴀᴍᴇ       — ᴘᴜʙʟɪᴄ ᴄʜᴀɴɴᴇʟ ᴏʀ ɢʀᴏᴜᴘ\n"
+        "┣⊸ -1001234567890   — ɴᴜᴍᴇʀɪᴄ ᴄʜᴀɴɴᴇʟ ɪᴅ\n"
+        "┣⊸ 123456789        — ᴘʀɪᴠᴀᴛᴇ ᴄʜᴀᴛ ɪᴅ (ᴅᴍ ᴡɪᴛʜ ʙᴏᴛ)\n"
+        "┣⊸ me               — sᴀᴠᴇᴅ ᴍᴇssᴀɢᴇs\n"
+        "┃\n"
+        "┣⊸ <i>Pʀɪᴠᴀᴛᴇ ᴄʜᴀᴛ ɪᴅs ᴀʀᴇ ᴘᴏsɪᴛɪᴠᴇ ɴᴜᴍʙᴇʀs (ɴᴏ ᴍɪɴᴜs)</i>\n"
+        "┣⊸ <i>ʙᴏᴛʜ ʙᴏᴛ ᴀɴᴅ ᴜsᴇʀʙᴏᴛ ᴄᴀɴ ᴍᴏɴɪᴛᴏʀ ᴅᴍs ᴠɪᴀ ᴍᴛᴘʀᴏᴛᴏ</i>\n"
         "┃\n╰────────────────────────────────╯</b>",
         reply_markup=ReplyKeyboardRemove())
 
