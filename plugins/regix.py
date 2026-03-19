@@ -195,7 +195,9 @@ async def pub_(bot, message):
                               
                       if fpath:
                           try:
-                              if os.path.exists(fpath): os.remove(fpath)
+                              import shutil as _shu
+                              if os.path.isdir(fpath): _shu.rmtree(fpath, ignore_errors=True)
+                              elif os.path.exists(fpath): os.remove(fpath)
                           except: pass
                           
                       expected_seq += 1
@@ -313,7 +315,9 @@ async def pub_(bot, message):
                                   if fpath:
                                       try:
                                           import os
-                                          if os.path.exists(fpath): os.remove(fpath)
+                                          import shutil as _shu
+                                          if os.path.isdir(fpath): _shu.rmtree(fpath, ignore_errors=True)
+                                          elif os.path.exists(fpath): os.remove(fpath)
                                       except: pass
                               seq_counter += 1
                           except Exception as e:
@@ -343,8 +347,7 @@ async def pub_(bot, message):
                 _filters = data.get('filters', [])
 
                 if message.empty or message.service:
-                    sts.add('deleted')
-                    continue
+                    continue  # silently skip system/service messages, not "deleted" 
                 
                 # Determine message's generic type
                 msg_type = 'text'
@@ -392,27 +395,20 @@ async def pub_(bot, message):
                     sts.add('filtered')
                     continue
 
-                # ── Strict link filter ──────────────────────────────────────────
-                # If 'links' filter is disabled, block any message containing URLs.
-                # Checks text content, captions, AND Pyrogram message entities (text_link, url, mention).
+                # ── Link filter — strip link from caption, never drop the file ──
                 _link_disabled = data.get('block_links', False)
                 if not is_filtered and _link_disabled:
-                    _has_link = False
-                    for _fld in ('text', 'caption'):
-                        _content = getattr(message, _fld, None)
-                        if _content:
-                            _raw = _content.html if hasattr(_content, 'html') else str(_content)
-                            if re.search(r'(https?://\S+|t\.me/\S+|@[A-Za-z0-9_]{4,}|\b(?:www\.|bit\.ly/|youtu\.be/)\S+|\b[\w.-]+\.(?:com|net|org|io|co|me|tv|gg|app|xyz|info|news|link|site)(?:/\S*)?\b)', _raw, re.IGNORECASE):
-                                _has_link = True; break
-                    if not _has_link:
-                        for _efld in ('entities', 'caption_entities'):
-                            for _e in (getattr(message, _efld, None) or []):
-                                if getattr(_e, 'type', '') in ('url', 'text_link', 'mention', 'bot_command'):
-                                    _has_link = True; break
-                            if _has_link: break
-                    if _has_link:
-                        sts.add('filtered')
-                        continue
+                    _LINK_STRIP_RE = re.compile(
+                        r'(https?://\S+|t\.me/\S+|@[A-Za-z0-9_]{4,}'
+                        r'|\b(?:www\.|bit\.ly/|youtu\.be/)\S+'
+                        r'|\b[\w.-]+\.(?:com|net|org|io|co|me|tv|gg|app|xyz|info|news|link|site)(?:/\S*)?\b)',
+                        re.IGNORECASE)
+                    # For pure text messages with ONLY a link and no media — skip those
+                    if not message.media:
+                        _txt = str(getattr(message, 'text', '') or '')
+                        if _LINK_STRIP_RE.search(_txt):
+                            sts.add('filtered'); continue
+                    # For media messages: strip links from caption below (file is never dropped)
 
                 # Compute caption & replacements for this message before buffering
                 _filters = data.get('filters', [])
@@ -421,6 +417,15 @@ async def pub_(bot, message):
                 if (message.audio or message.video or message.photo or message.document) and data.get('rm_caption'):
                     new_caption = ""
 
+                # Strip links from caption when block_links is ON (never drop the file)
+                if _link_disabled and message.media and new_caption:
+                    _LSRE = re.compile(
+                        r'(https?://\S+|t\.me/\S+|@[A-Za-z0-9_]{4,}'
+                        r'|\b(?:www\.|bit\.ly/|youtu\.be/)\S+'
+                        r'|\b[\w.-]+\.(?:com|net|org|io|co|me|tv|gg|app|xyz|info|news|link|site)(?:/\S*)?\b)',
+                        re.IGNORECASE)
+                    new_caption = _LSRE.sub('', new_caption).strip()
+
                 replacements = data.get('replacements', {})
                 if replacements and new_caption:
                     for old_txt, new_txt in replacements.items():
@@ -428,7 +433,7 @@ async def pub_(bot, message):
                             new_caption = re.sub(old_txt, new_txt, new_caption, flags=re.IGNORECASE)
                         except Exception:
                             new_caption = new_caption.replace(old_txt, new_txt)
-                
+
                 sort_buffer.append((message, forward_tag, new_caption, protect, download_mode, sleep))
                 
                 # Flush only when we have a full SORT_WINDOW batch (or immediately if smart is OFF)
@@ -523,24 +528,16 @@ async def copy(bot, msg, m, sts, download=False, attempt=0, seq_index=None, uplo
              if message.empty or message.service: raise Exception("MessageEmpty")
              
              if message.media:
-                 # Preserve original file name from message; fall back to safe unique name
+                 # display_name = what Telegram UI shows (may differ from actual disk filename)
                  media_obj = getattr(message, message.media.value, None) if message.media else None
-                 original_name = getattr(media_obj, 'file_name', None) if media_obj else None
-                 
-                 if original_name:
-                     safe_name = f"downloads/{message.id}_{original_name}"
-                 elif getattr(message, 'audio', None) or getattr(message, 'voice', None):
-                     safe_name = f"downloads/{message.id}.ogg"
-                 elif getattr(message, 'video', None) or getattr(message, 'video_note', None):
-                     safe_name = f"downloads/{message.id}.mp4"
-                 elif getattr(message, 'photo', None):
-                     safe_name = f"downloads/{message.id}.jpg"
-                 elif getattr(message, 'animation', None):
-                     safe_name = f"downloads/{message.id}.gif"
-                 else:
-                     safe_name = f"downloads/{message.id}"
-                     
-                 file_path = await bot.download_media(message, file_name=safe_name)
+                 display_name = getattr(media_obj, 'file_name', None) if media_obj else None
+                 if display_name:
+                     import re as _re3
+                     display_name = _re3.sub(r'[\\/*?"<>|]', '', display_name).strip() or None
+                 # Download to isolated folder - Pyrogram keeps its internal name on disk
+                 safe_dir = f"downloads/{message.id}"
+                 os.makedirs(safe_dir, exist_ok=True)
+                 file_path = await bot.download_media(message, file_name=safe_dir + "/")
                  if not file_path: raise Exception("DownloadFailed")
                  
                  kwargs = {
@@ -549,27 +546,26 @@ async def copy(bot, msg, m, sts, download=False, attempt=0, seq_index=None, uplo
                      "reply_markup": msg.get("button"),
                      "protect_content": msg.get("protect")
                  }
-                 
+                 # Pass display_name as file_name= so Telegram shows correct name on upload
                  if getattr(message, 'photo', None):
-                     await upload_queue.put((seq_index, 'send_photo', {"photo": file_path, **kwargs}, file_path))
+                     await upload_queue.put((seq_index, 'send_photo', {"photo": file_path, **kwargs}, safe_dir))
                  elif getattr(message, 'video', None):
-                     await upload_queue.put((seq_index, 'send_video', {"video": file_path, "file_name": original_name or None, **kwargs}, file_path))
+                     await upload_queue.put((seq_index, 'send_video', {"video": file_path, "file_name": display_name, **kwargs}, safe_dir))
                  elif getattr(message, 'document', None):
-                     await upload_queue.put((seq_index, 'send_document', {"document": file_path, "file_name": original_name or None, **kwargs}, file_path))
+                     await upload_queue.put((seq_index, 'send_document', {"document": file_path, "file_name": display_name, **kwargs}, safe_dir))
                  elif getattr(message, 'audio', None):
-                     await upload_queue.put((seq_index, 'send_audio', {"audio": file_path, "file_name": original_name or None, **kwargs}, file_path))
+                     await upload_queue.put((seq_index, 'send_audio', {"audio": file_path, "file_name": display_name, **kwargs}, safe_dir))
                  elif getattr(message, 'voice', None):
-                     await upload_queue.put((seq_index, 'send_voice', {"voice": file_path, **kwargs}, file_path))
+                     await upload_queue.put((seq_index, 'send_voice', {"voice": file_path, **kwargs}, safe_dir))
                  elif getattr(message, 'video_note', None):
-                     await upload_queue.put((seq_index, 'send_video_note', {"video_note": file_path, **kwargs}, file_path))
+                     await upload_queue.put((seq_index, 'send_video_note', {"video_note": file_path, **kwargs}, safe_dir))
                  elif getattr(message, 'animation', None):
-                     await upload_queue.put((seq_index, 'send_animation', {"animation": file_path, **kwargs}, file_path))
+                     await upload_queue.put((seq_index, 'send_animation', {"animation": file_path, "file_name": display_name, **kwargs}, safe_dir))
                  elif getattr(message, 'sticker', None):
-                     await upload_queue.put((seq_index, 'send_sticker', {"sticker": file_path, **kwargs}, file_path))
+                     await upload_queue.put((seq_index, 'send_sticker', {"sticker": file_path, **kwargs}, safe_dir))
                  else:
-                     # Attempt to just copy message if somehow media type is completely missing.
                      c_kwargs = {"chat_id": sts.get("TO"), "from_chat_id": sts.get("FROM"), "message_id": msg.get("msg_id")}
-                     await upload_queue.put((seq_index, 'copy_message', c_kwargs, file_path))
+                     await upload_queue.put((seq_index, 'copy_message', c_kwargs, safe_dir))
              else:
                  snd_kwargs = {
                      "chat_id": sts.get("TO"),

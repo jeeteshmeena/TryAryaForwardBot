@@ -131,22 +131,27 @@ async def _send_one(client, msg, to_chat: int, remove_caption: bool, caption_tpl
         try:
             if msg.media:
                 mo = getattr(msg, msg.media.value, None)
-                orig = getattr(mo, 'file_name', None) if mo else None
-                if orig:
-                    import re
-                    orig = re.sub(r'[\\/*?:"<>|]', "", orig)
-                safe = f"downloads/{msg.id}_{orig}" if orig else f"downloads/{msg.id}"
-                fp = await client.download_media(msg, file_name=safe)
+                # display_name = Telegram UI name (what user sees), may differ from disk name
+                display_name = getattr(mo, 'file_name', None) if mo else None
+                if display_name:
+                    import re as _re4
+                    display_name = _re4.sub(r'[\\/*?:"<>|]', '', display_name).strip() or None
+                import shutil as _shu2
+                safe_dir = f"downloads/{msg.id}"
+                os.makedirs(safe_dir, exist_ok=True)
+                fp = await client.download_media(msg, file_name=safe_dir + "/")
                 if not fp: raise Exception("DownloadFailed")
-                kw = {"chat_id": to_chat, "caption": caption if caption is not None else (msg.caption or "")}
-                if msg.photo:       await client.send_photo(photo=fp, **kw)
-                elif msg.video:     await client.send_video(video=fp, file_name=orig, **kw)
-                elif msg.document:  await client.send_document(document=fp, file_name=orig, **kw)
-                elif msg.audio:     await client.send_audio(audio=fp, file_name=orig, **kw)
-                elif msg.voice:     await client.send_voice(voice=fp, **kw)
-                elif msg.animation: await client.send_animation(animation=fp, **kw)
-                elif msg.sticker:   await client.send_sticker(sticker=fp, **kw)
-                if os.path.exists(fp): os.remove(fp)
+                kw = {"chat_id": to_chat, "caption": caption if caption is not None else (str(msg.caption) if msg.caption else "")}
+                try:
+                    if msg.photo:       await client.send_photo(photo=fp, **kw)
+                    elif msg.video:     await client.send_video(video=fp, file_name=display_name, **kw)
+                    elif msg.document:  await client.send_document(document=fp, file_name=display_name, **kw)
+                    elif msg.audio:     await client.send_audio(audio=fp, file_name=display_name, **kw)
+                    elif msg.voice:     await client.send_voice(voice=fp, **kw)
+                    elif msg.animation: await client.send_animation(animation=fp, file_name=display_name, **kw)
+                    elif msg.sticker:   await client.send_sticker(sticker=fp, **kw)
+                finally:
+                    _shu2.rmtree(safe_dir, ignore_errors=True)
                 return True
             else:
                 await client.send_message(chat_id=to_chat, text=msg.text or "")
@@ -210,21 +215,36 @@ async def _run_task_job(job_id: str, user_id: int):
             if end_id > 0: chunk_end = min(chunk_end, end_id)
             batch_ids = list(range(current, chunk_end + 1))
 
-            is_private_src = not str(fc).startswith('-')
             try:
-                if not is_bot or is_private_src:
-                    col = []
-                    async for msg in client.get_chat_history(fc, offset_id=chunk_end + 1, limit=BATCH_SIZE):
-                        if msg.id < current: break
-                        col.append(msg)
-                    msgs = list(reversed(col))
-                else:
+                msgs = []
+                fetch_ok = False
+                # Try get_messages first (works for bots on all public channels)
+                try:
                     msgs = await client.get_messages(fc, batch_ids)
                     if not isinstance(msgs, list): msgs = [msgs]
-            except FloodWait as fw: await asyncio.sleep(fw.value + 2); continue
+                    fetch_ok = True
+                except FloodWait as fw:
+                    await asyncio.sleep(fw.value + 2); continue
+                except Exception as ge:
+                    logger.warning(f"[TaskJob {job_id}] get_messages failed @ {current}: {ge}")
+                # Fallback: get_chat_history (for userbots and bot DMs)
+                if not fetch_ok:
+                    try:
+                        col = []
+                        async for hmsg in client.get_chat_history(fc, offset_id=chunk_end + 1, limit=BATCH_SIZE):
+                            if hmsg.id < current: break
+                            col.append(hmsg)
+                        msgs = list(reversed(col))
+                        fetch_ok = True
+                    except FloodWait as fw:
+                        await asyncio.sleep(fw.value + 2); continue
+                    except Exception as he:
+                        logger.warning(f"[TaskJob {job_id}] history fallback failed @ {current}: {he}")
+                if not fetch_ok:
+                    current += BATCH_SIZE; await _tj_update(job_id, current_id=current); continue
             except asyncio.CancelledError: raise
             except Exception as e:
-                logger.warning(f"[TaskJob {job_id}] Fetch {current}: {e}")
+                logger.warning(f"[TaskJob {job_id}] Fetch outer exception {current}: {e}")
                 current += BATCH_SIZE; await _tj_update(job_id, current_id=current); continue
 
             valid = sorted([m for m in msgs if m and not getattr(m, 'empty', False) and not getattr(m, 'service', False)], key=lambda m: m.id)
