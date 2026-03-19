@@ -55,6 +55,52 @@ async def _tj_inc(job_id: str, n: int = 1):
     await db.db[COLL].update_one({"job_id": job_id}, {"$inc": {"forwarded": n}})
 
 
+_tj_status_msgs: dict = {}
+
+async def _tj_notify(bot, job: dict, phase: str = ""):
+    """Send/edit a live task job status message to the user."""
+    if not bot:
+        return
+    uid    = job["user_id"]
+    job_id = job["job_id"]
+    st     = _st(job.get("status", "running"))
+    fwd    = job.get("forwarded", 0)
+    cur    = job.get("current_id", "?")
+    end    = job.get("end_id", 0)
+    cname  = job.get("custom_name", "")
+    name_p = f" <b>{cname}</b>" if cname else ""
+    rng_p  = f"<code>{job.get('start_id',1)}</code> → <code>{end}</code>" if end else f"<code>{job.get('start_id',1)}</code> → ∞"
+    err_p  = f"\n┣⊸ ⚠️ <code>{job['error']}</code>" if job.get("error") else ""
+    phase_p = f"\n┣⊸ ◈ 𝐏𝐡𝐚𝐬𝐞   : <code>{phase}</code>" if phase else ""
+    text = (
+        f"<b>╭──────❰ 📦 ᴛᴀsᴋ ᴊᴏʙ ᴘʀᴏɢʀᴇss ❱──────╮\n"
+        f"┃\n"
+        f"┣⊸ ◈ 𝐈𝐃      : <code>{job_id[-6:]}</code>{name_p}\n"
+        f"┣⊸ ◈ 𝐒𝐭𝐚𝐭𝐮𝐬  : {st} {job.get('status','running')}\n"
+        f"┣⊸ ◈ 𝐒𝐨𝐮𝐫𝐜𝐞  : {job.get('from_title','?')}\n"
+        f"┣⊸ ◈ 𝐓𝐚𝐫𝐠𝐞𝐭  : {job.get('to_title','?')}\n"
+        f"┣⊸ ◈ 𝐑𝐚𝐧𝐠𝐞   : {rng_p}\n"
+        f"┣⊸ ◈ 𝐂𝐮𝐫𝐫𝐞𝐧𝐭 : <code>{cur}</code>\n"
+        f"┣⊸ ◈ 𝐅𝐰𝐝     : <code>{fwd}</code>"
+        f"{phase_p}{err_p}\n"
+        f"┃\n"
+        f"╰────────────────────────────────╯</b>"
+    )
+    key = (uid, job_id)
+    try:
+        existing_mid = _tj_status_msgs.get(key)
+        if existing_mid:
+            try:
+                await bot.edit_message_text(uid, existing_mid, text)
+                return
+            except Exception:
+                pass
+        sent = await bot.send_message(uid, text)
+        _tj_status_msgs[key] = sent.id
+    except Exception:
+        pass
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Filter helper
 # ══════════════════════════════════════════════════════════════════════════════
@@ -167,7 +213,7 @@ async def _send_one(client, msg, to_chat: int, remove_caption: bool, caption_tpl
 
 BATCH_SIZE = 200
 
-async def _run_task_job(job_id: str, user_id: int):
+async def _run_task_job(job_id: str, user_id: int, _bot=None):
     job = await _tj_get(job_id)
     if not job: return
 
@@ -175,6 +221,7 @@ async def _run_task_job(job_id: str, user_id: int):
         ev = asyncio.Event(); ev.set()
         _pause_events[job_id] = ev
     pause_ev = _pause_events[job_id]
+    last_notify = 0  # for auto status notifications
 
     acc = client = None
     try:
@@ -262,6 +309,14 @@ async def _run_task_job(job_id: str, user_id: int):
 
             await _tj_update(job_id, consecutive_empty=0)
 
+            # Auto status notification every 60s
+            _now = int(time.time())
+            if _bot and _now - last_notify >= 60:
+                _fresh_j = await _tj_get(job_id)
+                if _fresh_j:
+                    await _tj_notify(_bot, _fresh_j, "ʀᴜɴɴɪɴɢ")
+                last_notify = _now
+
             fwd = 0
             for msg in valid:
                 await pause_ev.wait()
@@ -291,10 +346,10 @@ async def _run_task_job(job_id: str, user_id: int):
             await _release_shared_client(acc)
 
 
-def _start_task(job_id: str, user_id: int):
+def _start_task(job_id: str, user_id: int, _bot=None):
     ev = asyncio.Event(); ev.set()
     _pause_events[job_id] = ev
-    task = asyncio.create_task(_run_task_job(job_id, user_id))
+    task = asyncio.create_task(_run_task_job(job_id, user_id, _bot=_bot))
     _task_jobs[job_id] = task
     return task
 
@@ -478,7 +533,7 @@ async def tj_resume_cb(bot, q):
         await q.answer("▶️ ʀᴇsᴜᴍᴇᴅ!")
     else:
         await _tj_update(job_id, status="running")
-        _start_task(job_id, uid)
+        _start_task(job_id, uid, _bot=bot)
         await q.answer("▶️ ʀᴇsᴛᴀʀᴛᴇᴅ ғʀᴏᴍ sᴀᴠᴇᴅ ᴘᴏsɪᴛɪᴏɴ!")
     await _render_taskjob_list(bot, uid, q)
 
@@ -507,7 +562,7 @@ async def tj_start_cb(bot, q):
     if job_id in _task_jobs and not _task_jobs[job_id].done():
         return await q.answer("ᴀʟʀᴇᴀᴅʏ ʀᴜɴɴɪɴɢ!", show_alert=True)
     await _tj_update(job_id, status="running")
-    _start_task(job_id, uid)
+    _start_task(job_id, uid, _bot=bot)
     await q.answer("▶️ sᴛᴀʀᴛᴇᴅ!")
     await _render_taskjob_list(bot, uid, q)
 

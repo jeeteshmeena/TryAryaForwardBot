@@ -70,6 +70,59 @@ async def _inc_forwarded(job_id: str, n: int = 1):
     await db.db.jobs.update_one({"job_id": job_id}, {"$inc": {"forwarded": n}})
 
 
+# ── Auto-status notifier ────────────────────────────────────────────────────
+# Holds (bot_instance, user_id) -> message_id of live status message
+_status_msgs: dict = {}
+
+async def _notify_status(bot, job: dict, phase: str = ""):
+    """Send/edit a live status message to the user so they see real-time progress."""
+    if not bot:
+        return
+    uid       = job["user_id"]
+    job_id    = job["job_id"]
+    st        = _st(job.get("status", "running"))
+    fwd       = job.get("forwarded", 0)
+    src       = job.get("from_title", "?")
+    dst       = job.get("to_title", "?")
+    cname     = job.get("custom_name", "")
+    name_part = f" <b>{cname}</b>" if cname else ""
+    batch_part = ""
+    if job.get("batch_mode"):
+        if job.get("batch_done"):
+            batch_part = "\n┣⊸ ◈ 𝐁𝐚𝐭𝐜𝐡   : ✅ ᴄᴏᴍᴘʟᴇᴛᴇ"
+        else:
+            cur = job.get("batch_cursor") or job.get("batch_start_id") or "?"
+            end = job.get("batch_end_id") or "…"
+            batch_part = f"\n┣⊸ ◈ 𝐁𝐚𝐭𝐜𝐡   : 📦 <code>{cur}</code> / <code>{end}</code>"
+    phase_part = f"\n┣⊸ ◈ 𝐏𝐡𝐚𝐬𝐞   : <code>{phase}</code>" if phase else ""
+    err_part   = f"\n┣⊸ ⚠️ <code>{job['error']}</code>" if job.get("error") else ""
+    text = (
+        f"<b>╭──────❰ 📋 ʟɪᴠᴇ ᴊᴏʙ ᴘʀᴏɢʀᴇss ❱──────╮\n"
+        f"┃\n"
+        f"┣⊸ ◈ 𝐈𝐃      : <code>{job_id[-6:]}</code>{name_part}\n"
+        f"┣⊸ ◈ 𝐒𝐭𝐚𝐭𝐮𝐬  : {st} {job.get('status','running')}\n"
+        f"┣⊸ ◈ 𝐒𝐨𝐮𝐫𝐜𝐞  : {src}\n"
+        f"┣⊸ ◈ 𝐃𝐞𝐬𝐭    : {dst}\n"
+        f"┣⊸ ◈ 𝐅𝐰𝐝     : <code>{fwd}</code>"
+        f"{batch_part}{phase_part}{err_part}\n"
+        f"┃\n"
+        f"╰────────────────────────────────╯</b>"
+    )
+    key = (uid, job_id)
+    try:
+        existing_msg_id = _status_msgs.get(key)
+        if existing_msg_id:
+            try:
+                await bot.edit_message_text(uid, existing_msg_id, text)
+                return
+            except Exception:
+                pass  # message deleted or too old — send a new one
+        sent = await bot.send_message(uid, text)
+        _status_msgs[key] = sent.id
+    except Exception:
+        pass
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Filter helpers
 # ══════════════════════════════════════════════════════════════════════════════
@@ -384,7 +437,7 @@ async def _release_shared_client(acc: dict):
             else:
                 _active_clients[acc_id] = (c, refs - 1)
 
-async def _run_job(job_id: str, user_id: int):
+async def _run_job(job_id: str, user_id: int, _bot=None):
     job = await _get_job(job_id)
     if not job: return
 
@@ -410,6 +463,7 @@ async def _run_job(job_id: str, user_id: int):
             await _update_job(job_id, last_seen_id=seen)
 
         last_hb = 0  # last heartbeat timestamp
+        last_notify = 0  # last status notification timestamp
 
         # ── Batch phase ─────────────────────────────────────────────────────
         if job.get("batch_mode") and not job.get("batch_done"):
@@ -427,6 +481,12 @@ async def _run_job(job_id: str, user_id: int):
                 ts = int(time.time())
                 if ts - last_hb >= 30:
                     await _update_job(job_id, last_heartbeat=ts); last_hb = ts
+                # Status notification every 60s
+                if _bot and ts - last_notify >= 60:
+                    fresh_for_notify = await _get_job(job_id)
+                    if fresh_for_notify:
+                        await _notify_status(_bot, fresh_for_notify, "ʙᴀᴛᴄʜ")
+                    last_notify = ts
 
                 dis         = await db.get_filters(user_id)
                 flgs        = await db.get_filter_flags(user_id)
@@ -519,6 +579,12 @@ async def _run_job(job_id: str, user_id: int):
             ts = int(time.time())
             if ts - last_hb >= 30:
                 await _update_job(job_id, last_heartbeat=ts); last_hb = ts
+            # Status notification every 60s
+            if _bot and ts - last_notify >= 60:
+                fresh_for_notify = await _get_job(job_id)
+                if fresh_for_notify:
+                    await _notify_status(_bot, fresh_for_notify, "ʟɪᴠᴇ")
+                last_notify = ts
 
             dis         = await db.get_filters(user_id)
             flgs        = await db.get_filter_flags(user_id)
@@ -620,8 +686,8 @@ async def _run_job(job_id: str, user_id: int):
 
 
 
-def _start_job_task(job_id: str, user_id: int) -> asyncio.Task:
-    t = asyncio.create_task(_run_job(job_id, user_id))
+def _start_job_task(job_id: str, user_id: int, _bot=None) -> asyncio.Task:
+    t = asyncio.create_task(_run_job(job_id, user_id, _bot=_bot))
     _job_tasks[job_id] = t
     return t
 
@@ -632,7 +698,7 @@ async def resume_live_jobs(user_id: int = None):
     async for job in db.db.jobs.find(q):
         jid, uid = job["job_id"], job["user_id"]
         if jid not in _job_tasks:
-            _start_job_task(jid, uid)
+            _start_job_task(jid, uid)  # no bot available during resume; user can press refresh
             logger.info(f"[Jobs] Resumed {jid} for {uid}")
 
 
@@ -796,7 +862,7 @@ async def job_start_cb(bot, q):
     if job_id in _job_tasks and not _job_tasks[job_id].done():
         return await q.answer("ᴀʟʀᴇᴀᴅʏ ʀᴜɴɴɪɴɢ!", show_alert=True)
     await _update_job(job_id, status="running")
-    _start_job_task(job_id, uid)
+    _start_job_task(job_id, uid, _bot=bot)
     await q.answer("▶️ ᴊᴏʙ sᴛᴀʀᴛᴇᴅ.")
     await _render_jobs_list(bot, uid, q)
 
@@ -1085,7 +1151,7 @@ async def _create_job_flow(bot, uid: int):
         "custom_name": cname,
     }
     await _save_job(job)
-    _start_job_task(job_id, uid)
+    _start_job_task(job_id, uid, _bot=bot)
 
     th1_lbl  = f" [ᴛʜʀᴇᴀᴅ {th1}]" if th1 else ""
     d2_lbl   = f"\n┣⊸ ◈ 𝐃𝐞𝐬𝐭 𝟐  : {ttl2}" + (f" [ᴛʜʀᴇᴀᴅ {th2}]" if th2 else "") if to2 else ""
