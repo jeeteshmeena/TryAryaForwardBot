@@ -237,35 +237,46 @@ async def _fwd(client, msg, chat, thread, cap_empty: bool, forward_tag: bool, fr
                 if orig:
                     import re as _re2
                     orig = _re2.sub(r'[\\/*?"<>|]', "", orig)
-                safe = f"downloads/{msg.id}_{orig}" if orig else f"downloads/{msg.id}"
+                safe_dir = f"downloads/{msg.id}"
+                os.makedirs(safe_dir, exist_ok=True)
+                safe = f"{safe_dir}/{orig}" if orig else f"{safe_dir}/file.dat"
                 fp = await client.download_media(msg, file_name=safe)
                 if not fp:
                     raise Exception("DownloadFailed")
                 cap = "" if cap_empty else (str(msg.caption) if msg.caption else "")
                 d_kw = {"chat_id": chat, **_thread_kw()}
+                async def _send_with_fallback(kwargs):
+                    try:
+                        if msg.photo:       await client.send_photo(photo=fp, caption=cap, **kwargs)
+                        elif msg.video:     await client.send_video(video=fp, caption=cap, file_name=orig, **kwargs)
+                        elif msg.document:  await client.send_document(document=fp, caption=cap, file_name=orig, **kwargs)
+                        elif msg.audio:     await client.send_audio(audio=fp, caption=cap, file_name=orig, **kwargs)
+                        elif msg.voice:     await client.send_voice(voice=fp, caption=cap, **kwargs)
+                        elif msg.animation: await client.send_animation(animation=fp, caption=cap, **kwargs)
+                        elif msg.sticker:   await client.send_sticker(sticker=fp, **kwargs)
+                        else:               await client.send_document(document=fp, caption=cap, **kwargs)
+                    except TypeError:
+                        no_thread_kw = {"chat_id": chat}
+                        if msg.photo:       await client.send_photo(photo=fp, caption=cap, **no_thread_kw)
+                        elif msg.video:     await client.send_video(video=fp, caption=cap, file_name=orig, **no_thread_kw)
+                        elif msg.document:  await client.send_document(document=fp, caption=cap, file_name=orig, **no_thread_kw)
+                        elif msg.audio:     await client.send_audio(audio=fp, caption=cap, file_name=orig, **no_thread_kw)
+                        elif msg.voice:     await client.send_voice(voice=fp, caption=cap, **no_thread_kw)
+                        elif msg.animation: await client.send_animation(animation=fp, caption=cap, **no_thread_kw)
+                        elif msg.sticker:   await client.send_sticker(sticker=fp, **no_thread_kw)
+                        else:               await client.send_document(document=fp, caption=cap, **no_thread_kw)
+
                 try:
-                    if msg.photo:       await client.send_photo(photo=fp, caption=cap, **d_kw)
-                    elif msg.video:     await client.send_video(video=fp, caption=cap, file_name=orig, **d_kw)
-                    elif msg.document:  await client.send_document(document=fp, caption=cap, file_name=orig, **d_kw)
-                    elif msg.audio:     await client.send_audio(audio=fp, caption=cap, file_name=orig, **d_kw)
-                    elif msg.voice:     await client.send_voice(voice=fp, caption=cap, **d_kw)
-                    elif msg.animation: await client.send_animation(animation=fp, caption=cap, **d_kw)
-                    elif msg.sticker:   await client.send_sticker(sticker=fp, **d_kw)
-                    else:               await client.send_document(document=fp, caption=cap, **d_kw)
-                except TypeError:
-                    # Thread ID not supported for this send method
-                    d_kw2 = {"chat_id": chat}
-                    if msg.photo:       await client.send_photo(photo=fp, caption=cap, **d_kw2)
-                    elif msg.video:     await client.send_video(video=fp, caption=cap, file_name=orig, **d_kw2)
-                    elif msg.document:  await client.send_document(document=fp, caption=cap, file_name=orig, **d_kw2)
-                    elif msg.audio:     await client.send_audio(audio=fp, caption=cap, file_name=orig, **d_kw2)
-                    elif msg.voice:     await client.send_voice(voice=fp, caption=cap, **d_kw2)
-                    elif msg.animation: await client.send_animation(animation=fp, caption=cap, **d_kw2)
-                    elif msg.sticker:   await client.send_sticker(sticker=fp, **d_kw2)
-                    else:               await client.send_document(document=fp, caption=cap, **d_kw2)
+                    await _send_with_fallback(d_kw)
+                except FloodWait as fw:
+                    logger.info(f"[Job fwd] Fallback FloodWait {fw.value}s for {msg.id}")
+                    await asyncio.sleep(fw.value + 2)
+                    await _send_with_fallback(d_kw)
                 finally:
                     try:
-                        if fp and os.path.exists(fp): os.remove(fp)
+                        import shutil
+                        if os.path.exists(safe_dir):
+                            shutil.rmtree(safe_dir, ignore_errors=True)
                     except Exception: pass
             else:
                 send_kw = _thread_kw()
@@ -457,9 +468,9 @@ async def _run_job(job_id: str, user_id: int):
                     if not _passes_topic(msg, from_topic_id): 
                         seen = max(seen, msg.id); continue
                     if not _passes_filters(msg, dis):          
-                        fwd_filtered += 1; seen = max(seen, msg.id); continue
+                        seen = max(seen, msg.id); continue
                     if not _passes_size(msg, max_mb, max_sec): 
-                        fwd_filtered += 1; seen = max(seen, msg.id); continue
+                        seen = max(seen, msg.id); continue
                     
                     try:
                         ok = await _forward_message(

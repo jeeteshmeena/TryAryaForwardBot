@@ -162,15 +162,25 @@ async def pub_(bot, message):
                                       os.makedirs("downloads", exist_ok=True)
                                       fallback_msg = prm.get('raw_message') or await client.get_messages(prm.get('from_chat_id'), prm.get('message_id'))
                                       if fallback_msg.media:
-                                          safe_name = f"downloads/{fallback_msg.id}"
+                                          import shutil
+                                          mo = getattr(fallback_msg, fallback_msg.media.value, None)
+                                          orig = getattr(mo, 'file_name', None) if mo else None
+                                          if orig:
+                                              import re as _re2
+                                              orig = _re2.sub(r'[\/*?"<>|]', "", orig)
+                                          safe_dir = f"downloads/{fallback_msg.id}"
+                                          os.makedirs(safe_dir, exist_ok=True)
+                                          safe_name = f"{safe_dir}/{orig}" if orig else f"{safe_dir}/file.dat"
                                           dp = await client.download_media(fallback_msg, file_name=safe_name)
                                           if not dp: raise Exception("DownloadFailed")
-                                          if getattr(fallback_msg, 'photo', None): await client.send_photo(chat_id=prm.get('chat_id'), photo=dp, caption=prm.get('caption'))
-                                          elif getattr(fallback_msg, 'video', None): await client.send_video(chat_id=prm.get('chat_id'), video=dp, caption=prm.get('caption'))
-                                          elif getattr(fallback_msg, 'document', None): await client.send_document(chat_id=prm.get('chat_id'), document=dp, caption=prm.get('caption'))
-                                          elif getattr(fallback_msg, 'audio', None): await client.send_audio(chat_id=prm.get('chat_id'), audio=dp, caption=prm.get('caption'))
-                                          elif getattr(fallback_msg, 'voice', None): await client.send_voice(chat_id=prm.get('chat_id'), voice=dp, caption=prm.get('caption'))
-                                          if os.path.exists(dp): os.remove(dp)
+                                          try:
+                                              if getattr(fallback_msg, 'photo', None): await client.send_photo(chat_id=prm.get('chat_id'), photo=dp, caption=prm.get('caption'))
+                                              elif getattr(fallback_msg, 'video', None): await client.send_video(chat_id=prm.get('chat_id'), video=dp, caption=prm.get('caption'))
+                                              elif getattr(fallback_msg, 'document', None): await client.send_document(chat_id=prm.get('chat_id'), document=dp, caption=prm.get('caption'))
+                                              elif getattr(fallback_msg, 'audio', None): await client.send_audio(chat_id=prm.get('chat_id'), audio=dp, caption=prm.get('caption'))
+                                              elif getattr(fallback_msg, 'voice', None): await client.send_voice(chat_id=prm.get('chat_id'), voice=dp, caption=prm.get('caption'))
+                                          finally:
+                                              if os.path.exists(safe_dir): shutil.rmtree(safe_dir, ignore_errors=True)
                                       else:
                                           await client.send_message(chat_id=prm.get('chat_id'), text=fallback_msg.text.html if fallback_msg.text else "")
                                       sts.add('total_files')
