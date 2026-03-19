@@ -129,19 +129,26 @@ async def run(bot, message):
         await message.reply_text("**invalid !**")
         return 
 
-    if chat_id != "me":
+    source_type_display = "Unknown"
+    if chat_id == "me":
+        source_type_display = "Saved Messages"
+    else:
         try:
-            title = (await bot.get_chat(chat_id)).title
-      #  except ChannelInvalid:
-            #return await fromid.reply("**Given source chat is copyrighted channel/group. you can't forward messages from there**")
+            c = await bot.get_chat(chat_id)
+            title = c.title or c.first_name or "Unknown"
+            from pyrogram.enums import ChatType
+            if c.type == ChatType.CHANNEL: source_type_display = "Channel"
+            elif c.type in (ChatType.SUPERGROUP, ChatType.GROUP): source_type_display = "Group"
+            elif c.type == ChatType.BOT: source_type_display = "Bot"
+            elif c.type == ChatType.PRIVATE: source_type_display = "Private"
         except (PrivateChat, ChannelPrivate, ChannelInvalid):
-            title = "private" if fromid.text else fromid.forward_from_chat.title
+            title = "private" if fromid.text else getattr(fromid.forward_from_chat, 'title', 'private')
+            source_type_display = "Private Channel/Group"
         except (UsernameInvalid, UsernameNotModified):
             return await message.reply('Invalid Link specified.')
         except Exception as e:
-            # Main bot might not have access to the user/bot chat, but the userbot might.
-            # We bypass the error so the userbot can try during the actual forwarding.
             title = str(chat_id)
+            source_type_display = "Private/Uncached" 
 
     # ----- NEW EXPLICIT ACCOUNT SELECTION LOGIC -----
     accounts = await db.get_bots(user_id)
@@ -239,15 +246,15 @@ async def run(bot, message):
 
     if acc_is_bot:
         hints = (
-            f"<b>│</b> ⚠️ <b>{acc_name}</b> (@{acc_username}) must be <b>admin</b> in TARGET\n"
-            f"<b>│</b> ⚠️ If SOURCE is private, bot must be <b>admin</b> there too\n"
-            f"<b>└──────────────────────────────────</b>\n"
+            f"> <b>Guide:</b>\n"
+            f"> • Bot <b>{acc_name}</b> must be admin in Target.\n"
+            f"> • Bot must be admin in Source if it is a private channel."
         )
     else:
         hints = (
-            f"<b>│</b> ⚠️ Userbot <b>{acc_name}</b> must be a <b>member</b> of SOURCE\n"
-            f"<b>│</b> ⚠️ Userbot must be <b>admin</b> in TARGET channel\n"
-            f"<b>└──────────────────────────────────</b>\n"
+            f"> <b>Guide:</b>\n"
+            f"> • Userbot <b>{acc_name}</b> must be a member of Source.\n"
+            f"> • Userbot must be admin in Target channel."
         )
 
     # Calculate if this needs the SLOW MODE warning
@@ -257,34 +264,29 @@ async def run(bot, message):
     warning_box = ""
     if not acc_is_bot or needs_download or reverse_order:
         warning_box = (
-            f"<b>┌─────❮ ⚠️ 𝐒𝐋𝐎𝐖 𝐌𝐎𝐃𝐄 𝐖𝐀𝐑𝐍𝐈𝐍𝐆 ❯─────</b>\n"
-            f"<b>│</b> ⊸ Forwarding will be slow (Telegram restrictions)\n"
-            f"<b>│</b> ⊸ Bot relies on parsing or downloading/re-uploading\n"
-            f"<b>│</b> ⊸ High data usage & slower speeds expected. Be patient.\n"
-            f"<b>└──────────────────────────────────</b>\n\n"
+            f"\n> <b>Warning (Slow Mode):</b>\n"
+            f"> Telegram restrictions may slow down forwarding speeds.\n"
+            f"> High data usage & slower speeds expected. Be patient."
         )
 
     check_text = (
-        f"<b>╭──────❰ ⚠️ 𝐃𝐎𝐔𝐁𝐋𝐄 𝐂𝐇𝐄𝐂𝐊 ❱──────╮</b>\n"
-        f"<b>┃</b>\n"
-        f"<b>┣⊸ ◈ 𝐀𝐂𝐂𝐎𝐔𝐍𝐓 ({acc_type_label}):</b> {acc_name}\n"
-        f"<b>┣⊸ ◈ 𝐒𝐎𝐔𝐑𝐂𝐄  :</b> <code>{title}</code>\n"
-        f"<b>┣⊸ ◈ 𝐓𝐀𝐑𝐆𝐄𝐓  :</b> <code>{to_title}</code>\n"
-        f"<b>┣⊸ ◈ 𝐒𝐊𝐈𝐏    :</b> <code>{skip_lbl}</code>\n"
-        f"<b>┃</b>\n"
-        f"<b>┌──────❮ ⚙️ 𝐒𝐞𝐭𝐭𝐢𝐧𝐠𝐬 ❯────────────</b>\n"
-        f"<b>│</b> ⊸ <b>Mode:</b> {mode_lbl}\n"
-        f"<b>│</b> ⊸ <b>Order:</b> {order_lbl}\n"
-        f"<b>│</b> ⊸ <b>Smart Order:</b> {smart_lbl}\n"
-        f"<b>│</b> ⊸ <b>Status:</b> {fwd_mode}\n"
-        f"<b>│</b> ⊸ <b>Caption:</b> {caption_m}\n"
-        f"<b>│</b> ⊸ <b>Transfer:</b> {dl_mode}\n"
-        f"<b>│</b> ⊸ <b>Filters:</b> {filter_str}\n"
-        f"<b>└──────────────────────────────────</b>\n\n"
-        f"{warning_box}"
-        f"<b>┌──────❮ 💡 𝐑𝐞𝐦𝐢𝐧𝐝𝐞𝐫𝐬 ❯───────────</b>\n"
-        f"{hints}\n"
-        f"<b>╰─── 𝐈𝐟 𝐯𝐞𝐫𝐢𝐟𝐢𝐞𝐝, 𝐜𝐥𝐢𝐜𝐤 𝐘𝐞𝐬 𝐁𝐞𝐥𝐨𝐰 ───╯</b>"
+        f"<b>Confirmation (Double Check)</b>\n\n"
+        f"<b>Task Information:</b>\n"
+        f"• <b>Account:</b> {acc_name} ({acc_type_label})\n"
+        f"• <b>Source Type:</b> {source_type_display}\n"
+        f"• <b>Source:</b> <code>{title}</code>\n"
+        f"• <b>Target:</b> <code>{to_title}</code>\n"
+        f"• <b>Skip:</b> <code>{skip_lbl}</code>\n\n"
+        f"<b>Running Settings:</b>\n"
+        f"• <b>Mode:</b> {mode_lbl}\n"
+        f"• <b>Order:</b> {order_lbl}\n"
+        f"• <b>Smart Order:</b> {smart_lbl}\n"
+        f"• <b>Status:</b> {fwd_mode}\n"
+        f"• <b>Caption:</b> {caption_m}\n"
+        f"• <b>Transfer:</b> {dl_mode}\n"
+        f"• <b>Filters:</b> {filter_str}\n\n"
+        f"{hints}{warning_box}\n\n"
+        f"<b>If everything is correct, click Yes below to start.</b>"
     )
 
     await message.reply_text(

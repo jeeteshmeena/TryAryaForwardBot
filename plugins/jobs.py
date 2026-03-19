@@ -23,15 +23,8 @@ _job_tasks: dict[str, asyncio.Task] = {}
 
 # ── Unicode helpers ────────────────────────────────────────────────────────────
 def _box(title: str, lines: list[str]) -> str:
-    """Build a bordered box identical to the bot's existing style."""
-    body = "\n".join(f"┣⊸ {l}" for l in lines)
-    return (
-        f"<b>╭──────❰ {title} ❱──────╮\n"
-        f"┃\n"
-        f"{body}\n"
-        f"┃\n"
-        f"╰────────────────────────────────╯</b>"
-    )
+    body = "\n".join(f"  • {l}" for l in lines)
+    return (f"✦ {title.upper()} ✦\n\n{body}")
 
 def _st(status: str) -> str:
     """Status emoji."""
@@ -41,7 +34,7 @@ def _batch_tag(job: dict) -> str:
     if not job.get("batch_mode"):
         return ""
     if job.get("batch_done"):
-        return "  📦✅"
+        return "  📦 ✅"
     cur = job.get("batch_cursor") or job.get("batch_start_id") or "?"
     end = job.get("batch_end_id") or "…"
     return f"  📦{cur}/{end}"
@@ -89,24 +82,21 @@ async def _notify_status(bot, job: dict, phase: str = ""):
     batch_part = ""
     if job.get("batch_mode"):
         if job.get("batch_done"):
-            batch_part = "\n┣⊸ ◈ 𝐁𝐚𝐭𝐜𝐡   : ✅ ᴄᴏᴍᴘʟᴇᴛᴇ"
+            batch_part = "\n  • <b>Batch:</b> ✅ Complete"
         else:
             cur = job.get("batch_cursor") or job.get("batch_start_id") or "?"
             end = job.get("batch_end_id") or "…"
-            batch_part = f"\n┣⊸ ◈ 𝐁𝐚𝐭𝐜𝐡   : 📦 <code>{cur}</code> / <code>{end}</code>"
-    phase_part = f"\n┣⊸ ◈ 𝐏𝐡𝐚𝐬𝐞   : <code>{phase}</code>" if phase else ""
-    err_part   = f"\n┣⊸ ⚠️ <code>{job['error']}</code>" if job.get("error") else ""
+            batch_part = f"\n  • <b>Batch:</b> 📦 <code>{cur}</code> / <code>{end}</code>"
+    phase_part = f"\n  • <b>Phase:</b> <code>{phase}</code>" if phase else ""
+    err_part   = f"\n  • ⚠️ <code>{job['error']}</code>" if job.get("error") else ""
     text = (
-        f"<b>╭──────❰ 📋 ʟɪᴠᴇ ᴊᴏʙ ᴘʀᴏɢʀᴇss ❱──────╮\n"
-        f"┃\n"
-        f"┣⊸ ◈ 𝐈𝐃      : <code>{job_id[-6:]}</code>{name_part}\n"
-        f"┣⊸ ◈ 𝐒𝐭𝐚𝐭𝐮𝐬  : {st} {job.get('status','running')}\n"
-        f"┣⊸ ◈ 𝐒𝐨𝐮𝐫𝐜𝐞  : {src}\n"
-        f"┣⊸ ◈ 𝐃𝐞𝐬𝐭    : {dst}\n"
-        f"┣⊸ ◈ 𝐅𝐰𝐝     : <code>{fwd}</code>"
-        f"{batch_part}{phase_part}{err_part}\n"
-        f"┃\n"
-        f"╰────────────────────────────────╯</b>"
+        f"<b>Live Job Progress</b>\n\n"
+        f"  • <b>ID:</b> <code>{job_id[-6:]}</code>{name_part}\n"
+        f"  • <b>Status:</b> {st} {job.get('status','running')}\n"
+        f"  • <b>Source:</b> {src}\n"
+        f"  • <b>Destination:</b> {dst}\n\n"
+        f"  • <b>Forwarded:</b> <code>{fwd}</code>"
+        f"{batch_part}{phase_part}{err_part}"
     )
     key = (uid, job_id)
     try:
@@ -293,8 +283,9 @@ async def _fwd(client, msg, chat, thread, cap_empty: bool, forward_tag: bool, fr
             safe_dir = f"downloads/{msg.id}"
             os.makedirs(safe_dir, exist_ok=True)
             if msg.media:
-                # Download to the folder — let Pyrogram keep whatever name it chooses
-                fp = await client.download_media(msg, file_name=safe_dir + "/")
+                # Use the exact display name for downloading, else fallback to default name
+                df_name = (f"{safe_dir}/{display_name}") if display_name else f"{safe_dir}/"
+                fp = await client.download_media(msg, file_name=df_name)
                 if not fp:
                     raise Exception("DownloadFailed")
                 cap = "" if cap_empty else (str(msg.caption) if msg.caption else "")
@@ -374,11 +365,23 @@ async def _get_latest_id(client, chat_id, is_bot: bool) -> int:
     # NEVER do this for private entities because get_messages queries the user's global inbox!
     is_ch = False
     try:
-        c_obj = await client.get_chat(chat_id)
-        from pyrogram.enums import ChatType
-        if getattr(c_obj, 'type', None) in (ChatType.CHANNEL, ChatType.SUPERGROUP): is_ch = True
-    except:
-        if str(chat_id).startswith("-100"): is_ch = True
+        if str(chat_id).startswith("-100"):
+            is_ch = True
+        else:
+            try:
+                from pyrogram.raw.types import InputPeerChannel
+                peer = await client.resolve_peer(chat_id)
+                if isinstance(peer, InputPeerChannel):
+                    is_ch = True
+            except Exception:
+                from pyrogram.enums import ChatType
+                c_obj = await client.get_chat(chat_id)
+                if getattr(c_obj, 'type', None) in (ChatType.CHANNEL, ChatType.SUPERGROUP):
+                    is_ch = True
+    except Exception:
+        # If all checks fail and it's a bot reading a string username, assume channel
+        if is_bot and isinstance(chat_id, str):
+            is_ch = True
         
     if not is_ch:
         return 0
@@ -463,18 +466,29 @@ async def _run_job(job_id: str, user_id: int, _bot=None):
         is_bot        = acc.get("is_bot", True)
         fc            = job["from_chat"]
 
-        # CRITICAL BUG FIX: determine if source is channel
+        # CRITICAL BUG FIX: determine if source is channel safely
         fc_is_channel = False
         try:
             if str(fc).startswith("-100"):
                 fc_is_channel = True
             else:
-                from pyrogram.enums import ChatType
-                c_obj = await client.get_chat(fc)
-                if getattr(c_obj, 'type', None) in (ChatType.CHANNEL, ChatType.SUPERGROUP):
-                    fc_is_channel = True
+                try:
+                    # Best: resolve_peer cleanly identifies users vs channels without joining
+                    from pyrogram.raw.types import InputPeerChannel
+                    peer = await client.resolve_peer(fc)
+                    if isinstance(peer, InputPeerChannel):
+                        fc_is_channel = True
+                except Exception:
+                    # Fallback to get_chat if resolve_peer fails (e.g. invite links)
+                    from pyrogram.enums import ChatType
+                    c_obj = await client.get_chat(fc)
+                    if getattr(c_obj, 'type', None) in (ChatType.CHANNEL, ChatType.SUPERGROUP):
+                        fc_is_channel = True
         except Exception as e:
-            logger.warning(f"Could not verify chat type for {fc}: {e}")
+            # If all checks failed, and it's a string username, assume channel for bots
+            # because bots can't use get_chat_history on public channels anyway.
+            if getattr(client, 'me', None) and client.me.is_bot and isinstance(fc, str):
+                fc_is_channel = True
         to1           = job["to_chat"];     th1 = job.get("to_thread_id")
         to2           = job.get("to_chat_2"); th2 = job.get("to_thread_id_2")
         max_mb        = int(job.get("max_size_mb", 0) or 0)
@@ -624,34 +638,35 @@ async def _run_job(job_id: str, user_id: int, _bot=None):
             new: list   = []
 
             try:
-                probe = seen + 1
-                for _ in range(4):
-                    bids = list(range(probe, probe + 50))
-                    chunk_msgs = []
-                    if fc_is_channel:
+                chunk_msgs = []
+                # ALWAYS use get_chat_history for Live polling so we don't query future empty IDs!
+                try:
+                    co = []
+                    async for gmsg in client.get_chat_history(fc, limit=30):
+                        if getattr(gmsg, 'id', 0) <= seen: 
+                            break
+                        co.append(gmsg)
+                    chunk_msgs = list(reversed(co))  # Oldest to newest
+                except Exception as e:
+                    # If we can't use history (e.g. ChatAdminRequired), we must rely on get_messages
+                    # But we only check max 10 future messages to prevent running away
+                    if getattr(client, 'me', None) and client.me.is_bot and fc_is_channel:
                         try:
-                            chunk_msgs = await client.get_messages(fc, bids)
-                            if not isinstance(chunk_msgs, list): chunk_msgs = [chunk_msgs]
-                        except FloodWait as fw:
-                            await asyncio.sleep(fw.value + 1); break
-                        except Exception: pass
+                            bids = list(range(seen + 1, seen + 11))
+                            p = await client.get_messages(fc, bids)
+                            if not isinstance(p, list): p = [p]
+                            # Only include if actually existing
+                            chunk_msgs = [m for m in p if m and not getattr(m, 'empty', True)]
+                        except Exception:
+                            pass
+                
+                if not chunk_msgs:
+                    await asyncio.sleep(poll_sleep)
+                    continue
                     
-                    if not chunk_msgs:
-                        # Fallback to history for bots/users/normal groups
-                        try:
-                            co = []
-                            async for gmsg in client.get_chat_history(fc, limit=50):
-                                if gmsg.id <= seen: break
-                                co.append(gmsg)
-                            chunk_msgs = list(reversed(co))
-                        except Exception: break
-                    if not chunk_msgs: break
-                    chunk_msgs.sort(key=lambda m: getattr(m, 'id', 0) if m else 0)
-                    # Only add messages strictly newer than seen
-                    new.extend(m for m in chunk_msgs if m and getattr(m, 'id', 0) > seen)
-                    valid = [m for m in chunk_msgs if m and not getattr(m, 'empty', True)]
-                    if len(valid) < 20: break
-                    probe = max(bids[-1] + 1, max((getattr(m,'id',0) for m in chunk_msgs if m), default=probe))
+                chunk_msgs.sort(key=lambda m: getattr(m, 'id', 0) if m else 0)
+                new.extend(m for m in chunk_msgs if m and getattr(m, 'id', 0) > seen)
+
             except FloodWait as fw: await asyncio.sleep(fw.value + 1); continue
             except asyncio.CancelledError: raise
             except Exception as e:
@@ -661,16 +676,13 @@ async def _run_job(job_id: str, user_id: int, _bot=None):
             fwd_n = 0
             for msg in new:
                 if not msg or getattr(msg, 'empty', False) or getattr(msg, 'service', False):
-                    if msg: seen = max(seen, msg.id)
+                    seen = max(seen, getattr(msg, 'id', 0) or seen)
                     continue
                     
                 # Explicit skip → advance seen so we never reprocess
-                if not _passes_topic(msg, from_topic_id):
-                    seen = max(seen, msg.id); continue
-                if not _passes_filters(msg, dis):
-                    seen = max(seen, msg.id); continue
-                if not _passes_size(msg, max_mb, max_sec):
-                    seen = max(seen, msg.id); continue
+                if not _passes_topic(msg, from_topic_id) or not _passes_filters(msg, dis) or not _passes_size(msg, max_mb, max_sec):
+                    seen = max(seen, msg.id)
+                    continue
 
                 # Advance seen ONLY after success — failed sends are retried next poll
                 try:
@@ -688,15 +700,24 @@ async def _run_job(job_id: str, user_id: int, _bot=None):
                             seen = max(seen, msg.id)
                             consec_fails = 0
                         else:
-                            # Log failure and allow retry on next poll
+                            # Log failure and allow retry on next poll by BREAKING the chunk loop
                             logger.warning(f"[Job {job_id}] Message {msg.id} failed (attempt {consec_fails}/3)")
+                            break
                 except FloodWait as fw:
                     await asyncio.sleep(fw.value + 1)
-                    seen = max(seen, msg.id)   # FloodWait = Telegram accepted it
-                except asyncio.CancelledError: raise
+                    # If we hit floodwait, we just sleep and retry next cycle instead of marking it as done
+                    break
+                except asyncio.CancelledError: 
+                    raise
                 except Exception as e:
                     logger.debug(f"[Job {job_id}] Live fwd {msg.id}: {e}")
-                    # Do not advance seen on error → message retried next cycle
+                    consec_fails = consec_fails + 1 if 'consec_fails' in locals() else 1
+                    if consec_fails >= 3:
+                        seen = max(seen, msg.id)
+                        consec_fails = 0
+                    else:
+                        break
+                        
                 await asyncio.sleep(0)  # yield to event loop between messages
 
             if new:
@@ -770,7 +791,7 @@ async def _render_jobs_list(bot, user_id: int, mq):
                 f"  <code>[{j['job_id'][-6:]}]</code>{name_disp}"
                 f"\n┃   ◈ 𝐅𝐨𝐫𝐰𝐚𝐫𝐝𝐞𝐝: <code>{fwd}</code>{bp}{err}"
             )
-        lines.append("┃\n<b>╰────────────────────────────────╯</b>")
+        pass
         text = "\n".join(lines)
 
         rows = []
@@ -780,14 +801,14 @@ async def _render_jobs_list(bot, user_id: int, mq):
             s   = jid[-6:]
             row = []
             if st == "running":
-                row.append(InlineKeyboardButton(f"⏹ sᴛᴏᴘ [{s}]",  callback_data=f"job#stop#{jid}"))
+                row.append(InlineKeyboardButton(f"⏹ Stop [{s}]",  callback_data=f"job#stop#{jid}"))
             else:
-                row.append(InlineKeyboardButton(f"▶️ sᴛᴀʀᴛ [{s}]", callback_data=f"job#start#{jid}"))
+                row.append(InlineKeyboardButton(f"▶️ Start [{s}]", callback_data=f"job#start#{jid}"))
             row.append(InlineKeyboardButton(f"ℹ️ [{s}]", callback_data=f"job#info#{jid}"))
             row.append(InlineKeyboardButton(f"🗑 [{s}]",  callback_data=f"job#del#{jid}"))
             rows.append(row)
         rows.append([InlineKeyboardButton("➕ ᴄʀᴇᴀᴛᴇ ɴᴇᴡ ᴊᴏʙ", callback_data="job#new")])
-        rows.append([InlineKeyboardButton("🔄 ʀᴇғʀᴇsʜ",         callback_data="job#list")])
+        rows.append([InlineKeyboardButton("🔄 Refresh",         callback_data="job#list")])
         btns = InlineKeyboardMarkup(rows)
 
     try:
@@ -833,41 +854,40 @@ async def job_info_cb(bot, query):
     batch_lbl = ""
     if job.get("batch_mode"):
         if job.get("batch_done"):
-            batch_lbl = "\n┣⊸ ◈ 𝐁𝐚𝐭𝐜𝐡   : ✅ ᴄᴏᴍᴘʟᴇᴛᴇ"
+            batch_lbl = "\n  • <b>Batch:</b> ✅ Complete"
         else:
             cur = job.get("batch_cursor") or job.get("batch_start_id") or "?"
             end = job.get("batch_end_id") or "…"
-            batch_lbl = f"\n┣⊸ ◈ 𝐁𝐚𝐭𝐜𝐡   : 📦 <code>{cur}</code> / <code>{end}</code>"
+            batch_lbl = f"\n  • <b>Batch:</b> 📦 <code>{cur}</code> / <code>{end}</code>"
 
     size_lbl = ""
     if job.get("max_size_mb"):
-        size_lbl += f"\n┣⊸ ◈ 𝐌𝐚𝐱 𝐒𝐳   : <code>{job['max_size_mb']} ᴍʙ</code>"
+        size_lbl += f"\n  • <b>Max Size:</b> <code>{job['max_size_mb']} MB</code>"
     if job.get("max_duration_secs"):
         m, s = divmod(job['max_duration_secs'], 60)
-        size_lbl += f"\n┣⊸ ◈ 𝐌𝐚𝐱 𝐃𝐮𝐫  : <code>{m}ᴍ {s}s</code>"
+        size_lbl += f"\n  • <b>Max Duration:</b> <code>{m}m {s}s</code>"
 
-    err_lbl = f"\n┣⊸ ⚠️ ᴇʀʀᴏʀ: <code>{job['error']}</code>" if job.get("error") else ""
+    err_lbl = f"\n  • ⚠️ <b>Error:</b> <code>{job['error']}</code>" if job.get("error") else ""
 
     c_name   = job.get("custom_name")
-    name_lbl = f"\n┣⊸ ◈ 𝐍𝐚𝐦𝐞    : <b>{c_name}</b>" if c_name else ""
+    name_lbl = f" <b>({c_name})</b>" if c_name else ""
+
+    fst = job.get('from_topic_id')
+    f_topic_lbl = f" [Topic {fst}]" if fst else ""
 
     text = (
-        f"<b>╭──────❰ 📋 ʟɪᴠᴇ ᴊᴏʙ ɪɴғᴏ ❱──────╮\n"
-        f"┃\n"
-        f"┣⊸ ◈ 𝐈𝐃      : <code>{job_id[-6:]}</code>{name_lbl}\n"
-        f"┣⊸ ◈ 𝐒𝐭𝐚𝐭𝐮𝐬  : {st} {job.get('status','?')}\n"
-        f"┣⊸ ◈ 𝐒𝐨𝐮𝐫𝐜𝐞  : {job.get('from_title','?')}\n"
-        f"┣⊸ ◈ 𝐃𝐞𝐬𝐭 𝟏  : {job.get('to_title','?')}{t1_lbl}"
-        f"{d2_lbl}{batch_lbl}{size_lbl}\n"
-        f"┣⊸ ◈ 𝐅𝐰𝐝     : <code>{job.get('forwarded', 0)}</code>\n"
-        f"┣⊸ ◈ 𝐋𝐚𝐬𝐭 𝐈𝐃 : <code>{job.get('last_seen_id', 0)}</code>\n"
-        f"┣⊸ ◈ 𝐂𝐫𝐞𝐚𝐭𝐞𝐝 : {created}"
-        f"{err_lbl}\n"
-        f"┃\n"
-        f"╰────────────────────────────────╯</b>"
+        f"<b>📋 Live Job Information</b>\n\n"
+        f"  • <b>ID:</b> <code>{job_id[-6:]}</code>{name_lbl}\n"
+        f"  • <b>Status:</b> {st} {job.get('status','?')}\n"
+        f"  • <b>Source:</b> {job.get('from_title','?')}{f_topic_lbl}\n"
+        f"  • <b>Target:</b> {job.get('to_title','?')}{t1_lbl}{d2_lbl}{batch_lbl}{size_lbl}\n"
+        f"  • <b>Forwarded:</b> <code>{job.get('forwarded', 0)}</code>\n"
+        f"  • <b>Last ID:</b> <code>{job.get('last_seen_id', 0)}</code>\n"
+        f"  • <b>Created:</b> {created}"
+        f"{err_lbl}"
     )
     await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup([[
-        InlineKeyboardButton("↩ ʙᴀᴄᴋ", callback_data="job#list")
+        InlineKeyboardButton("↩ Back", callback_data="job#list")
     ]]))
 
 
@@ -935,7 +955,7 @@ async def _pick_channel(bot, uid: int, channels: list, prompt: str, optional=Fal
     r = await bot.ask(uid, prompt, reply_markup=ReplyKeyboardMarkup(btns, resize_keyboard=True, one_time_keyboard=True))
     txt = r.text.strip()
     if "/cancel" in txt:
-        await r.reply("<b>╭──────❰ ❌ ᴄᴀɴᴄᴇʟʟᴇᴅ ❱──────╮\n┃\n╰────────────────────────────────╯</b>",
+        await r.reply("<b>╭──────❰ ❌ Cancelʟᴇᴅ ❱──────╮\n┃\n╰────────────────────────────────╯</b>",
                       reply_markup=ReplyKeyboardRemove())
         return None, None, True
     if optional and "skip" in txt.lower():
@@ -988,7 +1008,7 @@ async def _create_job_flow(bot, uid: int):
 
     if "/cancel" in acc_r.text:
         return await acc_r.reply(
-            "<b>╭──────❰ ❌ ᴄᴀɴᴄᴇʟʟᴇᴅ ❱──────╮\n┃\n╰────────────────────────────────╯</b>",
+            "<b>╭──────❰ ❌ Cancelʟᴇᴅ ❱──────╮\n┃\n╰────────────────────────────────╯</b>",
             reply_markup=ReplyKeyboardRemove())
 
     acc_id = None
@@ -1014,7 +1034,7 @@ async def _create_job_flow(bot, uid: int):
 
     if src_r.text.strip().startswith("/cancel"):
         return await src_r.reply(
-            "<b>╭──────❰ ❌ ᴄᴀɴᴄᴇʟʟᴇᴅ ❱──────╮\n┃\n╰────────────────────────────────╯</b>")
+            "<b>╭──────❰ ❌ Cancelʟᴇᴅ ❱──────╮\n┃\n╰────────────────────────────────╯</b>")
 
     raw = src_r.text.strip()
     if raw.lower() in ("me", "saved"):
@@ -1042,7 +1062,7 @@ async def _create_job_flow(bot, uid: int):
             resize_keyboard=True, one_time_keyboard=True))
     if "/cancel" in src_topic_r.text:
         return await src_topic_r.reply(
-            "<b>╭──────❰ ❌ ᴄᴀɴᴄᴇʟʟᴇᴅ ❱──────╮\n┃\n╰────────────────────────────────╯</b>",
+            "<b>╭──────❰ ❌ Cancelʟᴇᴅ ❱──────╮\n┃\n╰────────────────────────────────╯</b>",
             reply_markup=ReplyKeyboardRemove())
     _st_raw = src_topic_r.text.strip()
     from_topic_id = int(_st_raw) if _st_raw.isdigit() and int(_st_raw) > 0 else None
@@ -1089,7 +1109,7 @@ async def _create_job_flow(bot, uid: int):
 
     if "/cancel" in batch_r.text:
         return await batch_r.reply(
-            "<b>╭──────❰ ❌ ᴄᴀɴᴄᴇʟʟᴇᴅ ❱──────╮\n┃\n╰────────────────────────────────╯</b>",
+            "<b>╭──────❰ ❌ Cancelʟᴇᴅ ❱──────╮\n┃\n╰────────────────────────────────╯</b>",
             reply_markup=ReplyKeyboardRemove())
 
     batch_mode  = "ᴏɴ" in batch_r.text.lower() or "on" in batch_r.text.lower()
@@ -1105,7 +1125,7 @@ async def _create_job_flow(bot, uid: int):
             reply_markup=ReplyKeyboardRemove())
         if "/cancel" in rng_r.text:
             return await rng_r.reply(
-                "<b>╭──────❰ ❌ ᴄᴀɴᴄᴇʟʟᴇᴅ ❱──────╮\n┃\n╰────────────────────────────────╯</b>")
+                "<b>╭──────❰ ❌ Cancelʟᴇᴅ ❱──────╮\n┃\n╰────────────────────────────────╯</b>")
         rt = rng_r.text.strip().lower()
         if rt != "all":
             if ":" in rt:
@@ -1133,7 +1153,7 @@ async def _create_job_flow(bot, uid: int):
 
     if "/cancel" in lim_r.text:
         return await lim_r.reply(
-            "<b>╭──────❰ ❌ ᴄᴀɴᴄᴇʟʟᴇᴅ ❱──────╮\n┃\n╰────────────────────────────────╯</b>",
+            "<b>╭──────❰ ❌ Cancelʟᴇᴅ ❱──────╮\n┃\n╰────────────────────────────────╯</b>",
             reply_markup=ReplyKeyboardRemove())
 
     max_mb, max_sec = 0, 0
@@ -1161,7 +1181,7 @@ async def _create_job_flow(bot, uid: int):
 
     if "/cancel" in name_r.text:
         return await name_r.reply(
-            "<b>╭──────❰ ❌ ᴄᴀɴᴄᴇʟʟᴇᴅ ❱──────╮\n┃\n╰────────────────────────────────╯</b>",
+            "<b>╭──────❰ ❌ Cancelʟᴇᴅ ❱──────╮\n┃\n╰────────────────────────────────╯</b>",
             reply_markup=ReplyKeyboardRemove())
 
     cname = None

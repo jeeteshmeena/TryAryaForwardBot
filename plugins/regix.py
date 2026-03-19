@@ -470,12 +470,12 @@ async def pub_(bot, message):
         # 🔔 Detailed Completion Notification
         summary = (
             f"<b>✅ Batch Forwarding Completed!</b>\n\n"
-            f"<b>📊 Summary:</b>\n"
-            f" ┣ <b>Fetched:</b> <code>{sts.get('fetched')}</code>\n"
-            f" ┣ <b>Forwarded:</b> <code>{sts.get('total_files')}</code>\n"
-            f" ┣ <b>Duplicates skipped:</b> <code>{sts.get('duplicate')}</code>\n"
-            f" ┣ <b>Filtered out:</b> <code>{sts.get('filtered')}</code>\n"
-            f" ┗ <b>Deleted sources:</b> <code>{sts.get('deleted')}</code>\n"
+            f"<b>Final Summary:</b>\n"
+            f"  • <b>Fetched:</b> <code>{sts.get('fetched')}</code>\n"
+            f"  • <b>Forwarded:</b> <code>{sts.get('total_files')}</code>\n"
+            f"  • <b>Duplicates skipped:</b> <code>{sts.get('duplicate')}</code>\n"
+            f"  • <b>Filtered out:</b> <code>{sts.get('filtered')}</code>\n"
+            f"  • <b>Deleted sources:</b> <code>{sts.get('deleted')}</code>\n"
         )
         try:
             await bot.send_message(user, summary)
@@ -534,10 +534,11 @@ async def copy(bot, msg, m, sts, download=False, attempt=0, seq_index=None, uplo
                  if display_name:
                      import re as _re3
                      display_name = _re3.sub(r'[\\/*?"<>|]', '', display_name).strip() or None
-                 # Download to isolated folder - Pyrogram keeps its internal name on disk
+                 # Download to isolated folder
                  safe_dir = f"downloads/{message.id}"
                  os.makedirs(safe_dir, exist_ok=True)
-                 file_path = await bot.download_media(message, file_name=safe_dir + "/")
+                 df_name = f"{safe_dir}/{display_name}" if display_name else f"{safe_dir}/"
+                 file_path = await bot.download_media(message, file_name=df_name)
                  if not file_path: raise Exception("DownloadFailed")
                  
                  kwargs = {

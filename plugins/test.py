@@ -50,11 +50,27 @@ async def start_clone_bot(FwdBot, data=None):
         me = await self.get_me()
         is_bot = getattr(me, 'is_bot', False)
         
-        chat = await self.get_chat(chat_id)
-        is_channel_or_supergroup = chat.type in [
-            pyrogram.enums.ChatType.CHANNEL,
-            pyrogram.enums.ChatType.SUPERGROUP,
-        ]
+        is_channel_or_supergroup = False
+        if str(chat_id).startswith("-100"):
+            is_channel_or_supergroup = True
+        else:
+            try:
+                from pyrogram.raw.types import InputPeerChannel
+                peer = await self.resolve_peer(chat_id)
+                if isinstance(peer, InputPeerChannel):
+                    is_channel_or_supergroup = True
+            except Exception:
+                try:
+                    import pyrogram
+                    chat = await self.get_chat(chat_id)
+                    is_channel_or_supergroup = chat.type in [
+                        pyrogram.enums.ChatType.CHANNEL,
+                        pyrogram.enums.ChatType.SUPERGROUP,
+                    ]
+                except Exception:
+                    # If all checks fail and it's a bot account with a string username, assume channel
+                    if is_bot and isinstance(chat_id, str):
+                        is_channel_or_supergroup = True
 
         BATCH_SIZE = 200  # Max IDs per get_messages call
 
@@ -158,6 +174,7 @@ async def start_clone_bot(FwdBot, data=None):
         else:
             # ── Old to New: walk IDs from low to high ──
             current = max(1, offset if offset > 0 else 1)
+            to_check = 10  # Maximum empty batches before giving up (2000 messages gap)
 
             while True:
                 new_diff = BATCH_SIZE
@@ -187,7 +204,13 @@ async def start_clone_bot(FwdBot, data=None):
                         await asyncio.sleep(5)
                         continue
                     else:
-                        return
+                        to_check -= 1
+                        if to_check <= 0:
+                            return
+                        current = batch_ids[-1] + 1
+                        continue
+                else:
+                    to_check = 10  # Reset counter if messages found
 
                 # CRITICAL: get_messages does NOT guarantee return order matches
                 # the requested ID order. Telegram may return them differently.

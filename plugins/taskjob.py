@@ -71,20 +71,17 @@ async def _tj_notify(bot, job: dict, phase: str = ""):
     name_p = f" <b>{cname}</b>" if cname else ""
     rng_p  = f"<code>{job.get('start_id',1)}</code> → <code>{end}</code>" if end else f"<code>{job.get('start_id',1)}</code> → ∞"
     err_p  = f"\n┣⊸ ⚠️ <code>{job['error']}</code>" if job.get("error") else ""
-    phase_p = f"\n┣⊸ ◈ 𝐏𝐡𝐚𝐬𝐞   : <code>{phase}</code>" if phase else ""
+    phase_p = f"\n  • <b>Phase:</b> <code>{phase}</code>" if phase else ""
     text = (
-        f"<b>╭──────❰ 📦 ᴛᴀsᴋ ᴊᴏʙ ᴘʀᴏɢʀᴇss ❱──────╮\n"
-        f"┃\n"
-        f"┣⊸ ◈ 𝐈𝐃      : <code>{job_id[-6:]}</code>{name_p}\n"
-        f"┣⊸ ◈ 𝐒𝐭𝐚𝐭𝐮𝐬  : {st} {job.get('status','running')}\n"
-        f"┣⊸ ◈ 𝐒𝐨𝐮𝐫𝐜𝐞  : {job.get('from_title','?')}\n"
-        f"┣⊸ ◈ 𝐓𝐚𝐫𝐠𝐞𝐭  : {job.get('to_title','?')}\n"
-        f"┣⊸ ◈ 𝐑𝐚𝐧𝐠𝐞   : {rng_p}\n"
-        f"┣⊸ ◈ 𝐂𝐮𝐫𝐫𝐞𝐧𝐭 : <code>{cur}</code>\n"
-        f"┣⊸ ◈ 𝐅𝐰𝐝     : <code>{fwd}</code>"
-        f"{phase_p}{err_p}\n"
-        f"┃\n"
-        f"╰────────────────────────────────╯</b>"
+        f"<b>Task Job Progress</b>\n\n"
+        f"  • <b>ID:</b> <code>{job_id[-6:]}</code>{name_p}\n"
+        f"  • <b>Status:</b> {st} {job.get('status','running')}\n"
+        f"  • <b>Source:</b> {job.get('from_title','?')}\n"
+        f"  • <b>Target:</b> {job.get('to_title','?')}\n\n"
+        f"  • <b>Range:</b> {rng_p}\n"
+        f"  • <b>Current:</b> <code>{cur}</code>\n"
+        f"  • <b>Forwarded:</b> <code>{fwd}</code>"
+        f"{phase_p}{err_p}"
     )
     key = (uid, job_id)
     try:
@@ -185,7 +182,8 @@ async def _send_one(client, msg, to_chat: int, remove_caption: bool, caption_tpl
                 import shutil as _shu2
                 safe_dir = f"downloads/{msg.id}"
                 os.makedirs(safe_dir, exist_ok=True)
-                fp = await client.download_media(msg, file_name=safe_dir + "/")
+                df_name = f"{safe_dir}/{display_name}" if display_name else f"{safe_dir}/"
+                fp = await client.download_media(msg, file_name=df_name)
                 if not fp: raise Exception("DownloadFailed")
                 kw = {"chat_id": to_chat, "caption": caption if caption is not None else (str(msg.caption) if msg.caption else "")}
                 try:
@@ -234,18 +232,29 @@ async def _run_task_job(job_id: str, user_id: int, _bot=None):
         is_bot  = acc.get("is_bot", True)
         fc      = job["from_chat"]
 
-        # CRITICAL BUG FIX: determine if source is channel
+        # CRITICAL BUG FIX: determine if source is channel safely
         fc_is_channel = False
         try:
             if str(fc).startswith("-100"):
                 fc_is_channel = True
             else:
-                from pyrogram.enums import ChatType
-                c_obj = await client.get_chat(fc)
-                if getattr(c_obj, 'type', None) in (ChatType.CHANNEL, ChatType.SUPERGROUP):
-                    fc_is_channel = True
+                try:
+                    # Best: resolve_peer cleanly identifies users vs channels without joining
+                    from pyrogram.raw.types import InputPeerChannel
+                    peer = await client.resolve_peer(fc)
+                    if isinstance(peer, InputPeerChannel):
+                        fc_is_channel = True
+                except Exception:
+                    # Fallback to get_chat if resolve_peer fails (e.g. invite links)
+                    from pyrogram.enums import ChatType
+                    c_obj = await client.get_chat(fc)
+                    if getattr(c_obj, 'type', None) in (ChatType.CHANNEL, ChatType.SUPERGROUP):
+                        fc_is_channel = True
         except Exception as e:
-            logger.warning(f"Could not verify chat type for {fc}: {e}")
+            # If all checks failed, and it's a string username, assume channel for bots
+            # because bots can't use get_chat_history on public channels anyway.
+            if getattr(client, 'me', None) and client.me.is_bot and isinstance(fc, str):
+                fc_is_channel = True
         to_chat = job["to_chat"]
         end_id  = job.get("end_id", 0)
         current = job.get("current_id", job.get("start_id", 1))
@@ -389,36 +398,13 @@ async def _render_taskjob_list(bot, user_id: int, mq):
 
     if not jobs:
         text = (
-            "<b>╭──────❰ 📦 ᴛᴀsᴋ ᴊᴏʙs ❱──────╮\n"
-            "┃\n"
-            "┣⊸ ɴᴏ ᴛᴀsᴋ ᴊᴏʙs ʏᴇᴛ.\n"
-            "┣⊸ ‣ ᴄᴏᴘɪᴇs ᴀʟʟ ᴇxɪsᴛɪɴɢ ᴍsɢs ɪɴ ᴛʜᴇ ʙᴀᴄᴋɢʀᴏᴜɴᴅ\n"
-            "┣⊸ ‣ ᴘᴀᴜsᴇ / ʀᴇsᴜᴍᴇ sᴜᴘᴘᴏʀᴛ\n"
-            "┣⊸ ‣ ᴍᴜʟᴛɪᴘʟᴇ ᴊᴏʙs sɪᴍᴜʟᴛᴀɴᴇᴏᴜsʟʏ\n"
-            "┣⊸ ‣ sᴜʀᴠɪᴠᴇs ʙᴏᴛ ʀᴇsᴛᴀʀᴛs\n"
-            "┃\n"
-            "╰────────────────────────────────╯</b>"
+            "<b>Task Jobs</b>\n\n  • No task jobs yet.\n\nCopies all existing messages from a source to a target in the background."
         )
         btns = InlineKeyboardMarkup([[
-            InlineKeyboardButton("➕ ᴄʀᴇᴀᴛᴇ ᴛᴀsᴋ ᴊᴏʙ", callback_data="tj#new")
+            InlineKeyboardButton("➕ Create Task Job", callback_data="tj#new")
         ]])
     else:
-        lines = ["<b>╭──────❰ 📦 ᴛᴀsᴋ ᴊᴏʙs ❱──────╮</b>\n┃"]
-        for j in jobs:
-            st  = _st(j.get("status", "stopped"))
-            fwd = j.get("forwarded", 0)
-            cur = j.get("current_id", "?")
-            end = j.get("end_id", 0)
-            rng = f"<code>{cur}</code>/{end if end else '∞'}"
-            err = f"\n┃   ⚠️ <code>{j.get('error','')}</code>" if j.get("status") == "error" else ""
-            c_name = j.get("custom_name")
-            name_disp = f" <b>{c_name}</b>" if c_name else ""
-            lines.append(
-                f"┣⊸ {st} <b>{j.get('from_title','?')} → {j.get('to_title','?')}</b>"
-                f"  <code>[{j['job_id'][-6:]}]</code>{name_disp}"
-                f"\n┃   ◈ 𝐅𝐰𝐝: <code>{fwd}</code>  ◈ 𝐏𝐨𝐬: {rng}{err}"
-            )
-        lines.append("┃\n<b>╰────────────────────────────────╯</b>")
+        lines = ["<b>Task Jobs</b>\n"]
         text = "\n".join(lines)
 
         rows = []
@@ -428,18 +414,18 @@ async def _render_taskjob_list(bot, user_id: int, mq):
             s   = jid[-6:]
             row = []
             if st == "running":
-                row.append(InlineKeyboardButton(f"⏸ ᴘᴀᴜsᴇ [{s}]",  callback_data=f"tj#pause#{jid}"))
-                row.append(InlineKeyboardButton(f"⏹ sᴛᴏᴘ [{s}]",   callback_data=f"tj#stop#{jid}"))
+                row.append(InlineKeyboardButton(f"⏸ Pause [{s}]",  callback_data=f"tj#pause#{jid}"))
+                row.append(InlineKeyboardButton(f"⏹ Stop [{s}]",   callback_data=f"tj#stop#{jid}"))
             elif st == "paused":
-                row.append(InlineKeyboardButton(f"▶️ ʀᴇsᴜᴍᴇ [{s}]", callback_data=f"tj#resume#{jid}"))
-                row.append(InlineKeyboardButton(f"⏹ sᴛᴏᴘ [{s}]",   callback_data=f"tj#stop#{jid}"))
+                row.append(InlineKeyboardButton(f"▶️ Resume [{s}]", callback_data=f"tj#resume#{jid}"))
+                row.append(InlineKeyboardButton(f"⏹ Stop [{s}]",   callback_data=f"tj#stop#{jid}"))
             else:
-                row.append(InlineKeyboardButton(f"▶️ sᴛᴀʀᴛ [{s}]",  callback_data=f"tj#start#{jid}"))
+                row.append(InlineKeyboardButton(f"▶️ Start [{s}]",  callback_data=f"tj#start#{jid}"))
             row.append(InlineKeyboardButton(f"ℹ️ [{s}]", callback_data=f"tj#info#{jid}"))
             row.append(InlineKeyboardButton(f"🗑 [{s}]",  callback_data=f"tj#del#{jid}"))
             rows.append(row)
 
-        rows.append([InlineKeyboardButton("➕ ᴄʀᴇᴀᴛᴇ ᴛᴀsᴋ ᴊᴏʙ", callback_data="tj#new")])
+        rows.append([InlineKeyboardButton("➕ Create Task Job", callback_data="tj#new")])
         rows.append([InlineKeyboardButton("🔄 ʀᴇғʀᴇsʜ",          callback_data="tj#list")])
         btns = InlineKeyboardMarkup(rows)
 
@@ -498,25 +484,22 @@ async def tj_info_cb(bot, query):
     cur = job.get("current_id", "?")
     end = job.get("end_id", 0)
     rng_lbl = f"<code>{job.get('start_id',1)}</code> → <code>{end}</code>" if end else f"<code>{job.get('start_id',1)}</code> → ∞"
-    err_lbl = f"\n┣⊸ ⚠️ ᴇʀʀᴏʀ : <code>{job['error']}</code>" if job.get("error") else ""
+    err_lbl = f"\n  • ⚠️ <b>Error:</b> <code>{job['error']}</code>" if job.get("error") else ""
 
     c_name   = job.get("custom_name")
-    name_lbl = f"\n┣⊸ ◈ 𝐍𝐚𝐦𝐞    : <b>{c_name}</b>" if c_name else ""
+    name_lbl = f" <b>({c_name})</b>" if c_name else ""
 
     text = (
-        f"<b>╭──────❰ 📦 ᴛᴀsᴋ ᴊᴏʙ ɪɴғᴏ ❱──────╮\n"
-        f"┃\n"
-        f"┣⊸ ◈ 𝐈𝐃      : <code>{job_id[-6:]}</code>{name_lbl}\n"
-        f"┣⊸ ◈ 𝐒𝐭𝐚𝐭𝐮𝐬  : {st} {job.get('status','?')}\n"
-        f"┣⊸ ◈ 𝐒𝐨𝐮𝐫𝐜𝐞  : {job.get('from_title','?')}\n"
-        f"┣⊸ ◈ 𝐓𝐚𝐫𝐠𝐞𝐭  : {job.get('to_title','?')}\n"
-        f"┣⊸ ◈ 𝐑𝐚𝐧𝐠𝐞   : {rng_lbl}\n"
-        f"┣⊸ ◈ 𝐂𝐮𝐫𝐫𝐞𝐧𝐭 : <code>{cur}</code>\n"
-        f"┣⊸ ◈ 𝐅𝐰𝐝     : <code>{job.get('forwarded', 0)}</code>\n"
-        f"┣⊸ ◈ 𝐂𝐫𝐞𝐚𝐭𝐞𝐝 : {created}"
-        f"{err_lbl}\n"
-        f"┃\n"
-        f"╰────────────────────────────────╯</b>"
+        f"<b>📋 Task Job Information</b>\n\n"
+        f"  • <b>ID:</b> <code>{job_id[-6:]}</code>{name_lbl}\n"
+        f"  • <b>Status:</b> {st} {job.get('status','?')}\n"
+        f"  • <b>Source:</b> {job.get('from_title','?')}\n"
+        f"  • <b>Target:</b> {job.get('to_title','?')}\n"
+        f"  • <b>Range:</b> {rng_lbl}\n"
+        f"  • <b>Current:</b> <code>{cur}</code>\n"
+        f"  • <b>Forwarded:</b> <code>{job.get('forwarded', 0)}</code>\n"
+        f"  • <b>Created:</b> {created}"
+        f"{err_lbl}"
     )
     await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup([[
         InlineKeyboardButton("↩ ʙᴀᴄᴋ", callback_data="tj#list")
@@ -532,7 +515,7 @@ async def tj_pause_cb(bot, q):
     ev = _pause_events.get(job_id)
     if ev: ev.clear()
     await _tj_update(job_id, status="paused")
-    await q.answer("⏸ ᴘᴀᴜsᴇᴅ.")
+    await q.answer("⏸ Pauseᴅ.")
     await _render_taskjob_list(bot, uid, q)
 
 
@@ -546,7 +529,7 @@ async def tj_resume_cb(bot, q):
     if ev and job_id in _task_jobs and not _task_jobs[job_id].done():
         ev.set()
         await _tj_update(job_id, status="running")
-        await q.answer("▶️ ʀᴇsᴜᴍᴇᴅ!")
+        await q.answer("▶️ Resumeᴅ!")
     else:
         await _tj_update(job_id, status="running")
         _start_task(job_id, uid, _bot=bot)
@@ -565,7 +548,7 @@ async def tj_stop_cb(bot, q):
     ev = _pause_events.pop(job_id, None)
     if ev: ev.set()
     await _tj_update(job_id, status="stopped")
-    await q.answer("⏹ sᴛᴏᴘᴘᴇᴅ.")
+    await q.answer("⏹ Stopᴘᴇᴅ.")
     await _render_taskjob_list(bot, uid, q)
 
 
@@ -579,7 +562,7 @@ async def tj_start_cb(bot, q):
         return await q.answer("ᴀʟʀᴇᴀᴅʏ ʀᴜɴɴɪɴɢ!", show_alert=True)
     await _tj_update(job_id, status="running")
     _start_task(job_id, uid, _bot=bot)
-    await q.answer("▶️ sᴛᴀʀᴛᴇᴅ!")
+    await q.answer("▶️ Startᴇᴅ!")
     await _render_taskjob_list(bot, uid, q)
 
 
