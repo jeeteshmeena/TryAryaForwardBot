@@ -439,20 +439,23 @@ async def _run_job(job_id: str, user_id: int):
 
                 chunk_end = min(cur + BATCH_CHUNK - 1, bend)
                 try:
-                    if not is_bot or is_private_src:
-                        # Private / userbot: use get_chat_history, walk forward
+                    msgs = []
+                    try:
+                        msgs = await client.get_messages(fc, list(range(cur, chunk_end + 1)))
+                        if not isinstance(msgs, list): msgs = [msgs]
+                    except Exception as ge:
+                        if "ChatAdminRequired" in str(ge): raise
+                        logger.warning(f"[Job {job_id}] get_messages failed for batch {cur}: {ge}")
+                        # Fallback for bots unable to resolve message ID directly on arbitrary strings
                         col: list = []
                         async for msg in client.get_chat_history(fc, offset_id=chunk_end + 1, limit=BATCH_CHUNK):
                             if msg.id < cur: break
                             col.append(msg)
                         msgs = list(reversed(col))
-                    else:
-                        msgs = await client.get_messages(fc, list(range(cur, chunk_end + 1)))
-                        if not isinstance(msgs, list): msgs = [msgs]
                 except FloodWait as fw: await asyncio.sleep(fw.value + 2); continue
                 except asyncio.CancelledError: raise
                 except Exception as e:
-                    logger.warning(f"[Job {job_id}] Batch fetch @ {cur}: {e}")
+                    logger.warning(f"[Job {job_id}] Batch fetch completely failed @ {cur}: {e}")
                     cur += BATCH_CHUNK; await _update_job(job_id, batch_cursor=cur); continue
 
                 msgs.sort(key=lambda m: m.id if m else 0)
@@ -514,27 +517,32 @@ async def _run_job(job_id: str, user_id: int):
             new: list   = []
 
             try:
-                if not is_bot or is_private_src:
-                    col = []
-                    async for msg in client.get_chat_history(fc, limit=50):
-                        if msg.id <= seen: break
-                        col.append(msg)
-                    new = list(reversed(col))
-                else:
-                    probe = seen + 1
-                    for _ in range(4):  # limit to 4 chunks (200 msgs) per round to match private fetch limit
-                        bids = list(range(probe, probe + 50))
-                        try: msgs = await client.get_messages(fc, bids)
-                        except FloodWait as fw: await asyncio.sleep(fw.value + 1); continue
-                        except Exception: break
+                probe = seen + 1
+                for _ in range(4):  # limit to 4 chunks (200 msgs) per round
+                    bids = list(range(probe, probe + 50))
+                    msgs = []
+                    try: 
+                        msgs = await client.get_messages(fc, bids)
                         if not isinstance(msgs, list): msgs = [msgs]
-                        
-                        msgs.sort(key=lambda m: m.id if m else 0)
-                        new.extend(msgs)
-                        probe = bids[-1] + 1
-                        
-                        v = [m for m in msgs if m and not getattr(m, 'empty', False)]
-                        if len(v) < 49: break
+                    except Exception as ge: 
+                        if "ChatAdminRequired" in str(ge): raise
+                        try:
+                            co = []
+                            async for gmsg in client.get_chat_history(fc, limit=50):
+                                if gmsg.id <= probe - 1: break
+                                co.append(gmsg)
+                            msgs = list(reversed(co))
+                        except Exception: break
+                    
+                    if not msgs: break
+                    msgs.sort(key=lambda m: getattr(m, 'id', 0) if m else 0)
+                    new.extend(msgs)
+                    
+                    new_max = max((getattr(m, 'id', 0) for m in new if m), default=0)
+                    v = [m for m in msgs if m and not getattr(m, 'empty', False)]
+                    if not msgs or len(v) < 20 or new_max <= probe:
+                         break
+                    probe = max(probe + 50, new_max + 1)
             except FloodWait as fw: await asyncio.sleep(fw.value + 1); continue
             except asyncio.CancelledError: raise
             except Exception as e:
