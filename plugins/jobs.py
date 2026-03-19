@@ -229,54 +229,53 @@ async def _fwd(client, msg, chat, thread, cap_empty: bool, forward_tag: bool, fr
 
         # Download + re-upload fallback (restricted/private channels, forwarding OFF)
         try:
-            import os
-            os.makedirs("downloads", exist_ok=True)
+            import os, shutil
+            # Get the Telegram display_name from the media object (this is what shows in Telegram UI)
+            mo = getattr(msg, msg.media.value, None) if msg.media else None
+            display_name = getattr(mo, 'file_name', None) if mo else None
+            # Clean display_name for filesystem safety
+            if display_name:
+                import re as _re2
+                display_name = _re2.sub(r'[\\/*?"<>|]', '', display_name).strip() or None
+            safe_dir = f"downloads/{msg.id}"
+            os.makedirs(safe_dir, exist_ok=True)
             if msg.media:
-                mo = getattr(msg, msg.media.value, None)
-                orig = getattr(mo, 'file_name', None) if mo else None
-                if orig:
-                    import re as _re2
-                    orig = _re2.sub(r'[\\/*?"<>|]', "", orig)
-                safe_dir = f"downloads/{msg.id}"
-                os.makedirs(safe_dir, exist_ok=True)
-                safe = f"{safe_dir}/{orig}" if orig else f"{safe_dir}/file.dat"
-                fp = await client.download_media(msg, file_name=safe)
+                # Download to the folder — let Pyrogram keep whatever name it chooses
+                fp = await client.download_media(msg, file_name=safe_dir + "/")
                 if not fp:
                     raise Exception("DownloadFailed")
                 cap = "" if cap_empty else (str(msg.caption) if msg.caption else "")
                 d_kw = {"chat_id": chat, **_thread_kw()}
+                # display_name is passed as file_name= so Telegram shows the right name
                 async def _send_with_fallback(kwargs):
                     try:
                         if msg.photo:       await client.send_photo(photo=fp, caption=cap, **kwargs)
-                        elif msg.video:     await client.send_video(video=fp, caption=cap, file_name=orig, **kwargs)
-                        elif msg.document:  await client.send_document(document=fp, caption=cap, file_name=orig, **kwargs)
-                        elif msg.audio:     await client.send_audio(audio=fp, caption=cap, file_name=orig, **kwargs)
+                        elif msg.video:     await client.send_video(video=fp, caption=cap, file_name=display_name, **kwargs)
+                        elif msg.document:  await client.send_document(document=fp, caption=cap, file_name=display_name, **kwargs)
+                        elif msg.audio:     await client.send_audio(audio=fp, caption=cap, file_name=display_name, **kwargs)
                         elif msg.voice:     await client.send_voice(voice=fp, caption=cap, **kwargs)
-                        elif msg.animation: await client.send_animation(animation=fp, caption=cap, **kwargs)
+                        elif msg.animation: await client.send_animation(animation=fp, caption=cap, file_name=display_name, **kwargs)
                         elif msg.sticker:   await client.send_sticker(sticker=fp, **kwargs)
-                        else:               await client.send_document(document=fp, caption=cap, **kwargs)
+                        else:               await client.send_document(document=fp, caption=cap, file_name=display_name, **kwargs)
                     except TypeError:
-                        no_thread_kw = {"chat_id": chat}
-                        if msg.photo:       await client.send_photo(photo=fp, caption=cap, **no_thread_kw)
-                        elif msg.video:     await client.send_video(video=fp, caption=cap, file_name=orig, **no_thread_kw)
-                        elif msg.document:  await client.send_document(document=fp, caption=cap, file_name=orig, **no_thread_kw)
-                        elif msg.audio:     await client.send_audio(audio=fp, caption=cap, file_name=orig, **no_thread_kw)
-                        elif msg.voice:     await client.send_voice(voice=fp, caption=cap, **no_thread_kw)
-                        elif msg.animation: await client.send_animation(animation=fp, caption=cap, **no_thread_kw)
-                        elif msg.sticker:   await client.send_sticker(sticker=fp, **no_thread_kw)
-                        else:               await client.send_document(document=fp, caption=cap, **no_thread_kw)
-
+                        no_thread = {"chat_id": chat}
+                        if msg.photo:       await client.send_photo(photo=fp, caption=cap, **no_thread)
+                        elif msg.video:     await client.send_video(video=fp, caption=cap, file_name=display_name, **no_thread)
+                        elif msg.document:  await client.send_document(document=fp, caption=cap, file_name=display_name, **no_thread)
+                        elif msg.audio:     await client.send_audio(audio=fp, caption=cap, file_name=display_name, **no_thread)
+                        elif msg.voice:     await client.send_voice(voice=fp, caption=cap, **no_thread)
+                        elif msg.animation: await client.send_animation(animation=fp, caption=cap, file_name=display_name, **no_thread)
+                        elif msg.sticker:   await client.send_sticker(sticker=fp, **no_thread)
+                        else:               await client.send_document(document=fp, caption=cap, file_name=display_name, **no_thread)
                 try:
                     await _send_with_fallback(d_kw)
                 except FloodWait as fw:
-                    logger.info(f"[Job fwd] Fallback FloodWait {fw.value}s for {msg.id}")
+                    logger.info(f"[Job fwd] Fallback FloodWait {fw.value}s for msg {msg.id}")
                     await asyncio.sleep(fw.value + 2)
                     await _send_with_fallback(d_kw)
                 finally:
                     try:
-                        import shutil
-                        if os.path.exists(safe_dir):
-                            shutil.rmtree(safe_dir, ignore_errors=True)
+                        shutil.rmtree(safe_dir, ignore_errors=True)
                     except Exception: pass
             else:
                 send_kw = _thread_kw()
@@ -309,31 +308,31 @@ async def _forward_message(client, msg, to1, th1, cap_empty, forward_tag, from_c
 
 async def _get_latest_id(client, chat_id, is_bot: bool) -> int:
     """Get the latest message ID in a chat.
-    - For private chats (user DMs, saved messages): use get_chat_history (works for all account types via MTProto).
-    - For channels/groups with a bot account: binary-search by get_messages.
+    Strategy: try get_chat_history first (works for all types including DMs/bots).
+    Fallback to binary search via get_messages for numeric channel IDs.
     """
-    is_private_src = not str(chat_id).startswith('-')
+    # Try fastest method: get last message via history
     try:
-        if not is_bot or is_private_src:
-            # get_chat_history works for userbots always, and for bots in private chats
-            async for msg in client.get_chat_history(chat_id, limit=1):
-                return msg.id
-        else:
-            # Binary search via get_messages — efficient for channels
-            lo, hi = 1, 9_999_999
-            for _ in range(25):
-                if hi - lo <= 50: break
-                mid = (lo + hi) // 2
-                try:
-                    p = await client.get_messages(chat_id, [mid])
-                    if not isinstance(p, list): p = [p]
-                    if any(m and not m.empty for m in p):
-                        lo = mid
-                    else:
-                        hi = mid
-                except Exception:
+        async for msg in client.get_chat_history(chat_id, limit=1):
+            return msg.id
+    except Exception:
+        pass
+    # Fallback: binary search (works for bots on public channels by numeric ID)
+    try:
+        lo, hi = 1, 9_999_999
+        for _ in range(25):
+            if hi - lo <= 50: break
+            mid = (lo + hi) // 2
+            try:
+                p = await client.get_messages(chat_id, [mid])
+                if not isinstance(p, list): p = [p]
+                if any(m and not getattr(m, 'empty', True) for m in p):
+                    lo = mid
+                else:
                     hi = mid
-            return hi
+            except Exception:
+                hi = mid
+        return hi
     except Exception:
         pass
     return 0
@@ -440,22 +439,36 @@ async def _run_job(job_id: str, user_id: int):
                 chunk_end = min(cur + BATCH_CHUNK - 1, bend)
                 try:
                     msgs = []
+                    fetch_ok = False
+                    # Primary: get_messages by ID list (works for bots on all public channels)
                     try:
                         msgs = await client.get_messages(fc, list(range(cur, chunk_end + 1)))
                         if not isinstance(msgs, list): msgs = [msgs]
+                        fetch_ok = True
+                    except FloodWait as fw:
+                        await asyncio.sleep(fw.value + 2); continue
                     except Exception as ge:
-                        if "ChatAdminRequired" in str(ge): raise
-                        logger.warning(f"[Job {job_id}] get_messages failed for batch {cur}: {ge}")
-                        # Fallback for bots unable to resolve message ID directly on arbitrary strings
-                        col: list = []
-                        async for msg in client.get_chat_history(fc, offset_id=chunk_end + 1, limit=BATCH_CHUNK):
-                            if msg.id < cur: break
-                            col.append(msg)
-                        msgs = list(reversed(col))
-                except FloodWait as fw: await asyncio.sleep(fw.value + 2); continue
+                        logger.warning(f"[Job {job_id}] get_messages failed @ {cur}: {ge}")
+                    # Fallback: get_chat_history (works for all userbots and bot DMs)
+                    if not fetch_ok:
+                        try:
+                            col: list = []
+                            async for hmsg in client.get_chat_history(fc, offset_id=chunk_end + 1, limit=BATCH_CHUNK):
+                                if hmsg.id < cur: break
+                                col.append(hmsg)
+                            msgs = list(reversed(col))
+                            fetch_ok = True
+                        except FloodWait as fw:
+                            await asyncio.sleep(fw.value + 2); continue
+                        except Exception as he:
+                            logger.warning(f"[Job {job_id}] history fallback also failed @ {cur}: {he}")
+                    if not fetch_ok:
+                        cur += BATCH_CHUNK
+                        await _update_job(job_id, batch_cursor=cur)
+                        continue
                 except asyncio.CancelledError: raise
                 except Exception as e:
-                    logger.warning(f"[Job {job_id}] Batch fetch completely failed @ {cur}: {e}")
+                    logger.warning(f"[Job {job_id}] Batch fetch outer exception @ {cur}: {e}")
                     cur += BATCH_CHUNK; await _update_job(job_id, batch_cursor=cur); continue
 
                 msgs.sort(key=lambda m: m.id if m else 0)
@@ -518,31 +531,30 @@ async def _run_job(job_id: str, user_id: int):
 
             try:
                 probe = seen + 1
-                for _ in range(4):  # limit to 4 chunks (200 msgs) per round
+                for _ in range(4):
                     bids = list(range(probe, probe + 50))
-                    msgs = []
-                    try: 
-                        msgs = await client.get_messages(fc, bids)
-                        if not isinstance(msgs, list): msgs = [msgs]
-                    except Exception as ge: 
-                        if "ChatAdminRequired" in str(ge): raise
+                    chunk_msgs = []
+                    try:
+                        chunk_msgs = await client.get_messages(fc, bids)
+                        if not isinstance(chunk_msgs, list): chunk_msgs = [chunk_msgs]
+                    except FloodWait as fw:
+                        await asyncio.sleep(fw.value + 1); break
+                    except Exception:
+                        # Fallback to history for bots that can't fetch by ID
                         try:
                             co = []
                             async for gmsg in client.get_chat_history(fc, limit=50):
-                                if gmsg.id <= probe - 1: break
+                                if gmsg.id <= seen: break
                                 co.append(gmsg)
-                            msgs = list(reversed(co))
+                            chunk_msgs = list(reversed(co))
                         except Exception: break
-                    
-                    if not msgs: break
-                    msgs.sort(key=lambda m: getattr(m, 'id', 0) if m else 0)
-                    new.extend(msgs)
-                    
-                    new_max = max((getattr(m, 'id', 0) for m in new if m), default=0)
-                    v = [m for m in msgs if m and not getattr(m, 'empty', False)]
-                    if not msgs or len(v) < 20 or new_max <= probe:
-                         break
-                    probe = max(probe + 50, new_max + 1)
+                    if not chunk_msgs: break
+                    chunk_msgs.sort(key=lambda m: getattr(m, 'id', 0) if m else 0)
+                    # Only add messages strictly newer than seen
+                    new.extend(m for m in chunk_msgs if m and getattr(m, 'id', 0) > seen)
+                    valid = [m for m in chunk_msgs if m and not getattr(m, 'empty', True)]
+                    if len(valid) < 20: break
+                    probe = max(bids[-1] + 1, max((getattr(m,'id',0) for m in chunk_msgs if m), default=probe))
             except FloodWait as fw: await asyncio.sleep(fw.value + 1); continue
             except asyncio.CancelledError: raise
             except Exception as e:
