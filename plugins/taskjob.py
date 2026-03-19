@@ -233,6 +233,19 @@ async def _run_task_job(job_id: str, user_id: int, _bot=None):
         client  = await _get_shared_client(acc)
         is_bot  = acc.get("is_bot", True)
         fc      = job["from_chat"]
+
+        # CRITICAL BUG FIX: determine if source is channel
+        fc_is_channel = False
+        try:
+            if str(fc).startswith("-100"):
+                fc_is_channel = True
+            else:
+                from pyrogram.enums import ChatType
+                c_obj = await client.get_chat(fc)
+                if getattr(c_obj, 'type', None) in (ChatType.CHANNEL, ChatType.SUPERGROUP):
+                    fc_is_channel = True
+        except Exception as e:
+            logger.warning(f"Could not verify chat type for {fc}: {e}")
         to_chat = job["to_chat"]
         end_id  = job.get("end_id", 0)
         current = job.get("current_id", job.get("start_id", 1))
@@ -265,15 +278,18 @@ async def _run_task_job(job_id: str, user_id: int, _bot=None):
             try:
                 msgs = []
                 fetch_ok = False
-                # Try get_messages first (works for bots on all public channels)
-                try:
-                    msgs = await client.get_messages(fc, batch_ids)
-                    if not isinstance(msgs, list): msgs = [msgs]
-                    fetch_ok = True
-                except FloodWait as fw:
-                    await asyncio.sleep(fw.value + 2); continue
-                except Exception as ge:
-                    logger.warning(f"[TaskJob {job_id}] get_messages failed @ {current}: {ge}")
+                # Try get_messages first (works ONLY for channels/supergroups!)
+                if fc_is_channel:
+                    try:
+                        msgs = await client.get_messages(fc, batch_ids)
+                        if not isinstance(msgs, list): msgs = [msgs]
+                        fetch_ok = True
+                    except FloodWait as fw:
+                        await asyncio.sleep(fw.value + 2); continue
+                    except Exception as ge:
+                        logger.warning(f"[TaskJob {job_id}] get_messages failed @ {current}: {ge}")
+                else:
+                    fetch_ok = False
                 # Fallback: get_chat_history (for userbots and bot DMs)
                 if not fetch_ok:
                     try:

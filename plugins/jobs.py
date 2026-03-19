@@ -370,7 +370,19 @@ async def _get_latest_id(client, chat_id, is_bot: bool) -> int:
             return msg.id
     except Exception:
         pass
-    # Fallback: binary search (works for bots on public channels by numeric ID)
+    # Fallback: binary search (works ONLY for channels by numeric ID)
+    # NEVER do this for private entities because get_messages queries the user's global inbox!
+    is_ch = False
+    try:
+        c_obj = await client.get_chat(chat_id)
+        from pyrogram.enums import ChatType
+        if getattr(c_obj, 'type', None) in (ChatType.CHANNEL, ChatType.SUPERGROUP): is_ch = True
+    except:
+        if str(chat_id).startswith("-100"): is_ch = True
+        
+    if not is_ch:
+        return 0
+
     try:
         lo, hi = 1, 9_999_999
         for _ in range(25):
@@ -450,6 +462,19 @@ async def _run_job(job_id: str, user_id: int, _bot=None):
         client        = await _get_shared_client(acc)
         is_bot        = acc.get("is_bot", True)
         fc            = job["from_chat"]
+
+        # CRITICAL BUG FIX: determine if source is channel
+        fc_is_channel = False
+        try:
+            if str(fc).startswith("-100"):
+                fc_is_channel = True
+            else:
+                from pyrogram.enums import ChatType
+                c_obj = await client.get_chat(fc)
+                if getattr(c_obj, 'type', None) in (ChatType.CHANNEL, ChatType.SUPERGROUP):
+                    fc_is_channel = True
+        except Exception as e:
+            logger.warning(f"Could not verify chat type for {fc}: {e}")
         to1           = job["to_chat"];     th1 = job.get("to_thread_id")
         to2           = job.get("to_chat_2"); th2 = job.get("to_thread_id_2")
         max_mb        = int(job.get("max_size_mb", 0) or 0)
@@ -500,15 +525,18 @@ async def _run_job(job_id: str, user_id: int, _bot=None):
                 try:
                     msgs = []
                     fetch_ok = False
-                    # Primary: get_messages by ID list (works for bots on all public channels)
-                    try:
-                        msgs = await client.get_messages(fc, list(range(cur, chunk_end + 1)))
-                        if not isinstance(msgs, list): msgs = [msgs]
-                        fetch_ok = True
-                    except FloodWait as fw:
-                        await asyncio.sleep(fw.value + 2); continue
-                    except Exception as ge:
-                        logger.warning(f"[Job {job_id}] get_messages failed @ {cur}: {ge}")
+                    # Primary: get_messages by ID list (ONLY works for channels/supergroups!)
+                    if fc_is_channel:
+                        try:
+                            msgs = await client.get_messages(fc, list(range(cur, chunk_end + 1)))
+                            if not isinstance(msgs, list): msgs = [msgs]
+                            fetch_ok = True
+                        except FloodWait as fw:
+                            await asyncio.sleep(fw.value + 2); continue
+                        except Exception as ge:
+                            logger.warning(f"[Job {job_id}] get_messages failed @ {cur}: {ge}")
+                    else:
+                        fetch_ok = False  # DO NOT USE get_messages FOR DMs/BOTS! It fetches global inbox.
                     # Fallback: get_chat_history (works for all userbots and bot DMs)
                     if not fetch_ok:
                         try:
@@ -600,13 +628,16 @@ async def _run_job(job_id: str, user_id: int, _bot=None):
                 for _ in range(4):
                     bids = list(range(probe, probe + 50))
                     chunk_msgs = []
-                    try:
-                        chunk_msgs = await client.get_messages(fc, bids)
-                        if not isinstance(chunk_msgs, list): chunk_msgs = [chunk_msgs]
-                    except FloodWait as fw:
-                        await asyncio.sleep(fw.value + 1); break
-                    except Exception:
-                        # Fallback to history for bots that can't fetch by ID
+                    if fc_is_channel:
+                        try:
+                            chunk_msgs = await client.get_messages(fc, bids)
+                            if not isinstance(chunk_msgs, list): chunk_msgs = [chunk_msgs]
+                        except FloodWait as fw:
+                            await asyncio.sleep(fw.value + 1); break
+                        except Exception: pass
+                    
+                    if not chunk_msgs:
+                        # Fallback to history for bots/users/normal groups
                         try:
                             co = []
                             async for gmsg in client.get_chat_history(fc, limit=50):
