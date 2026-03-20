@@ -121,11 +121,32 @@ def _passes_filters(msg, dis: list) -> bool:
 # Send helper
 # ══════════════════════════════════════════════════════════════════════════════
 
-async def _send_one(client, msg, to_chat: int, remove_caption: bool, caption_tpl, forward_tag=False, from_chat=None):
+async def _send_one(client, msg, to_chat: int, remove_caption: bool, caption_tpl, forward_tag=False, from_chat=None, block_links=False):
     caption = None
-    if caption_tpl and msg.media: caption = caption_tpl
-    elif remove_caption and msg.media: caption = ""
-    
+    is_modified = False
+
+    if caption_tpl and msg.media:
+        caption = caption_tpl
+        is_modified = True
+    elif remove_caption and msg.media:
+        caption = ""
+        is_modified = True
+    elif block_links and _has_links(msg):
+        content = getattr(msg, 'caption' if msg.media else 'text', None)
+        if content:
+            raw = getattr(content, 'html', str(content))
+            import re as _lre
+            _LRE = _lre.compile(
+                r'(https?://\S+|t\.me/\S+|@[A-Za-z0-9_]{4,}'
+                r'|\b(?:www\.|bit\.ly/|youtu\.be/)\S+'
+                r'|\b[\w.-]+\.(?:com|net|org|io|co|me|tv|gg|app|xyz|info|news|link|site)(?:/\S*)?\b)',
+                _lre.IGNORECASE)
+            caption = _LRE.sub('', raw).strip()
+            is_modified = True
+
+    if is_modified and forward_tag:
+        forward_tag = False
+        
     from_id = from_chat or msg.chat.id
     
     try:
@@ -157,7 +178,11 @@ async def _send_one(client, msg, to_chat: int, remove_caption: bool, caption_tpl
         except Exception:
             pass
 
-        if caption is not None:
+        if not msg.media and is_modified:
+            await client.send_message(chat_id=to_chat, text=caption or "")
+            return True
+
+        if caption is not None and msg.media:
             await client.copy_message(chat_id=to_chat, from_chat_id=from_id,
                                       message_id=msg.id, caption=caption)
         else:
@@ -165,7 +190,7 @@ async def _send_one(client, msg, to_chat: int, remove_caption: bool, caption_tpl
         return True
     except FloodWait as fw:
         await asyncio.sleep(fw.value + 2)
-        return await _send_one(client, msg, to_chat, remove_caption, caption_tpl, forward_tag, from_chat)
+        return await _send_one(client, msg, to_chat, remove_caption, caption_tpl, forward_tag, from_chat, block_links)
     except Exception as e:
         if forward_tag:
             return False
@@ -198,7 +223,7 @@ async def _send_one(client, msg, to_chat: int, remove_caption: bool, caption_tpl
                     _shu2.rmtree(safe_dir, ignore_errors=True)
                 return True
             else:
-                await client.send_message(chat_id=to_chat, text=msg.text or "")
+                await client.send_message(chat_id=to_chat, text=caption if is_modified else (msg.text or ""))
                 return True
         except Exception as e2:
             logger.debug(f"[TaskJob] send fallback: {e2}")
@@ -348,9 +373,8 @@ async def _run_task_job(job_id: str, user_id: int, _bot=None):
                 f2 = await _tj_get(job_id)
                 if not f2 or f2.get("status") in ("stopped",): return
                 if not _passes_filters(msg, dis): continue
-                # link filter via block_links flag
-                if block_links and _has_links(msg): continue
-                ok = await _send_one(client, msg, to_chat, rm_cap, cap_tpl, forward_tag=forward_tag, from_chat=fc)
+                # we pass block_links to strip links rather than skipping the file entirely
+                ok = await _send_one(client, msg, to_chat, rm_cap, cap_tpl, forward_tag=forward_tag, from_chat=fc, block_links=block_links)
                 if ok: fwd += 1; await _tj_inc(job_id)
                 if slp: await asyncio.sleep(slp)
                 else:   await asyncio.sleep(0)

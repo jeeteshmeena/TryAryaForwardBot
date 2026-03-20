@@ -202,7 +202,7 @@ def _passes_size(msg, max_mb: int, max_secs: int) -> bool:
 # Send helper — dual destinations + topic threads
 # ══════════════════════════════════════════════════════════════════════════════
 
-async def _fwd(client, msg, chat, thread, cap_empty: bool, forward_tag: bool, from_chat=None):
+async def _fwd(client, msg, chat, thread, cap_empty: bool, forward_tag: bool, from_chat=None, block_links=False):
     """Forward one message to `chat`, optionally into a forum `thread`.
     Strategy (in order):
       1. forward_messages (when forward_tag=True)
@@ -212,6 +212,22 @@ async def _fwd(client, msg, chat, thread, cap_empty: bool, forward_tag: bool, fr
     All paths try message_thread_id for forum topics; fall back to reply_to_message_id.
     """
     from_id = from_chat or msg.chat.id
+    
+    modified_text = None
+    is_modified = False
+
+    if cap_empty and msg.media:
+        modified_text = ""
+        is_modified = True
+    elif block_links and _has_links(msg):
+        content = getattr(msg, 'caption' if msg.media else 'text', None)
+        if content:
+            raw = getattr(content, 'html', str(content))
+            modified_text = _LINK_RE.sub('', raw).strip()
+            is_modified = True
+
+    if is_modified and forward_tag:
+        forward_tag = False
 
     # Build thread kwargs — try message_thread_id first (Pyrogram >=2.0)
     def _thread_kw():
@@ -234,8 +250,8 @@ async def _fwd(client, msg, chat, thread, cap_empty: bool, forward_tag: bool, fr
             mo = getattr(msg, msg.media.value, None)
             if mo and hasattr(mo, "file_id"):
                 ckw = _thread_kw()
-                if cap_empty:
-                    ckw["caption"] = ""
+                if is_modified:
+                    ckw["caption"] = modified_text
                 elif msg.caption:
                     ckw["caption"] = msg.caption
                 try:
@@ -244,10 +260,20 @@ async def _fwd(client, msg, chat, thread, cap_empty: bool, forward_tag: bool, fr
                 except Exception:
                     pass  # fall through to copy_message
 
+        if not msg.media and is_modified:
+            mt_kw = _thread_kw()
+            try:
+                await client.send_message(chat_id=chat, text=modified_text or "", **mt_kw)
+                return True
+            except TypeError:
+                alt_m = {"reply_to_message_id": thread} if thread else {}
+                await client.send_message(chat_id=chat, text=modified_text or "", **alt_m)
+                return True
+
         # copy_message (works for public sources)
         copy_kw = _thread_kw()
-        if cap_empty and msg.media:
-            copy_kw["caption"] = ""
+        if msg.media and is_modified:
+            copy_kw["caption"] = modified_text
         try:
             await client.copy_message(
                 chat_id=chat, from_chat_id=from_id, message_id=msg.id, **copy_kw)
@@ -256,15 +282,15 @@ async def _fwd(client, msg, chat, thread, cap_empty: bool, forward_tag: bool, fr
             # Pyrogram version doesn't support message_thread_id in copy_message
             # Fall back to reply_to_message_id
             alt_kw = {"reply_to_message_id": thread} if thread else {}
-            if cap_empty and msg.media:
-                alt_kw["caption"] = ""
+            if msg.media and is_modified:
+                alt_kw["caption"] = modified_text
             await client.copy_message(
                 chat_id=chat, from_chat_id=from_id, message_id=msg.id, **alt_kw)
             return True
 
     except FloodWait as fw:
         await asyncio.sleep(fw.value + 2)
-        return await _fwd(client, msg, chat, thread, cap_empty, forward_tag, from_chat)
+        return await _fwd(client, msg, chat, thread, cap_empty, forward_tag, from_chat, block_links)
     except Exception as e:
         if forward_tag:
             logger.warning(f"[Job fwd] forward_messages failed for msg {msg.id} -> {chat}: {e}")
@@ -288,7 +314,7 @@ async def _fwd(client, msg, chat, thread, cap_empty: bool, forward_tag: bool, fr
                 fp = await client.download_media(msg, file_name=df_name)
                 if not fp:
                     raise Exception("DownloadFailed")
-                cap = "" if cap_empty else (str(msg.caption) if msg.caption else "")
+                cap = modified_text if is_modified else (str(msg.caption) if msg.caption else "")
                 d_kw = {"chat_id": chat, **_thread_kw()}
                 # display_name is passed as file_name= so Telegram shows the right name
                 async def _send_with_fallback(kwargs):
@@ -336,13 +362,11 @@ async def _fwd(client, msg, chat, thread, cap_empty: bool, forward_tag: bool, fr
 async def _forward_message(client, msg, to1, th1, cap_empty, forward_tag, from_chat,
                            to2=None, th2=None, block_links=False):
     """Forward msg to primary (and optional secondary) destination.
-    block_links: if True, skip messages that contain any URL.
+    block_links: if True, strip URLs from caption/text instead of skipping entirely.
     """
-    if block_links and _has_links(msg):
-        return False
-    res = await _fwd(client, msg, to1, th1, cap_empty, forward_tag, from_chat)
+    res = await _fwd(client, msg, to1, th1, cap_empty, forward_tag, from_chat, block_links)
     if to2:
-        await _fwd(client, msg, to2, th2, cap_empty, forward_tag, from_chat)
+        await _fwd(client, msg, to2, th2, cap_empty, forward_tag, from_chat, block_links)
     return res
 
 
