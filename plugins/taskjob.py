@@ -198,9 +198,13 @@ async def _send_one(client, msg, to_chat: int, remove_caption: bool, caption_tpl
                 safe_dir = f"downloads/{msg.id}"
                 os.makedirs(safe_dir, exist_ok=True)
                 df_name = f"{safe_dir}/{display_name}" if display_name else f"{safe_dir}/"
-                fp = await client.download_media(msg, file_name=df_name)
+                # Throttle concurrent heavy downloads so parallel tasks don't choke each other
+                from plugins.jobs import _DL_SEMAPHORE
+                async with _DL_SEMAPHORE:
+                    fp = await client.download_media(msg, file_name=df_name)
                 if not fp: raise Exception("DownloadFailed")
-                kw = {"chat_id": to_chat, "caption": caption if caption is not None else (str(msg.caption) if msg.caption else "")}
+                cap_html = caption if caption is not None else (getattr(msg.caption, 'html', str(msg.caption)) if msg.caption else "")
+                kw = {"chat_id": to_chat, "caption": cap_html}
                 try:
                     if msg.photo:       await client.send_photo(photo=fp, **kw)
                     elif msg.video:     await client.send_video(video=fp, file_name=display_name, **kw)
@@ -715,7 +719,26 @@ async def _create_taskjob_flow(bot, user_id: int):
         return await bot.send_message(user_id,
             "<b>❌ ɪɴᴠᴀʟɪᴅ sᴇʟᴇᴄᴛɪᴏɴ.</b>", reply_markup=ReplyKeyboardRemove())
 
-    # Step 5 — Custom Name
+    # Smart topic detection: only ask if destination is a group/supergroup
+    to_topic = None
+    try:
+        from plugins.jobs import _is_group_chat
+        if await _is_group_chat(bot, to_chat):
+            topic_r = await bot.ask(user_id,
+                "<b>╭──────❰ 💬 sᴛᴇᴘ 4b — ᴅᴇsᴛ ᴛᴏᴘɪᴄ (ɢʀᴏᴜᴘ) ❱──────╮\n"
+                "┃\n"
+                "┣⊸ Destination is a group — send thread/topic ID to post into a topic\n"
+                "┣⊸ Send 0 to post in the main chat (no topic)\n"
+                "┃\n╰────────────────────────────────╯</b>",
+                reply_markup=ReplyKeyboardMarkup(
+                    [[KeyboardButton("0 (ɴᴏ ᴛᴏᴘɪᴄ)")], [KeyboardButton("/cancel")]],
+                    resize_keyboard=True, one_time_keyboard=True))
+            if "/cancel" in topic_r.text:
+                return await topic_r.reply(_CANCEL_BOX, reply_markup=ReplyKeyboardRemove())
+            _t = topic_r.text.strip()
+            to_topic = int(_t) if _t.isdigit() and int(_t) > 0 else None
+    except Exception:
+        to_topic = None
     name_r = await bot.ask(user_id,
         "<b>╭──────❰ 📋 sᴛᴇᴘ 5/5 — ᴊᴏʙ ɴᴀᴍᴇ (ᴏᴘᴛɪᴏɴᴀʟ) ❱──────╮\n"
         "┃\n┣⊸ sᴇɴᴅ ᴀ sʜᴏʀᴛ ɴᴀᴍᴇ ғᴏʀ ᴛʜɪs ᴊᴏʙ ᴛᴏ ɪᴅᴇɴᴛɪғʏ ɪᴛ ᴇᴀsɪʟʏ.\n"
@@ -737,7 +760,7 @@ async def _create_taskjob_flow(bot, user_id: int):
     job = {
         "job_id": job_id, "user_id": user_id, "account_id": sel["id"],
         "from_chat": fc, "from_title": ftitle,
-        "to_chat": to_chat, "to_title": to_title,
+        "to_chat": to_chat, "to_title": to_title, "to_topic": to_topic,
         "start_id": start_id, "end_id": end_id, "current_id": start_id,
         "status": "running", "created": int(time.time()),
         "forwarded": 0, "consecutive_empty": 0, "error": "",

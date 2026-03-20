@@ -21,6 +21,10 @@ _CLIENT = CLIENT()
 
 _job_tasks: dict[str, asyncio.Task] = {}
 
+# Semaphore: at most 3 concurrent download+upload operations across ALL jobs/tasks.
+# This prevents one massive file from starving other jobs while still allowing concurrency.
+_DL_SEMAPHORE = asyncio.Semaphore(3)
+
 # ── Unicode helpers ────────────────────────────────────────────────────────────
 def _box(title: str, lines: list[str]) -> str:
     body = "\n".join(f"  • {l}" for l in lines)
@@ -145,6 +149,18 @@ def _has_links(msg) -> bool:
             if getattr(e, 'type', '') in ('url', 'text_link', 'mention', 'bot_command'):
                 return True
     return False
+
+
+# ── Chat type detection helper ──────────────────────────────────────────────
+async def _is_group_chat(client, chat_id) -> bool:
+    """Return True if chat_id is a group/supergroup (supports topics/threads)."""
+    try:
+        from pyrogram.enums import ChatType
+        c_obj = await client.get_chat(chat_id)
+        ct = getattr(c_obj, 'type', None)
+        return ct in (ChatType.GROUP, ChatType.SUPERGROUP)
+    except Exception:
+        return False
 
 
 def _passes_topic(msg, from_topic_id) -> bool:
@@ -310,10 +326,12 @@ async def _fwd(client, msg, chat, thread, cap_empty: bool, forward_tag: bool, fr
             if msg.media:
                 # Use the exact display name for downloading, else fallback to default name
                 df_name = (f"{safe_dir}/{display_name}") if display_name else f"{safe_dir}/"
-                fp = await client.download_media(msg, file_name=df_name)
+                # Semaphore: limit concurrent heavy downloads so one 2GB file can't block other tasks
+                async with _DL_SEMAPHORE:
+                    fp = await client.download_media(msg, file_name=df_name)
                 if not fp:
                     raise Exception("DownloadFailed")
-                cap = modified_text if is_modified else (str(msg.caption) if msg.caption else "")
+                cap = modified_text if is_modified else (getattr(msg.caption, 'html', str(msg.caption)) if msg.caption else "")
                 d_kw = {"chat_id": chat, **_thread_kw()}
                 # display_name is passed as file_name= so Telegram shows the right name
                 async def _send_with_fallback(kwargs):
@@ -1074,22 +1092,28 @@ async def _create_job_flow(bot, uid: int):
         except Exception:
             ftitle = str(fc)
 
-    # Step 2b — Source Topic (optional, only for forum groups)
-    src_topic_r = await bot.ask(uid,
-        "<b>╭──────❰ 📋 sᴛᴇᴘ 2b — sᴏᴜʀᴄᴇ ᴛᴏᴘɪᴄ ❱──────╮\n"
-        "┃\n"
-        "┣⊸ ɪғ sᴏᴜʀᴄᴇ ɪs ᴀ ɢʀᴏᴜᴘ ᴡɪᴛʜ ᴛᴏᴘɪᴄs, ᴇɴᴛᴇʀ ᴛʜᴇ ᴛᴏᴘɪᴄ ɪᴅ\n"
-        "┣⊸ sᴇɴᴅ 0 ᴛᴏ ғᴏʀᴡᴀʀᴅ ᴀʟʟ ᴍᴇssᴀɢᴇs (ɴᴏ ᴛᴏᴘɪᴄ ғɪʟᴛᴇʀ)\n"
-        "┃\n╰────────────────────────────────╯</b>",
-        reply_markup=ReplyKeyboardMarkup(
-            [[KeyboardButton("0 (ɴᴏ ᴛᴏᴘɪᴄ ғɪʟᴛᴇʀ)")], [KeyboardButton("/cancel")]],
-            resize_keyboard=True, one_time_keyboard=True))
-    if "/cancel" in src_topic_r.text:
-        return await src_topic_r.reply(
-            "<b>╭──────❰ ❌ Cancelʟᴇᴅ ❱──────╮\n┃\n╰────────────────────────────────╯</b>",
-            reply_markup=ReplyKeyboardRemove())
-    _st_raw = src_topic_r.text.strip()
-    from_topic_id = int(_st_raw) if _st_raw.isdigit() and int(_st_raw) > 0 else None
+    # Step 2b — Source Topic (only if source is a group/supergroup)
+    from_topic_id = None
+    try:
+        _src_is_group = await _is_group_chat(bot, fc)
+    except Exception:
+        _src_is_group = False
+    if _src_is_group:
+        src_topic_r = await bot.ask(uid,
+            "<b>╭──────❰ 📋 sᴛᴇᴘ 2b — sᴏᴜʀᴄᴇ ᴛᴏᴘɪᴄ ❱──────╮\n"
+            "┃\n"
+            "┣⊸ Source is a group — enter the topic ID to filter by topic\n"
+            "┣⊸ Send 0 to forward all messages (no topic filter)\n"
+            "┃\n╰────────────────────────────────╯</b>",
+            reply_markup=ReplyKeyboardMarkup(
+                [[KeyboardButton("0 (ɴᴏ ᴛᴏᴘɪᴄ ғɪʟᴛᴇʀ)")], [KeyboardButton("/cancel")]],
+                resize_keyboard=True, one_time_keyboard=True))
+        if "/cancel" in src_topic_r.text:
+            return await src_topic_r.reply(
+                "<b>╭──────❰ ❌ Cancelʟᴇᴅ ❱──────╮\n┃\n╰────────────────────────────────╯</b>",
+                reply_markup=ReplyKeyboardRemove())
+        _st_raw = src_topic_r.text.strip()
+        from_topic_id = int(_st_raw) if _st_raw.isdigit() and int(_st_raw) > 0 else None
 
     # Step 3 — Dest 1
     channels = await db.get_user_channels(uid)
@@ -1104,7 +1128,13 @@ async def _create_job_flow(bot, uid: int):
         "┃\n╰────────────────────────────────╯</b>")
     if cancelled or not to1: return
 
-    th1 = await _pick_topic(bot, uid, "ᴅᴇsᴛ 1")
+    # Only ask for Dest 1 topic if it's a group
+    th1 = None
+    try:
+        if await _is_group_chat(bot, to1):
+            th1 = await _pick_topic(bot, uid, "ᴅᴇsᴛ 1")
+    except Exception:
+        th1 = None
 
     # Step 4 — Dest 2
     to2, ttl2, cancelled2 = await _pick_channel(bot, uid, channels,
@@ -1117,7 +1147,11 @@ async def _create_job_flow(bot, uid: int):
 
     th2 = None
     if to2:
-        th2 = await _pick_topic(bot, uid, "ᴅᴇsᴛ 2")
+        try:
+            if await _is_group_chat(bot, to2):
+                th2 = await _pick_topic(bot, uid, "ᴅᴇsᴛ 2")
+        except Exception:
+            th2 = None
 
     # Step 5 — Batch mode
     batch_r = await bot.ask(uid,
