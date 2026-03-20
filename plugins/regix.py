@@ -256,13 +256,12 @@ async def pub_(bot, message):
                   sts.add('fetched')
                   if forward_tag:
                      MSG.append(message.id)
-                     notcompleted = len(MSG)
-                     completed = sts.get('total') - sts.get('fetched')
-                     if ( notcompleted >= 100 
-                          or completed <= 100): 
+                     # Forward in batches of 100 for efficiency, but don't wait for "completed<=100"
+                     # because that was causing messages to pile up and never be sent.
+                     if len(MSG) >= 100:
                         await forward(client, MSG, m, sts, protect)
-                        sts.add('total_files', notcompleted)
-                        await asyncio.sleep(10)
+                        sts.add('total_files', len(MSG))
+                        await asyncio.sleep(3)  # Short pause to avoid flood, not 10s
                         MSG.clear()
                   else:
                       # DIRECT SEQUENTIAL SEND — bypass the concurrent pipeline entirely
@@ -442,6 +441,17 @@ async def pub_(bot, message):
                     
           # --- Flush remaining messages that didn't fill a complete window ---
           await flush_buffer()
+
+          # --- Flush any remaining forward_tag messages (< 100 batch) ---
+          # CRITICAL FIX: if forward_tag job had < 100 messages total, or last batch < 100,
+          # forward them now. (the protect var may be last value from loop; default False is safe)
+          if MSG:
+              _last_protect = False
+              try: _last_protect = protect  # use last seen value from loop if available
+              except: pass
+              await forward(client, MSG, m, sts, _last_protect)
+              sts.add('total_files', len(MSG))
+              MSG.clear()
                     
           # --- Wait for all pending tasks to finish before completing ---
           if not is_continuous:

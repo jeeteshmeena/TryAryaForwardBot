@@ -174,7 +174,7 @@ async def start_clone_bot(FwdBot, data=None):
         else:
             # ── Old to New: walk IDs from low to high ──
             current = max(1, offset if offset > 0 else 1)
-            to_check = 10  # Maximum empty batches before giving up (2000 messages gap)
+            to_check = 50  # Maximum empty batches before giving up (10000 messages gap)
 
             while True:
                 new_diff = BATCH_SIZE
@@ -210,7 +210,7 @@ async def start_clone_bot(FwdBot, data=None):
                         current = batch_ids[-1] + 1
                         continue
                 else:
-                    to_check = 10  # Reset counter if messages found
+                    to_check = 50  # Reset counter if messages found
 
                 # CRITICAL: get_messages does NOT guarantee return order matches
                 # the requested ID order. Telegram may return them differently.
