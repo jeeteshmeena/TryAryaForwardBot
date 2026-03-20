@@ -121,7 +121,7 @@ def _passes_filters(msg, dis: list) -> bool:
 # Send helper
 # ══════════════════════════════════════════════════════════════════════════════
 
-async def _send_one(client, msg, to_chat: int, remove_caption: bool, caption_tpl, forward_tag=False, from_chat=None, block_links=False):
+async def _send_one(client, msg, to_chat: int, remove_caption: bool, caption_tpl, forward_tag=False, from_chat=None, block_links=False, to_topic=None):
     caption = None
     is_modified = False
 
@@ -150,9 +150,11 @@ async def _send_one(client, msg, to_chat: int, remove_caption: bool, caption_tpl
     from_id = from_chat or msg.chat.id
     
     try:
+        kw_fwd = {}
+        if to_topic: kw_fwd["message_thread_id"] = kw_fwd["reply_to_message_id"] = to_topic
         if forward_tag:
             try:
-                await client.forward_messages(chat_id=to_chat, from_chat_id=from_id, message_ids=msg.id)
+                await client.forward_messages(chat_id=to_chat, from_chat_id=from_id, message_ids=msg.id, **kw_fwd)
                 return True
             except FloodWait as fw:
                 raise fw
@@ -164,6 +166,7 @@ async def _send_one(client, msg, to_chat: int, remove_caption: bool, caption_tpl
                 mo = getattr(msg, msg.media.value, None)
                 if mo and hasattr(mo, "file_id"):
                     kw = {}
+                    if to_topic: kw["message_thread_id"] = kw["reply_to_message_id"] = to_topic
                     if caption is not None: kw["caption"] = caption
                     elif msg.caption: kw["caption"] = msg.caption
                     await client.send_cached_media(chat_id=to_chat, file_id=mo.file_id, **kw)
@@ -171,19 +174,22 @@ async def _send_one(client, msg, to_chat: int, remove_caption: bool, caption_tpl
         except Exception:
             pass
 
+        kw_msg = {}
+        if to_topic: kw_msg["message_thread_id"] = kw_msg["reply_to_message_id"] = to_topic
+
         if not msg.media and is_modified:
-            await client.send_message(chat_id=to_chat, text=caption or "")
+            await client.send_message(chat_id=to_chat, text=caption or "", **kw_msg)
             return True
 
         if caption is not None and msg.media:
             await client.copy_message(chat_id=to_chat, from_chat_id=from_id,
-                                      message_id=msg.id, caption=caption)
+                                      message_id=msg.id, caption=caption, **kw_msg)
         else:
-            await client.copy_message(chat_id=to_chat, from_chat_id=from_id, message_id=msg.id)
+            await client.copy_message(chat_id=to_chat, from_chat_id=from_id, message_id=msg.id, **kw_msg)
         return True
     except FloodWait as fw:
         await asyncio.sleep(fw.value + 2)
-        return await _send_one(client, msg, to_chat, remove_caption, caption_tpl, forward_tag, from_chat, block_links)
+        return await _send_one(client, msg, to_chat, remove_caption, caption_tpl, forward_tag, from_chat, block_links, to_topic)
     except Exception as e:
         # Download fallback
         try:
@@ -198,13 +204,10 @@ async def _send_one(client, msg, to_chat: int, remove_caption: bool, caption_tpl
                 safe_dir = f"downloads/{msg.id}"
                 os.makedirs(safe_dir, exist_ok=True)
                 df_name = f"{safe_dir}/{display_name}" if display_name else f"{safe_dir}/"
-                # Throttle concurrent heavy downloads so parallel tasks don't choke each other
-                from plugins.jobs import _DL_SEMAPHORE
-                async with _DL_SEMAPHORE:
-                    fp = await client.download_media(msg, file_name=df_name)
+                fp = await client.download_media(msg, file_name=df_name)
                 if not fp: raise Exception("DownloadFailed")
-                cap_html = caption if caption is not None else (getattr(msg.caption, 'html', str(msg.caption)) if msg.caption else "")
-                kw = {"chat_id": to_chat, "caption": cap_html}
+                kw = {"chat_id": to_chat, "caption": caption if caption is not None else (str(msg.caption) if msg.caption else "")}
+                if to_topic: kw["message_thread_id"] = kw["reply_to_message_id"] = to_topic
                 try:
                     if msg.photo:       await client.send_photo(photo=fp, **kw)
                     elif msg.video:     await client.send_video(video=fp, file_name=display_name, **kw)
@@ -218,7 +221,9 @@ async def _send_one(client, msg, to_chat: int, remove_caption: bool, caption_tpl
                 return True
             else:
                 raw_t = caption if is_modified else (getattr(msg.text, 'html', str(msg.text)) if msg.text else "")
-                await client.send_message(chat_id=to_chat, text=raw_t)
+                kw_t = {"chat_id": to_chat, "text": raw_t}
+                if to_topic: kw_t["message_thread_id"] = kw_t["reply_to_message_id"] = to_topic
+                await client.send_message(**kw_t)
                 return True
         except Exception as e2:
             logger.debug(f"[TaskJob] send fallback: {e2}")
@@ -276,6 +281,8 @@ async def _run_task_job(job_id: str, user_id: int, _bot=None):
             if getattr(client, 'me', None) and client.me.is_bot and isinstance(fc, str):
                 fc_is_channel = True
         to_chat = job["to_chat"]
+        to_topic = job.get("to_topic_id")
+        from_topic = job.get("from_topic_id")
         end_id  = job.get("end_id", 0)
         current = job.get("current_id", job.get("start_id", 1))
 
@@ -364,12 +371,17 @@ async def _run_task_job(job_id: str, user_id: int, _bot=None):
 
             fwd = 0
             for msg in valid:
+                if from_topic:
+                    if getattr(msg, 'message_thread_id', getattr(msg, 'reply_to_top_message_id', getattr(msg, 'reply_to_message_id', None))) != from_topic:
+                        if msg.id != from_topic: # Allow the top message of topics through
+                            continue
+                            
                 await pause_ev.wait()
                 f2 = await _tj_get(job_id)
                 if not f2 or f2.get("status") in ("stopped",): return
                 if not _passes_filters(msg, dis): continue
                 # we pass block_links to strip links rather than skipping the file entirely
-                ok = await _send_one(client, msg, to_chat, rm_cap, cap_tpl, forward_tag=forward_tag, from_chat=fc, block_links=block_links)
+                ok = await _send_one(client, msg, to_chat, rm_cap, cap_tpl, forward_tag=forward_tag, from_chat=fc, block_links=block_links, to_topic=to_topic)
                 if ok: fwd += 1; await _tj_inc(job_id)
                 if slp: await asyncio.sleep(slp)
                 else:   await asyncio.sleep(0)
@@ -662,8 +674,24 @@ async def _create_taskjob_flow(bot, user_id: int):
     try:
         co     = await bot.get_chat(fc)
         ftitle = getattr(co, "title", None) or str(fc)
+        source_is_forum = getattr(co, "is_forum", False)
     except Exception:
         ftitle = str(fc)
+        source_is_forum = True if str(fc).startswith('-100') else False
+
+    from_topic_id = None
+    if source_is_forum:
+        src_topic_r = await bot.ask(user_id,
+            "<b>╭──────❰ 📋 sᴛᴇᴘ 2b — sᴏᴜʀᴄᴇ ᴛᴏᴘɪᴄ ❱──────╮\n"
+            "┃\n"
+            "┣⊸ ɪғ sᴏᴜʀᴄᴇ ɪs ᴀ ɢʀᴏᴜᴘ ᴡɪᴛʜ ᴛᴏᴘɪᴄs, ᴇɴᴛᴇʀ ᴛʜᴇ ᴛᴏᴘɪᴄ ɪᴅ\n"
+            "┣⊸ sᴇɴᴅ 0 ᴛᴏ ғᴏʀᴡᴀʀᴅ ᴀʟʟ ᴍᴇssᴀɢᴇs (ɴᴏ ᴛᴏᴘɪᴄ ғɪʟᴛᴇʀ)\n"
+            "┃\n╰────────────────────────────────╯</b>",
+            reply_markup=ReplyKeyboardMarkup([["0 (ɴᴏ ᴛᴏᴘɪᴄ ғɪʟᴛᴇʀ)"], ["/cancel"]], resize_keyboard=True, one_time_keyboard=True))
+        if "/cancel" in src_topic_r.text:
+            return await src_topic_r.reply(_CANCEL_BOX, reply_markup=ReplyKeyboardRemove())
+        _st_raw = src_topic_r.text.strip()
+        from_topic_id = int(_st_raw) if _st_raw.isdigit() and int(_st_raw) > 0 else None
 
     # Step 3 — Range
     rng_r = await bot.ask(user_id,
@@ -719,26 +747,28 @@ async def _create_taskjob_flow(bot, user_id: int):
         return await bot.send_message(user_id,
             "<b>❌ ɪɴᴠᴀʟɪᴅ sᴇʟᴇᴄᴛɪᴏɴ.</b>", reply_markup=ReplyKeyboardRemove())
 
-    # Smart topic detection: only ask if destination is a group/supergroup
-    to_topic = None
-    try:
-        from plugins.jobs import _is_group_chat
-        if await _is_group_chat(bot, to_chat):
-            topic_r = await bot.ask(user_id,
-                "<b>╭──────❰ 💬 sᴛᴇᴘ 4b — ᴅᴇsᴛ ᴛᴏᴘɪᴄ (ɢʀᴏᴜᴘ) ❱──────╮\n"
-                "┃\n"
-                "┣⊸ Destination is a group — send thread/topic ID to post into a topic\n"
-                "┣⊸ Send 0 to post in the main chat (no topic)\n"
-                "┃\n╰────────────────────────────────╯</b>",
-                reply_markup=ReplyKeyboardMarkup(
-                    [[KeyboardButton("0 (ɴᴏ ᴛᴏᴘɪᴄ)")], [KeyboardButton("/cancel")]],
-                    resize_keyboard=True, one_time_keyboard=True))
-            if "/cancel" in topic_r.text:
-                return await topic_r.reply(_CANCEL_BOX, reply_markup=ReplyKeyboardRemove())
-            _t = topic_r.text.strip()
-            to_topic = int(_t) if _t.isdigit() and int(_t) > 0 else None
-    except Exception:
-        to_topic = None
+    to_topic_id = None
+    to_is_forum = False
+    if str(to_chat).startswith('-100'):
+        try:
+            co_to = await bot.get_chat(to_chat)
+            to_is_forum = getattr(co_to, "is_forum", False)
+        except Exception:
+            to_is_forum = True
+
+    if to_is_forum:
+        to_topic_r = await bot.ask(user_id,
+            "<b>╭──────❰ 💬 ᴛᴏᴘɪᴄ ᴛʜʀᴇᴀᴅ — ᴅᴇsᴛɪɴᴀᴛɪᴏɴ ❱──────╮\n"
+            "┃\n"
+            "┣⊸ sᴇɴᴅ ᴛʜʀᴇᴀᴅ ɪᴅ ᴛᴏ ᴘᴏsᴛ ɪɴᴛᴏ ᴀ ᴛᴏᴘɪᴄ\n"
+            "┣⊸ sᴇɴᴅ 0 ᴛᴏ ᴘᴏsᴛ ɪɴ ᴍᴀɪɴ ᴄʜᴀᴛ\n"
+            "┃\n╰────────────────────────────────╯</b>",
+            reply_markup=ReplyKeyboardMarkup([["0 (ɴᴏ ᴛᴏᴘɪᴄ)"], ["/cancel"]], resize_keyboard=True, one_time_keyboard=True))
+        if "/cancel" in to_topic_r.text: return await to_topic_r.reply(_CANCEL_BOX, reply_markup=ReplyKeyboardRemove())
+        _t = to_topic_r.text.strip()
+        to_topic_id = int(_t) if _t.isdigit() and int(_t) > 0 else None
+
+    # Step 5 — Custom Name
     name_r = await bot.ask(user_id,
         "<b>╭──────❰ 📋 sᴛᴇᴘ 5/5 — ᴊᴏʙ ɴᴀᴍᴇ (ᴏᴘᴛɪᴏɴᴀʟ) ❱──────╮\n"
         "┃\n┣⊸ sᴇɴᴅ ᴀ sʜᴏʀᴛ ɴᴀᴍᴇ ғᴏʀ ᴛʜɪs ᴊᴏʙ ᴛᴏ ɪᴅᴇɴᴛɪғʏ ɪᴛ ᴇᴀsɪʟʏ.\n"
@@ -759,8 +789,8 @@ async def _create_taskjob_flow(bot, user_id: int):
     job_id = f"tj-{user_id}-{int(time.time())}"
     job = {
         "job_id": job_id, "user_id": user_id, "account_id": sel["id"],
-        "from_chat": fc, "from_title": ftitle,
-        "to_chat": to_chat, "to_title": to_title, "to_topic": to_topic,
+        "from_chat": fc, "from_title": ftitle, "from_topic_id": from_topic_id,
+        "to_chat": to_chat, "to_title": to_title, "to_topic_id": to_topic_id,
         "start_id": start_id, "end_id": end_id, "current_id": start_id,
         "status": "running", "created": int(time.time()),
         "forwarded": 0, "consecutive_empty": 0, "error": "",
