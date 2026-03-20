@@ -26,6 +26,9 @@ async def _main_buttons(user_id: int):
             InlineKeyboardButton(_tx(lang, 'btn_settings'), callback_data='settings#main'),
             InlineKeyboardButton(_tx(lang, 'btn_jobs'),     callback_data='job#list'),
         ],
+        [
+            InlineKeyboardButton('🚀 Task Jobs',            callback_data='tj#list'),
+        ]
     ]
 
 # ── static fallback used before user_id is available ──────────────────────
@@ -43,6 +46,9 @@ _STATIC_BUTTONS = [
         InlineKeyboardButton('⚙️ Settings ⚙️', callback_data='settings#main'),
         InlineKeyboardButton('📋 Live Jobs',    callback_data='job#list'),
     ],
+    [
+        InlineKeyboardButton('🚀 Task Jobs',    callback_data='tj#list'),
+    ]
 ]
 
 # ===================Start Function===================
@@ -215,13 +221,51 @@ async def about(bot, query):
 
 @Client.on_callback_query(filters.regex(r'^status'))
 async def status(bot, query):
+    import time as _time
+    from main import START_TIME
     user_id = query.from_user.id
-    lang = await db.get_language(user_id)
-    users_count, bots_count = await db.total_users_bots_count()
-    total_channels = await db.total_channels()
+
+    users_count        = await db.get_total_users_count()
+    active_forwarding  = await db.get_active_forwardings_count()
+    active_jobs        = await db.get_active_jobs_count()
+    total_channels_cnt = await db.total_channels()
+    _, bots_count      = await db.total_users_bots_count()
+
+    elapsed = _time.time() - START_TIME
+    d, rem  = divmod(int(elapsed), 86400)
+    h, rem  = divmod(rem, 3600)
+    m, s    = divmod(rem, 60)
+    uptime  = f"{d}d {h}h {m}m {s}s"
+
+    try:
+        from .jobs import _job_tasks
+        in_memory_tasks = len([tk for tk in _job_tasks.values() if not tk.done()])
+    except Exception:
+        in_memory_tasks = "0"
+
+    try:
+        from .taskjob import _pause_events
+        in_memory_taskjobs = len(_pause_events)
+    except Exception:
+        in_memory_taskjobs = "0"
+
+    text = (
+        "<b>╭─────❰ 📊 sʏsᴛᴇᴍ sᴛᴀᴛᴜs ❱─────╮</b>\n"
+        "<b>┃</b>\n"
+        f"<b>┣⊸ ⏱ ᴜᴘᴛɪᴍᴇ :</b> <code>{uptime}</code>\n"
+        f"<b>┣⊸ 🟢 ᴀᴄᴛɪᴠᴇ ʟɪᴠᴇ ᴊᴏʙs :</b> <code>{active_jobs}</code> <i>(Tasks: {in_memory_tasks})</i>\n"
+        f"<b>┣⊸ 🚀 ᴀᴄᴛɪᴠᴇ ᴛᴀsᴋ ᴊᴏʙs :</b> <code>{in_memory_taskjobs}</code>\n"
+        f"<b>┣⊸ 📡 ɴᴏʀᴍᴀʟ ғᴏʀᴡᴀʀᴅs :</b> <code>{active_forwarding}</code>\n"
+        "<b>┃</b>\n"
+        f"<b>┣⊸ 👥 ᴛᴏᴛᴀʟ ᴜsᴇʀs :</b> <code>{users_count}</code>\n"
+        f"<b>┣⊸ 🤖 ʙᴏᴛ/ᴜsᴇʀʙᴏᴛs ᴀᴄᴛɪᴠᴇ :</b> <code>{bots_count}</code>\n"
+        f"<b>┣⊸ 📢 ᴄʜᴀɴɴᴇʟs sᴀᴠᴇᴅ :</b> <code>{total_channels_cnt}</code>\n"
+        "<b>┃</b>\n"
+        "<b>╰───────────────────────────╯</b>"
+    )
+
     await query.message.edit_text(
-        text=_tx(lang, 'STATUS_TXT',
-                 users_count, bots_count, temp.forwardings, total_channels, temp.BANNED_USERS),
+        text=text,
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('↩ Back', callback_data='help')]]),
         parse_mode=enums.ParseMode.HTML,
         disable_web_page_preview=True,

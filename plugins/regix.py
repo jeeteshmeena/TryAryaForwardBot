@@ -565,7 +565,8 @@ async def copy(bot, msg, m, sts, download=False, attempt=0, seq_index=None, uplo
                  elif getattr(message, 'document', None):
                      await upload_queue.put((seq_index, 'send_document', {"document": file_path, "file_name": display_name, **kwargs}, safe_dir))
                  elif getattr(message, 'audio', None):
-                     await upload_queue.put((seq_index, 'send_audio', {"audio": file_path, "file_name": display_name, **kwargs}, safe_dir))
+                     mo = getattr(message, 'audio', None)
+                     await upload_queue.put((seq_index, 'send_audio', {"audio": file_path, "file_name": display_name, "title": getattr(mo, 'title', None), "performer": getattr(mo, 'performer', None), **kwargs}, safe_dir))
                  elif getattr(message, 'voice', None):
                      await upload_queue.put((seq_index, 'send_voice', {"voice": file_path, **kwargs}, safe_dir))
                  elif getattr(message, 'video_note', None):

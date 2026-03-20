@@ -151,20 +151,13 @@ async def _send_one(client, msg, to_chat: int, remove_caption: bool, caption_tpl
     
     try:
         if forward_tag:
-            await client.forward_messages(chat_id=to_chat, from_chat_id=from_id, message_ids=msg.id)
-            return True
-
-        try:
-            if msg.media:
-                mo = getattr(msg, msg.media.value, None)
-                if mo and hasattr(mo, "file_id"):
-                    kw = {}
-                    if caption is not None: kw["caption"] = caption
-                    elif msg.caption: kw["caption"] = msg.caption
-                    await client.send_cached_media(chat_id=to_chat, file_id=mo.file_id, **kw)
-                    return True
-        except Exception:
-            pass
+            try:
+                await client.forward_messages(chat_id=to_chat, from_chat_id=from_id, message_ids=msg.id)
+                return True
+            except FloodWait as fw:
+                raise fw
+            except Exception:
+                pass # fall through to copy
 
         try:
             if msg.media:
@@ -192,9 +185,6 @@ async def _send_one(client, msg, to_chat: int, remove_caption: bool, caption_tpl
         await asyncio.sleep(fw.value + 2)
         return await _send_one(client, msg, to_chat, remove_caption, caption_tpl, forward_tag, from_chat, block_links)
     except Exception as e:
-        if forward_tag:
-            return False
-
         # Download fallback
         try:
             if msg.media:
@@ -215,7 +205,7 @@ async def _send_one(client, msg, to_chat: int, remove_caption: bool, caption_tpl
                     if msg.photo:       await client.send_photo(photo=fp, **kw)
                     elif msg.video:     await client.send_video(video=fp, file_name=display_name, **kw)
                     elif msg.document:  await client.send_document(document=fp, file_name=display_name, **kw)
-                    elif msg.audio:     await client.send_audio(audio=fp, file_name=display_name, **kw)
+                    elif msg.audio:     await client.send_audio(audio=fp, file_name=display_name, title=getattr(mo, 'title', None), performer=getattr(mo, 'performer', None), **kw)
                     elif msg.voice:     await client.send_voice(voice=fp, **kw)
                     elif msg.animation: await client.send_animation(animation=fp, file_name=display_name, **kw)
                     elif msg.sticker:   await client.send_sticker(sticker=fp, **kw)
@@ -223,7 +213,8 @@ async def _send_one(client, msg, to_chat: int, remove_caption: bool, caption_tpl
                     _shu2.rmtree(safe_dir, ignore_errors=True)
                 return True
             else:
-                await client.send_message(chat_id=to_chat, text=caption if is_modified else (msg.text or ""))
+                raw_t = caption if is_modified else (getattr(msg.text, 'html', str(msg.text)) if msg.text else "")
+                await client.send_message(chat_id=to_chat, text=raw_t)
                 return True
         except Exception as e2:
             logger.debug(f"[TaskJob] send fallback: {e2}")
@@ -348,11 +339,11 @@ async def _run_task_job(job_id: str, user_id: int, _bot=None):
 
             if not valid:
                 consec = fresh.get("consecutive_empty", 0) + 1
-                if consec >= 10:  # Allow up to 500 deleted/service messages in a row before giving up
+                if consec >= 50:  # Allow up to 10000 deleted/service messages in a row before giving up
                     logger.info(f"[TaskJob {job_id}] Hit {consec} empty chunks. Ending job.")
                     await _tj_update(job_id, status="done", current_id=current)
                     break
-                logger.info(f"[TaskJob {job_id}] Empty chunk {current}->{current+BATCH_SIZE-1} (consec {consec}/10)")
+                logger.info(f"[TaskJob {job_id}] Empty chunk {current}->{current+BATCH_SIZE-1} (consec {consec}/50)")
                 current += BATCH_SIZE
                 await _tj_update(job_id, consecutive_empty=consec, current_id=current)
                 await asyncio.sleep(1); continue

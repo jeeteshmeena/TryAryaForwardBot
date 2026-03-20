@@ -236,14 +236,18 @@ async def _fwd(client, msg, chat, thread, cap_empty: bool, forward_tag: bool, fr
     try:
         if forward_tag:
             try:
-                await client.forward_messages(
-                    chat_id=chat, from_chat_id=from_id,
-                    message_ids=msg.id, **_thread_kw())
-            except TypeError:
-                # Older Pyrogram: forward_messages may not accept message_thread_id
-                await client.forward_messages(
-                    chat_id=chat, from_chat_id=from_id, message_ids=msg.id)
-            return True
+                try:
+                    await client.forward_messages(
+                        chat_id=chat, from_chat_id=from_id,
+                        message_ids=msg.id, **_thread_kw())
+                except TypeError:
+                    await client.forward_messages(
+                        chat_id=chat, from_chat_id=from_id, message_ids=msg.id)
+                return True
+            except FloodWait as fw:
+                raise fw
+            except Exception as e:
+                pass # fallback to copy_message explicitly if forwarding fails (e.g., protected channel)
 
         # Try send_cached_media first (no re-upload, fastest)
         if msg.media:
@@ -265,10 +269,9 @@ async def _fwd(client, msg, chat, thread, cap_empty: bool, forward_tag: bool, fr
             try:
                 await client.send_message(chat_id=chat, text=modified_text or "", **mt_kw)
                 return True
-            except TypeError:
-                alt_m = {"reply_to_message_id": thread} if thread else {}
-                await client.send_message(chat_id=chat, text=modified_text or "", **alt_m)
-                return True
+            except Exception as e:
+                pass # fall through to copy_message
+            return True
 
         # copy_message (works for public sources)
         copy_kw = _thread_kw()
@@ -292,11 +295,7 @@ async def _fwd(client, msg, chat, thread, cap_empty: bool, forward_tag: bool, fr
         await asyncio.sleep(fw.value + 2)
         return await _fwd(client, msg, chat, thread, cap_empty, forward_tag, from_chat, block_links)
     except Exception as e:
-        if forward_tag:
-            logger.warning(f"[Job fwd] forward_messages failed for msg {msg.id} -> {chat}: {e}")
-            return False
-
-        # Download + re-upload fallback (restricted/private channels, forwarding OFF)
+        # Download + re-upload fallback (restricted/private channels)
         try:
             import os, shutil
             # Get the Telegram display_name from the media object (this is what shows in Telegram UI)
@@ -322,7 +321,7 @@ async def _fwd(client, msg, chat, thread, cap_empty: bool, forward_tag: bool, fr
                         if msg.photo:       await client.send_photo(photo=fp, caption=cap, **kwargs)
                         elif msg.video:     await client.send_video(video=fp, caption=cap, file_name=display_name, **kwargs)
                         elif msg.document:  await client.send_document(document=fp, caption=cap, file_name=display_name, **kwargs)
-                        elif msg.audio:     await client.send_audio(audio=fp, caption=cap, file_name=display_name, **kwargs)
+                        elif msg.audio:     await client.send_audio(audio=fp, caption=cap, file_name=display_name, title=getattr(mo, 'title', None), performer=getattr(mo, 'performer', None), **kwargs)
                         elif msg.voice:     await client.send_voice(voice=fp, caption=cap, **kwargs)
                         elif msg.animation: await client.send_animation(animation=fp, caption=cap, file_name=display_name, **kwargs)
                         elif msg.sticker:   await client.send_sticker(sticker=fp, **kwargs)
@@ -332,7 +331,7 @@ async def _fwd(client, msg, chat, thread, cap_empty: bool, forward_tag: bool, fr
                         if msg.photo:       await client.send_photo(photo=fp, caption=cap, **no_thread)
                         elif msg.video:     await client.send_video(video=fp, caption=cap, file_name=display_name, **no_thread)
                         elif msg.document:  await client.send_document(document=fp, caption=cap, file_name=display_name, **no_thread)
-                        elif msg.audio:     await client.send_audio(audio=fp, caption=cap, file_name=display_name, **no_thread)
+                        elif msg.audio:     await client.send_audio(audio=fp, caption=cap, file_name=display_name, title=getattr(mo, 'title', None), performer=getattr(mo, 'performer', None), **no_thread)
                         elif msg.voice:     await client.send_voice(voice=fp, caption=cap, **no_thread)
                         elif msg.animation: await client.send_animation(animation=fp, caption=cap, file_name=display_name, **no_thread)
                         elif msg.sticker:   await client.send_sticker(sticker=fp, **no_thread)
@@ -348,11 +347,12 @@ async def _fwd(client, msg, chat, thread, cap_empty: bool, forward_tag: bool, fr
                         shutil.rmtree(safe_dir, ignore_errors=True)
                     except Exception: pass
             else:
+                raw_t = msg.text.html if (msg.text and hasattr(msg.text, 'html')) else (str(msg.text) if msg.text else "")
                 send_kw = _thread_kw()
                 try:
-                    await client.send_message(chat_id=chat, text=msg.text or "", **send_kw)
+                    await client.send_message(chat_id=chat, text=raw_t, **send_kw)
                 except TypeError:
-                    await client.send_message(chat_id=chat, text=msg.text or "")
+                    await client.send_message(chat_id=chat, text=raw_t)
             return True
         except Exception as e2:
             logger.warning(f"[Job fwd] fallback failed for msg {msg.id} -> {chat}: {e2}")
