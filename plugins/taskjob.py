@@ -27,6 +27,10 @@ _pause_events: dict[str, asyncio.Event] = {}
 
 COLL = "taskjobs"
 
+# Global semaphore: limit concurrent heavy downloads to 2 so large files
+# (500MB-1GB) don't starve other running task jobs. Copy/forward ops skip it.
+_DOWNLOAD_SEM = asyncio.Semaphore(2)
+
 # ── Unicode helpers ────────────────────────────────────────────────────────────
 def _st(status: str) -> str:
     return {"running": "🟢", "paused": "⏸", "stopped": "🔴", "done": "✅", "error": "⚠️"}.get(status, "❓")
@@ -204,7 +208,10 @@ async def _send_one(client, msg, to_chat: int, remove_caption: bool, caption_tpl
                 safe_dir = f"downloads/{msg.id}"
                 os.makedirs(safe_dir, exist_ok=True)
                 df_name = f"{safe_dir}/{display_name}" if display_name else f"{safe_dir}/"
-                fp = await client.download_media(msg, file_name=df_name)
+                # Semaphore: only 2 heavy downloads can run simultaneously. Others wait, not blocked.
+                # This prevents a 1GB file from delaying ALL other task jobs completely.
+                async with _DOWNLOAD_SEM:
+                    fp = await client.download_media(msg, file_name=df_name)
                 if not fp: raise Exception("DownloadFailed")
                 kw = {"chat_id": to_chat, "caption": caption if caption is not None else (str(msg.caption) if msg.caption else "")}
                 if to_topic: kw["message_thread_id"] = kw["reply_to_message_id"] = to_topic
@@ -674,10 +681,10 @@ async def _create_taskjob_flow(bot, user_id: int):
     try:
         co     = await bot.get_chat(fc)
         ftitle = getattr(co, "title", None) or str(fc)
-        source_is_forum = getattr(co, "is_forum", False)
+        source_is_forum = getattr(co, "is_forum", False) and getattr(co, 'type', None) is not None and str(getattr(co, 'type', '')).endswith('SUPERGROUP')
     except Exception:
         ftitle = str(fc)
-        source_is_forum = True if str(fc).startswith('-100') else False
+        source_is_forum = False  # Never default to asking topic if we can't check
 
     from_topic_id = None
     if source_is_forum:
@@ -749,12 +756,15 @@ async def _create_taskjob_flow(bot, user_id: int):
 
     to_topic_id = None
     to_is_forum = False
-    if str(to_chat).startswith('-100'):
+    if to_chat and str(to_chat).startswith('-100'):
         try:
             co_to = await bot.get_chat(to_chat)
-            to_is_forum = getattr(co_to, "is_forum", False)
+            from pyrogram.enums import ChatType
+            # Only SUPERGROUP can have Topics (CHANNEL cannot)
+            if getattr(co_to, 'type', None) == ChatType.SUPERGROUP:
+                to_is_forum = getattr(co_to, "is_forum", False)
         except Exception:
-            to_is_forum = True
+            to_is_forum = False  # Safe default: don't prompt if we can't confirm
 
     if to_is_forum:
         to_topic_r = await bot.ask(user_id,

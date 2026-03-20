@@ -1110,12 +1110,15 @@ async def _create_job_flow(bot, uid: int):
 
     th1 = None
     to1_is_forum = False
-    if str(to1).startswith('-100'):
+    if to1 and str(to1).startswith('-100'):
         try:
             co1 = await bot.get_chat(to1)
-            to1_is_forum = getattr(co1, "is_forum", False)
+            # Only supergroups can have forum topics, never channels or private chats
+            from pyrogram.enums import ChatType
+            if getattr(co1, 'type', None) == ChatType.SUPERGROUP:
+                to1_is_forum = getattr(co1, "is_forum", False)
         except Exception:
-            to1_is_forum = True
+            to1_is_forum = False  # Safe default: don't ask for topics if we can't confirm
 
     if to1_is_forum:
         th1 = await _pick_topic(bot, uid, "ᴅᴇsᴛ 1")
@@ -1135,9 +1138,12 @@ async def _create_job_flow(bot, uid: int):
         if str(to2).startswith('-100'):
             try:
                 co2 = await bot.get_chat(to2)
-                to2_is_forum = getattr(co2, "is_forum", False)
+                # Only supergroups can have forum topics, never channels
+                from pyrogram.enums import ChatType
+                if getattr(co2, 'type', None) == ChatType.SUPERGROUP:
+                    to2_is_forum = getattr(co2, "is_forum", False)
             except Exception:
-                to2_is_forum = True
+                to2_is_forum = False  # Safe default
         
         if to2_is_forum:
             th2 = await _pick_topic(bot, uid, "ᴅᴇsᴛ 2")
