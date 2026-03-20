@@ -257,4 +257,47 @@ class Database:
         """Count running Live Jobs."""
         return await self.db.jobs.count_documents({'status': 'running'})
 
+    async def get_protected_sources(self) -> list:
+        """Get the list of protected source IDs/links."""
+        doc = await self.db.protection.find_one({"_id": "config"})
+        return doc.get("sources", []) if doc else []
+
+    async def add_protected_source(self, source: str):
+        """Add a protected source ID or link."""
+        await self.db.protection.update_one(
+            {"_id": "config"},
+            {"$addToSet": {"sources": source}},
+            upsert=True
+        )
+
+    async def remove_protected_source(self, source: str):
+        """Remove a protected source ID or link."""
+        await self.db.protection.update_one(
+            {"_id": "config"},
+            {"$pull": {"sources": source}}
+        )
+
+    async def clear_protected_sources(self):
+        """Clear all protected sources."""
+        await self.db.protection.delete_one({"_id": "config"})
+
+    async def is_protected(self, user_input, chat_obj=None) -> bool:
+        """Helper to quickly check if a source is protected by the owner."""
+        protected = await self.get_protected_sources()
+        if not protected:
+            return False
+            
+        # check raw input
+        if user_input in protected or str(user_input).strip() in [str(p).strip() for p in protected]:
+            return True
+            
+        # check resolved chat properties
+        if chat_obj:
+            if chat_obj.id in protected:
+                return True
+            if chat_obj.username and chat_obj.username.lower() in [str(p).lower() for p in protected]:
+                return True
+            # Check invite links / title strings just in case
+        return False
+
 db = Database(Config.DATABASE_URI, Config.DATABASE_NAME)

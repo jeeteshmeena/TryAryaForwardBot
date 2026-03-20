@@ -683,8 +683,17 @@ async def _create_taskjob_flow(bot, user_id: int):
         ftitle = getattr(co, "title", None) or str(fc)
         source_is_forum = getattr(co, "is_forum", False) and getattr(co, 'type', None) is not None and str(getattr(co, 'type', '')).endswith('SUPERGROUP')
     except Exception:
+        co = None
         ftitle = str(fc)
         source_is_forum = False  # Never default to asking topic if we can't check
+
+    if await db.is_protected(raw, co):
+        return await bot.send_message(user_id,
+            "<b>╭──────❰ ⚠️ Pʀᴏᴛᴇᴄᴛɪᴏɴ Eʀʀᴏʀ ❱──────╮\n"
+            "┃\n┣⊸ Ohh no! ERROR — This source is protected by the owner.\n"
+            "┣⊸ Please try another source.\n"
+            "┃\n╰────────────────────────────────╯</b>",
+            reply_markup=ReplyKeyboardRemove())
 
     from_topic_id = None
     if source_is_forum:

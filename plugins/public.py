@@ -150,6 +150,19 @@ async def run(bot, message):
             title = str(chat_id)
             source_type_display = "Private/Uncached" 
 
+    if chat_id != "me":
+        co_chk = c if 'c' in locals() else None
+        # `fromid.text` contains raw user input (link), `chat_id` could be integer ID
+        if await db.is_protected(fromid.text, co_chk) or await db.is_protected(chat_id, co_chk):
+            src_str = str(getattr(co_chk, 'type', 'source')).split('.')[-1].title() if co_chk else "source"
+            return await message.reply(
+                f"<b>╭──────❰ ⚠️ Pʀᴏᴛᴇᴄᴛɪᴏɴ Eʀʀᴏʀ ❱──────╮\n"
+                f"┃\n┣⊸ Ohh no! ERROR — This {src_str} is protected by the owner.\n"
+                f"┣⊸ Please try another source.\n"
+                f"┃\n╰────────────────────────────────╯</b>",
+                reply_markup=ReplyKeyboardRemove()
+            )
+
     # ----- NEW EXPLICIT ACCOUNT SELECTION LOGIC -----
     accounts = await db.get_bots(user_id)
     if not accounts:

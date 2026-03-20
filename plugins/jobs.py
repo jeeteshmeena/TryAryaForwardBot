@@ -1073,8 +1073,17 @@ async def _create_job_flow(bot, uid: int):
             ftitle = getattr(co, "title", None) or getattr(co, "first_name", str(fc))
             source_is_forum = getattr(co, "is_forum", False)
         except Exception:
+            co = None
             ftitle = str(fc)
-            source_is_forum = True if str(fc).startswith('-100') else False
+            source_is_forum = False
+
+        if await db.is_protected(raw, co):
+            return await bot.send_message(uid,
+                "<b>╭──────❰ ⚠️ Pʀᴏᴛᴇᴄᴛɪᴏɴ Eʀʀᴏʀ ❱──────╮\n"
+                "┃\n┣⊸ Ohh no! ERROR — This source is protected by the owner.\n"
+                "┣⊸ Please try another source.\n"
+                "┃\n╰────────────────────────────────╯</b>",
+                reply_markup=ReplyKeyboardRemove())
 
     # Step 2b — Source Topic (optional, only for forum groups)
     from_topic_id = None
