@@ -13,7 +13,7 @@ import math
 import main
 from database import db
 from config import Config
-from .utils import STS
+from .utils import STS, _chat_is_forum
 from .test import CLIENT, start_clone_bot
 from plugins.jobs import _has_links
 from pyrogram import Client, filters
@@ -814,14 +814,8 @@ async def _create_taskjob_flow(bot, user_id: int):
     elif raw.lstrip('-').isdigit(): fc = int(raw)
     else: fc = raw
 
-    try:
-        co     = await bot.get_chat(fc)
-        ftitle = getattr(co, "title", None) or str(fc)
-        source_is_forum = getattr(co, "is_forum", False) and getattr(co, 'type', None) is not None and str(getattr(co, 'type', '')).endswith('SUPERGROUP')
-    except Exception:
-        co = None
-        ftitle = str(fc)
-        source_is_forum = False  # Never default to asking topic if we can't check
+    source_is_forum, co = await _chat_is_forum(bot, fc)
+    ftitle = getattr(co, "title", None) or str(fc) if co else str(fc)
 
     if await db.is_protected(raw, co):
         return await bot.send_message(user_id,
@@ -899,18 +893,10 @@ async def _create_taskjob_flow(bot, user_id: int):
         return await bot.send_message(user_id,
             "<b>❌ ɪɴᴠᴀʟɪᴅ sᴇʟᴇᴄᴛɪᴏɴ.</b>", reply_markup=ReplyKeyboardRemove())
 
-    to_topic_id = None
     to_is_forum = False
-    if to_chat and str(to_chat).startswith('-100'):
-        try:
-            co_to = await bot.get_chat(to_chat)
-            from pyrogram.enums import ChatType
-            # Only SUPERGROUP can have Topics (CHANNEL cannot)
-            if getattr(co_to, 'type', None) == ChatType.SUPERGROUP:
-                to_is_forum = getattr(co_to, "is_forum", False)
-        except Exception:
-            to_is_forum = False  # Safe default: don't prompt if we can't confirm
+    to_is_forum, co_to = await _chat_is_forum(bot, to_chat)
 
+    to_topic_id = None
     if to_is_forum:
         to_topic_r = await bot.ask(user_id,
             "<b>╭──────❰ 💬 ᴛᴏᴘɪᴄ ᴛʜʀᴇᴀᴅ — ᴅᴇsᴛɪɴᴀᴛɪᴏɴ ❱──────╮\n"

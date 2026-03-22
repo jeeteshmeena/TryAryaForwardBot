@@ -10,7 +10,9 @@ import logging
 import main
 from database import db
 from .test import CLIENT, start_clone_bot
+from .utils import _chat_is_forum
 from pyrogram import Client, filters
+from pyrogram.enums import ChatType
 from pyrogram.errors import FloodWait
 from pyrogram.types import (
     InlineKeyboardButton, InlineKeyboardMarkup,
@@ -1128,14 +1130,8 @@ async def _create_job_flow(bot, uid: int):
         fc, ftitle = "me", "sᴀᴠᴇᴅ ᴍᴇssᴀɢᴇs"
     else:
         fc = int(raw) if raw.lstrip('-').isdigit() else raw
-        try:
-            co     = await bot.get_chat(fc)
-            ftitle = getattr(co, "title", None) or getattr(co, "first_name", str(fc))
-            source_is_forum = getattr(co, "is_forum", False)
-        except Exception:
-            co = None
-            ftitle = str(fc)
-            source_is_forum = False
+        source_is_forum, co = await _chat_is_forum(bot, fc)
+        ftitle = getattr(co, "title", None) or getattr(co, "first_name", str(fc)) if co else str(fc)
 
         if await db.is_protected(raw, co):
             return await bot.send_message(uid,
@@ -1178,17 +1174,7 @@ async def _create_job_flow(bot, uid: int):
     if cancelled or not to1: return
 
     th1 = None
-    to1_is_forum = False
-    if to1 and str(to1).startswith('-100'):
-        try:
-            co1 = await bot.get_chat(to1)
-            # Only supergroups can have forum topics, never channels or private chats
-            from pyrogram.enums import ChatType
-            if getattr(co1, 'type', None) == ChatType.SUPERGROUP:
-                to1_is_forum = getattr(co1, "is_forum", False)
-        except Exception:
-            to1_is_forum = False  # Safe default: don't ask for topics if we can't confirm
-
+    to1_is_forum, co1 = await _chat_is_forum(bot, to1)
     if to1_is_forum:
         th1 = await _pick_topic(bot, uid, "ᴅᴇsᴛ 1")
 
@@ -1203,17 +1189,7 @@ async def _create_job_flow(bot, uid: int):
 
     th2 = None
     if to2:
-        to2_is_forum = False
-        if str(to2).startswith('-100'):
-            try:
-                co2 = await bot.get_chat(to2)
-                # Only supergroups can have forum topics, never channels
-                from pyrogram.enums import ChatType
-                if getattr(co2, 'type', None) == ChatType.SUPERGROUP:
-                    to2_is_forum = getattr(co2, "is_forum", False)
-            except Exception:
-                to2_is_forum = False  # Safe default
-        
+        to2_is_forum, co2 = await _chat_is_forum(bot, to2)
         if to2_is_forum:
             th2 = await _pick_topic(bot, uid, "ᴅᴇsᴛ 2")
 

@@ -69,3 +69,25 @@ class STS:
         return bot, configs['caption'], configs['forward_tag'], {'download': configs.get('download', False), 'chat_id': k.FROM, 'limit': k.limit, 'offset': k.skip, 'filters': filters,
                 'keywords': configs['keywords'], 'media_size': size, 'extensions': configs['extension'], 'skip_duplicate': duplicate, 'duration': configs.get('duration', 1), 'reverse_order': getattr(k, 'reverse_order', False), 'smart_order': getattr(k, 'smart_order', True),
                 'rm_caption': flgs.get('rm_caption', False), 'block_links': flgs.get('block_links', False)}, configs['protect'], button
+
+
+async def _chat_is_forum(bot, chat_id) -> tuple:
+    """
+    Robust check for whether a chat is a topic-enabled supergroup.
+    Works for any input: integer ID, string username (@x or x), or t.me links.
+
+    Returns: (is_forum: bool, chat_obj_or_None)
+      - is_forum=True ONLY if chat type == SUPERGROUP and is_forum attribute is True
+      - is_forum=False for channels, normal groups, private chats, or on any error
+    """
+    from pyrogram.enums import ChatType
+    try:
+        co = await bot.get_chat(chat_id)
+        chat_type = getattr(co, 'type', None)
+        # Only supergroups support Topics — channels and regular groups do NOT
+        if chat_type == ChatType.SUPERGROUP and getattr(co, 'is_forum', False):
+            return True, co
+        return False, co
+    except Exception:
+        return False, None
+
