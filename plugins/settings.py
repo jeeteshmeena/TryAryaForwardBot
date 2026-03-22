@@ -19,6 +19,9 @@ async def settings(client, message):
     
 @Client.on_callback_query(filters.regex(r'^settings#(?!lang$|cleanmsg$)'))
 async def settings_query(bot, query):
+  # Answer immediately so Telegram stops showing the loading spinner —
+  # without this, users see a ~1-3s lag on every button press.
+  await query.answer()
   user_id = query.from_user.id
   i, type = query.data.split("#")
   buttons = [[InlineKeyboardButton('↩ Back', callback_data="settings#main")]]

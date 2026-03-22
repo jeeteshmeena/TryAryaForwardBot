@@ -903,11 +903,13 @@ async def jobs_cmd(bot, msg):
 
 @Client.on_callback_query(filters.regex(r'^job#list$'))
 async def job_list_cb(bot, q):
+    await q.answer()
     await _render_jobs_list(bot, q.from_user.id, q)
 
 
 @Client.on_callback_query(filters.regex(r'^job#info#'))
 async def job_info_cb(bot, query):
+    await query.answer()
     job_id = query.data.split("#", 2)[2]
     job = await _get_job(job_id)
     if not job:
@@ -1009,6 +1011,7 @@ async def job_del_cb(bot, q):
 
 @Client.on_callback_query(filters.regex(r'^job#new$'))
 async def job_new_cb(bot, q):
+    await q.answer()
     await q.message.delete()
     await _create_job_flow(bot, q.from_user.id)
 

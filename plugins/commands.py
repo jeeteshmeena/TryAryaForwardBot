@@ -176,6 +176,7 @@ async def update_bot(client, message):
 
 @Client.on_callback_query(filters.regex(r'^help'))
 async def helpcb(bot, query):
+    await query.answer()
     user_id = query.from_user.id
     lang = await db.get_language(user_id)
     await query.message.edit_text(
@@ -192,6 +193,7 @@ async def helpcb(bot, query):
 
 @Client.on_callback_query(filters.regex(r'^how_to_use'))
 async def how_to_use(bot, query):
+    await query.answer()
     user_id = query.from_user.id
     lang = await db.get_language(user_id)
     await query.message.edit_text(
@@ -202,6 +204,7 @@ async def how_to_use(bot, query):
 
 @Client.on_callback_query(filters.regex(r'^back'))
 async def back(bot, query):
+    await query.answer()
     user_id = query.from_user.id
     btns = await _main_buttons(user_id)
     await query.message.edit_text(
@@ -211,6 +214,7 @@ async def back(bot, query):
 
 @Client.on_callback_query(filters.regex(r'^about'))
 async def about(bot, query):
+    await query.answer()
     user_id = query.from_user.id
     lang = await db.get_language(user_id)
     await query.message.edit_text(
@@ -222,6 +226,7 @@ async def about(bot, query):
 
 @Client.on_callback_query(filters.regex(r'^status'))
 async def status(bot, query):
+    await query.answer()  # Answer immediately — status involves 6+ DB calls
     import main
     import time as _time
     user_id = query.from_user.id
