@@ -105,6 +105,34 @@ async def ping_server():
         except Exception as e:
             logging.error(f"Self-ping failed: {e}")
 
+async def sync_global_stats():
+    from database import db
+    global TOTAL_FILES_FWD, TOTAL_DOWNLOADS, TOTAL_UPLOADS, TOTAL_BYTES_TRANSFERRED
+    
+    # Load past stats and add any that accumulated during the first few ms of boot
+    st_doc = await db.db.global_stats.find_one({"_id": "stats"})
+    if st_doc:
+        TOTAL_FILES_FWD += st_doc.get("fwd", 0)
+        TOTAL_DOWNLOADS += st_doc.get("dl", 0)
+        TOTAL_UPLOADS += st_doc.get("ul", 0)
+        TOTAL_BYTES_TRANSFERRED += st_doc.get("bytes", 0)
+        
+    while True:
+        await asyncio.sleep(10)
+        try:
+            await db.db.global_stats.update_one(
+                {"_id": "stats"},
+                {"$set": {
+                    "fwd": TOTAL_FILES_FWD,
+                    "dl": TOTAL_DOWNLOADS,
+                    "ul": TOTAL_UPLOADS,
+                    "bytes": TOTAL_BYTES_TRANSFERRED
+                }},
+                upsert=True
+            )
+        except Exception as e:
+            logging.error(f"Stats sync error: {e}")
+
 async def main():
     # ── Startup cleanup — remove any leftover partial download files ─────────
     import shutil
@@ -121,8 +149,9 @@ async def main():
     # Start web server
     await web_server()
 
-    # Start self-ping task
+    # Start background tasks
     asyncio.create_task(ping_server())
+    asyncio.create_task(sync_global_stats())
 
     await idle()
     await bot.stop()

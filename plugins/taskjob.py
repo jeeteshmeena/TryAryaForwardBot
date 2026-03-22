@@ -448,11 +448,14 @@ async def _run_task_job(job_id: str, user_id: int, _bot=None):
                 r = await _fwd_safe(_send_one, client, msg, to_chat, rm_cap, cap_tpl, 
                                      forward_tag=forward_tag, from_chat=fc, 
                                      block_links=block_links, to_topic=to_topic)
-                                     
                 if r is True:
                     fwd += 1
                     main.TOTAL_FILES_FWD += 1
-                    await _tj_inc(job_id)
+                    
+                # Save state per-message to guarantee 100% accurate resume on crash
+                if msg.id >= current:
+                    current = msg.id + 1
+                    await _tj_update(job_id, current_id=current, forwarded=fwd)
 
             current = (msgs[-1].id + 1) if msgs else (current + BATCH_SIZE)
             await _tj_update(job_id, current_id=current)

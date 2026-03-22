@@ -331,11 +331,24 @@ async def pub_(bot, message):
                           await asyncio.sleep(sleep)
               sort_buffer.clear()
 
+          _base_limit = int(sts.get('limit', 0))
+          _base_skip = int(sts.get('skip', 0))
+          _fetched = int(sts.get('fetched', 0))
+          
+          # Calculate remaining limit (only if a specific limit was set)
+          _rem_limit = 0
+          if _base_limit > 0:
+              # _fetched starts at _base_skip. So actual processed is _fetched - _base_skip
+              _rem_limit = max(1, _base_limit - (_fetched - _base_skip))
+              
+          # The current absolute offset is exactly what 'fetched' tracks
+          _offset = _fetched
+
           async for message in client.iter_messages(
             client,
             chat_id=sts.get('FROM'), 
-            limit=int(sts.get('limit')), 
-            offset=int(sts.get('skip')) if sts.get('skip') else 0,
+            limit=_rem_limit, 
+            offset=_offset,
             continuous=is_continuous,
             reverse_order=data.get('reverse_order', False)
             ):

@@ -665,14 +665,14 @@ async def _run_job(job_id: str, user_id: int, _bot=None):
                     
                     if ok:
                         main.TOTAL_FILES_FWD += 1
-                        fwd_n += 1
+                        await _inc_forwarded(job_id, 1)
                 
-                # Advance seen after processing block
-                if msgs: seen = max(seen, msgs[-1].id)
+                    # Advance seen and persist per-message to prevent duplicates on crash
+                    seen = max(seen, getattr(msg, 'id', 0) or seen)
+                    await _update_job(job_id, batch_cursor=seen+1, last_seen_id=seen)
 
                 cur = chunk_end + 1
-                await _update_job(job_id, batch_cursor=cur)
-                if fwd_n: await _inc_forwarded(job_id, fwd_n)
+                await _update_job(job_id, batch_cursor=cur, last_seen_id=seen)
 
             await _update_job(job_id, batch_done=True, batch_cursor=bend,
                               last_seen_id=max(seen, bend))
@@ -740,15 +740,16 @@ async def _run_job(job_id: str, user_id: int, _bot=None):
                 logger.warning(f"[Job {job_id}] Live fetch: {e}")
                 await asyncio.sleep(15); continue
 
-            fwd_n = 0 # Local live counter
             for msg in new:
                 if not msg or getattr(msg, 'empty', False) or getattr(msg, 'service', False):
                     seen = max(seen, getattr(msg, 'id', 0) or seen)
+                    await _update_job(job_id, last_seen_id=seen)
                     continue
                     
                 # Explicit skip → advance seen so we never reprocess
                 if not _passes_topic(msg, from_topic_id) or not _passes_filters(msg, dis) or not _passes_size(msg, max_mb, max_sec):
                     seen = max(seen, msg.id)
+                    await _update_job(job_id, last_seen_id=seen)
                     continue
 
                 # Advance seen ONLY after success — failed sends are retried next poll
@@ -757,16 +758,18 @@ async def _run_job(job_id: str, user_id: int, _bot=None):
                         client, msg, to1, th1, rm_cap, forward_tag, fc,
                         to2, th2, block_links=block_links)
                     if ok:
-                        fwd_n += 1
                         main.TOTAL_FILES_FWD += 1
                         seen = max(seen, msg.id)
                         consec_fails = 0
+                        await _update_job(job_id, last_seen_id=seen)
+                        await _inc_forwarded(job_id, 1)
                     else:
                         consec_fails += 1
                         if consec_fails >= 3:
                             logger.warning(f"[Job {job_id}] Message {msg.id} failed 3 times, skipping.")
                             seen = max(seen, msg.id)
                             consec_fails = 0
+                            await _update_job(job_id, last_seen_id=seen)
                         else:
                             # Log failure and allow retry on next poll by BREAKING the chunk loop
                             logger.warning(f"[Job {job_id}] Message {msg.id} failed (attempt {consec_fails}/3)")
@@ -783,6 +786,7 @@ async def _run_job(job_id: str, user_id: int, _bot=None):
                     if consec_fails >= 3:
                         seen = max(seen, msg.id)
                         consec_fails = 0
+                        await _update_job(job_id, last_seen_id=seen)
                     else:
                         break
                         
@@ -790,8 +794,6 @@ async def _run_job(job_id: str, user_id: int, _bot=None):
 
             if new:
                 await _update_job(job_id, last_seen_id=seen)
-            if fwd_n:
-                await _inc_forwarded(job_id, fwd_n)
             await asyncio.sleep(poll_sleep)
 
     except asyncio.CancelledError:
