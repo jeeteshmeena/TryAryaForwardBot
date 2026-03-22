@@ -468,7 +468,7 @@ async def _run_task_job(job_id: str, user_id: int, _bot=None):
 
         # ── Scheduling logic ──────────────────────────────────────────────────
         job_f = await _tj_get(job_id)
-        if job_f and job_f.get("status") == "done" and job_f.get("scheduled"):
+        if job_f and job_f.get("status") == "done":
             # Look for NEXT job in queue for same destination
             q = {"to_chat": job_f["to_chat"], "status": "scheduled", "user_id": user_id}
             next_j = await db.db[COLL].find_one(q, sort=[("created", 1)])
@@ -651,6 +651,7 @@ async def tj_list_cb(bot, q): await _render_taskjob_list(bot, q.from_user.id, q)
 
 @Client.on_callback_query(filters.regex(r'^tj#new$'))
 async def tj_new_cb(bot, q):
+    await q.answer()
     await q.message.delete()
     await _create_taskjob_flow(bot, q.from_user.id)
 
@@ -944,9 +945,10 @@ async def _create_taskjob_flow(bot, user_id: int):
         "┣⊸ ɪғ YES, ɪᴛ ᴡɪʟʟ ᴡᴀɪᴛ ɪғ ᴀɴᴏᴛʜᴇʀ ᴊᴏʙ ɪs\n"
         "┃  ʀᴜɴɴɪɴɢ ᴛᴏ ᴛʜᴇ sᴀᴍᴇ ᴅᴇsᴛɪɴᴀᴛɪᴏɴ.\n"
         "┃\n╰────────────────────────────────╯</b>",
-        reply_markup=ReplyKeyboardMarkup([["ʏᴇs", "ɴᴏ"]], resize_keyboard=True))
+        reply_markup=ReplyKeyboardMarkup([["ʏᴇs", "ɴᴏ"]], resize_keyboard=True, one_time_keyboard=True))
     
-    is_scheduled = "ʏᴇs" in sched_r.text.lower()
+    txt = sched_r.text.lower() if sched_r.text else ""
+    is_scheduled = "ʏᴇs" in txt or "yes" in txt
 
     # Save & Start
     job_id = f"tj-{user_id}-{int(time.time())}"
