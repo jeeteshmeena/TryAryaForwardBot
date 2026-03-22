@@ -10,6 +10,7 @@ import time
 import asyncio
 import logging
 from database import db
+from config import Config
 from .test import CLIENT, start_clone_bot
 from plugins.jobs import _has_links
 from pyrogram import Client, filters
@@ -515,7 +516,6 @@ async def resume_task_jobs(user_id: int = None):
 @Client.on_message(filters.command("cleanup") & filters.user(Config.BOT_OWNER_ID))
 async def cleanup_storage(bot, message):
     import shutil
-    from config import Config
     
     msg = await message.reply_text("<b>🧹 ᴄʟᴇᴀɴɪɴɢ ᴜᴘ sᴛᴏʀᴀɢᴇ...</b>")
     
