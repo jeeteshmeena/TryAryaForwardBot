@@ -72,7 +72,12 @@ async def pub_(bot, message):
     await send(client, user, "<b>ғᴏʀᴡᴀʀᴅɪɴɢ sᴛᴀʀᴛᴇᴅ <a href=https://t.me/MeJeetX>Aryᴀ Bᴏᴛ</a></b>")
     sts.add(time=True)
     sleep_duration = data.get('duration', 1)
-    if sleep_duration <= 0: sleep_duration = 1 if _bot['is_bot'] else 10
+    # Non-download mode (copy_message / forward_messages) is fast — use 0.3s default.
+    # Download+re-upload is I/O-bound so keep a higher floor (1s for bots, 3s for userbots).
+    if not download_mode:
+        if sleep_duration <= 0: sleep_duration = 0.3
+    else:
+        if sleep_duration <= 0: sleep_duration = 1 if _bot['is_bot'] else 3
     sleep = sleep_duration
     await msg_edit(m, "<code>Processing...</code>") 
     temp.IS_FRWD_CHAT.append(i.TO)

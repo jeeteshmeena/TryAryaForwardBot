@@ -28,9 +28,9 @@ _pause_events: dict[str, asyncio.Event] = {}
 
 COLL = "taskjobs"
 
-# Global semaphore: limit concurrent heavy downloads to 2 so large files
+# Global semaphore: limit concurrent heavy downloads to 3 so large files
 # (500MB-1GB) don't starve other running task jobs. Copy/forward ops skip it.
-_DOWNLOAD_SEM = asyncio.Semaphore(2)
+_DOWNLOAD_SEM = asyncio.Semaphore(3)
 
 # ── Unicode helpers ────────────────────────────────────────────────────────────
 def _st(status: str) -> str:
@@ -820,11 +820,13 @@ async def _create_taskjob_flow(bot, user_id: int):
     try:
         co     = await bot.get_chat(fc)
         ftitle = getattr(co, "title", None) or str(fc)
-        source_is_forum = getattr(co, "is_forum", False) and getattr(co, 'type', None) is not None and str(getattr(co, 'type', '')).endswith('SUPERGROUP')
+        # is_forum is only True on supergroups with Topics enabled
+        source_is_forum = getattr(co, "is_forum", False) and str(getattr(co, 'type', '')).endswith('SUPERGROUP')
     except Exception:
         co = None
         ftitle = str(fc)
-        source_is_forum = False  # Never default to asking topic if we can't check
+        # Fallback: numeric -100 IDs are always supergroups — offer topic prompt even if private
+        source_is_forum = str(fc).startswith('-100')
 
     if await db.is_protected(raw, co):
         return await bot.send_message(user_id,
@@ -910,9 +912,10 @@ async def _create_taskjob_flow(bot, user_id: int):
             from pyrogram.enums import ChatType
             # Only SUPERGROUP can have Topics (CHANNEL cannot)
             if getattr(co_to, 'type', None) == ChatType.SUPERGROUP:
-                to_is_forum = getattr(co_to, "is_forum", False)
+                to_is_forum = getattr(co_to, "is_forum", False) or True  # prompt if supergroup
         except Exception:
-            to_is_forum = False  # Safe default: don't prompt if we can't confirm
+            # Private supergroup — can't get_chat. -100 = supergroup, always offer topic prompt.
+            to_is_forum = True
 
     if to_is_forum:
         to_topic_r = await bot.ask(user_id,

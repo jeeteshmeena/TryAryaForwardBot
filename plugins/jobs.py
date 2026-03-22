@@ -386,18 +386,20 @@ async def _fwd(client, msg, chat, thread, cap_empty: bool, forward_tag: bool, fr
 
 
 # ── Parallelism & Rate Limiting ───────────────────────────────────────────────
-_FWD_SEM = asyncio.Semaphore(15) # Up to 15 concurrent forwarding tasks
+_FWD_SEM = asyncio.Semaphore(25) # Up to 25 concurrent forwarding tasks (~2x speed)
 _flood_state = {"count": 0}       # Use dict for mutability in async scope
 _fwd_lock = asyncio.Lock()
 
 async def _fwd_safe(f_func, *args, **kwargs):
-    """Execution wrapper with parallelism and global rate limiting."""
+    """Execution wrapper with parallelism and global rate limiting.
+    Flood control: after 50 sends, sleep 30s to respect Telegram limits.
+    """
     async with _FWD_SEM:
         res = await f_func(*args, **kwargs)
         async with _fwd_lock:
             _flood_state["count"] += 1
-            if _flood_state["count"] >= 30:
-                logger.info("[Flood Control] Cooling down for 30s...")
+            if _flood_state["count"] >= 50:  # 50 msgs then 30s pause
+                logger.info("[Flood Control] 50 msgs sent — cooling down 30s...")
                 _flood_state["count"] = 0
                 await asyncio.sleep(30)
         return res
@@ -1114,14 +1116,19 @@ async def _create_job_flow(bot, uid: int):
         fc, ftitle = "me", "sᴀᴠᴇᴅ ᴍᴇssᴀɢᴇs"
     else:
         fc = int(raw) if raw.lstrip('-').isdigit() else raw
+        source_is_forum = False
         try:
             co     = await bot.get_chat(fc)
             ftitle = getattr(co, "title", None) or getattr(co, "first_name", str(fc))
+            # is_forum is True only on supergroups with Topics enabled
             source_is_forum = getattr(co, "is_forum", False)
         except Exception:
             co = None
             ftitle = str(fc)
-            source_is_forum = False
+            # Fallback: if input is a numeric -100 supergroup ID and detection failed
+            # (private supergroup bot can't call get_chat on), always offer topic prompt
+            if str(fc).startswith('-100'):
+                source_is_forum = True  # ask user; they will skip if not needed
 
         if await db.is_protected(raw, co):
             return await bot.send_message(uid,
@@ -1168,12 +1175,12 @@ async def _create_job_flow(bot, uid: int):
     if to1 and str(to1).startswith('-100'):
         try:
             co1 = await bot.get_chat(to1)
-            # Only supergroups can have forum topics, never channels or private chats
             from pyrogram.enums import ChatType
             if getattr(co1, 'type', None) == ChatType.SUPERGROUP:
-                to1_is_forum = getattr(co1, "is_forum", False)
+                to1_is_forum = getattr(co1, "is_forum", False) or True  # prompt if supergroup
         except Exception:
-            to1_is_forum = False  # Safe default: don't ask for topics if we can't confirm
+            # Private supergroup — can't get_chat; but it starts with -100, so offer topic prompt
+            to1_is_forum = True
 
     if to1_is_forum:
         th1 = await _pick_topic(bot, uid, "ᴅᴇsᴛ 1")
@@ -1193,12 +1200,12 @@ async def _create_job_flow(bot, uid: int):
         if str(to2).startswith('-100'):
             try:
                 co2 = await bot.get_chat(to2)
-                # Only supergroups can have forum topics, never channels
                 from pyrogram.enums import ChatType
                 if getattr(co2, 'type', None) == ChatType.SUPERGROUP:
-                    to2_is_forum = getattr(co2, "is_forum", False)
+                    to2_is_forum = getattr(co2, "is_forum", False) or True  # prompt if supergroup
             except Exception:
-                to2_is_forum = False  # Safe default
+                # Private supergroup — can't get_chat; but -100 prefix = supergroup, offer topic prompt
+                to2_is_forum = True
         
         if to2_is_forum:
             th2 = await _pick_topic(bot, uid, "ᴅᴇsᴛ 2")
