@@ -23,7 +23,7 @@ async def broadcast (bot, message):
         pti, sh = await broadcast_messages(int(user['id']), b_msg, bot.log)
         if pti:
             success += 1
-            await asyncio.sleep(2)
+            await asyncio.sleep(0.1)
         elif pti == False:
             if sh == "Blocked":
                 blocked+=1
@@ -42,7 +42,7 @@ async def broadcast_messages(user_id, message, log):
         await message.copy(chat_id=user_id)
         return True, "Success"
     except FloodWait as e:
-        await asyncio.sleep(e.x)
+        await asyncio.sleep(e.value + 1)
         return await broadcast_messages(user_id, message, log)
     except InputUserDeactivated:
         await db.delete_user(int(user_id))

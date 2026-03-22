@@ -1274,9 +1274,27 @@ async def _create_job_flow(bot, uid: int):
             try: max_mb = int(lt)
             except Exception: pass
 
-    # Step 7 — Custom Name
+    # Step 7 — Download mode
+    dl_r = await bot.ask(uid,
+        "<b>╭──────❰ 📋 sᴛᴇᴘ 7/8 — ᴅᴏᴡɴʟᴏᴀᴅ ᴍᴏᴅᴇ ❱──────╮\n"
+        "┃\n┣⊸ ᴡᴀɴᴛ ᴛᴏ ᴅᴏᴡɴʟᴏᴀᴅ & ʀᴇᴜᴘʟᴏᴀᴅ ᴍᴇssᴀɢᴇs?\n"
+        "┣⊸ ✅ YES — ʀᴇᴍᴏᴠᴇs ғᴏʀᴡᴀʀᴅ ᴛᴀɢ (sʟᴏᴡᴇʀ)\n"
+        "┣⊸ ❌ NO  — sɪᴍᴘʟᴇ ғᴏʀᴡᴀʀᴅ (ғᴀsᴛᴇsᴛ)\n"
+        "┃\n╰────────────────────────────────╯</b>",
+        reply_markup=ReplyKeyboardMarkup(
+            [[KeyboardButton("✅ YES")], [KeyboardButton("❌ NO")], [KeyboardButton("/cancel")]],
+            resize_keyboard=True, one_time_keyboard=True))
+
+    if "/cancel" in dl_r.text:
+        return await dl_r.reply(
+            "<b>╭──────❰ ❌ Cancelʟᴇᴅ ❱──────╮\n┃\n╰────────────────────────────────╯</b>",
+            reply_markup=ReplyKeyboardRemove())
+
+    download_mode = "yes" in dl_r.text.lower()
+
+    # Step 8 — Custom Name
     name_r = await bot.ask(uid,
-        "<b>╭──────❰ 📋 sᴛᴇᴘ 7/7 — ᴊᴏʙ ɴᴀᴍᴇ (ᴏᴘᴛɪᴏɴᴀʟ) ❱──────╮\n"
+        "<b>╭──────❰ 📋 sᴛᴇᴘ 8/8 — ᴊᴏʙ ɴᴀᴍᴇ (ᴏᴘᴛɪᴏɴᴀʟ) ❱──────╮\n"
         "┃\n┣⊸ sᴇɴᴅ ᴀ sʜᴏʀᴛ ɴᴀᴍᴇ ғᴏʀ ᴛʜɪs ᴊᴏʙ ᴛᴏ ɪᴅᴇɴᴛɪғʏ ɪᴛ ᴇᴀsɪʟʏ.\n"
         "┣⊸ ᴏʀ ᴄʟɪᴄᴋ sᴋɪᴘ ᴛᴏ ᴜsᴇ ᴅᴇғᴀᴜʟᴛ.\n"
         "┃\n╰────────────────────────────────╯</b>",
@@ -1303,6 +1321,7 @@ async def _create_job_flow(bot, uid: int):
         "batch_mode": batch_mode, "batch_start_id": bstart, "batch_end_id": bend,
         "batch_cursor": bstart, "batch_done": False,
         "max_size_mb": max_mb, "max_duration_secs": max_sec,
+        "download_mode": download_mode,
         "status": "running", "created": int(time.time()), "forwarded": 0, "last_seen_id": 0,
         "custom_name": cname,
     }
@@ -1315,13 +1334,14 @@ async def _create_job_flow(bot, uid: int):
                 (f" → {bend}" if bend else " → ʟᴀᴛᴇsᴛ")) if batch_mode else "\n┣⊸ ◈ 𝐁𝐚𝐭𝐜𝐡   : ❌ ᴏFF"
     sz_lbl   = (f"\n┣⊸ ◈ 𝐌𝐚𝐱 𝐒𝐳   : {max_mb} ᴍʙ") if max_mb else ""
     dur_lbl  = (f"\n┣⊸ ◈ 𝐌𝐚𝐱 𝐃𝐮𝐫  : {max_sec // 60} ᴍɪɴ") if max_sec else ""
+    dl_lbl   = f"\n┣⊸ ◈ 𝐃𝐋 𝐌𝐨𝐝𝐞 : {'✅ ᴏɴ' if download_mode else '❌ ᴏFF'}"
 
     await bot.send_message(uid,
         f"<b>╭──────❰ ✅ ʟɪᴠᴇ ᴊᴏʙ ᴄʀᴇᴀᴛᴇᴅ ❱──────╮\n"
         f"┃\n"
         f"┣⊸ ◈ 𝐒𝐨𝐮𝐫𝐜𝐞  : {ftitle}\n"
         f"┣⊸ ◈ 𝐃𝐞𝐬𝐭 𝟏  : {ttl1}{th1_lbl}"
-        f"{d2_lbl}{bt_lbl}{sz_lbl}{dur_lbl}\n"
+        f"{d2_lbl}{bt_lbl}{sz_lbl}{dur_lbl}{dl_lbl}\n"
         f"┣⊸ ◈ 𝐀𝐜𝐜𝐨𝐮𝐧𝐭 : {'🤖 ʙᴏᴛ' if ibot else '👤 ᴜsᴇʀʙᴏᴛ'} {sel.get('name','?')}\n"
         f"┣⊸ ◈ 𝐉𝐨𝐛 𝐈𝐃  : <code>{job_id[-6:]}</code>" + (f" (<b>{cname}</b>)\n" if cname else "\n") +
         f"┃\n"

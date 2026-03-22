@@ -616,17 +616,6 @@ async def forward(bot, msg, m, sts, protect):
       print(f"Failed to forward messages {msg}: {e}")
       sts.add('deleted')
 
-PROGRESS = """
-📊 Progress: {0}%
-
-✅ Fetched: {1}
-✅ Forwarded: {2}
-✅ Remaining: {3}
-
-🔄 Status: {4}
-⏳ ETA: {5}
-"""
-
 async def msg_edit(msg, text, button=None, wait=None):
     try:
         return await msg.edit(text, reply_markup=button)
