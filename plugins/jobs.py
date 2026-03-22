@@ -89,6 +89,15 @@ async def _notify_status(bot, job: dict, phase: str = ""):
             batch_part = f"\n  • <b>Batch:</b> 📦 <code>{cur}</code> / <code>{end}</code>"
     phase_part = f"\n  • <b>Phase:</b> <code>{phase}</code>" if phase else ""
     err_part   = f"\n  • ⚠️ <code>{job['error']}</code>" if job.get("error") else ""
+    
+    # Live data from progress tracking
+    progress_part = ""
+    if job.get("dl_size"):
+        sz_mb = job['dl_size'] / (1024*1024)
+        progress_part = f"\n  • <b>Current File:</b> <code>{sz_mb:.1f} MB</code>"
+        if job.get("dl_progress"):
+            progress_part += f"\n  • <b>Progress:</b> <code>{job['dl_progress']}%</code>"
+
     text = (
         f"<b>Live Job Progress</b>\n\n"
         f"  • <b>ID:</b> <code>{job_id[-6:]}</code>{name_part}\n"
@@ -96,7 +105,7 @@ async def _notify_status(bot, job: dict, phase: str = ""):
         f"  • <b>Source:</b> {src}\n"
         f"  • <b>Destination:</b> {dst}\n\n"
         f"  • <b>Forwarded:</b> <code>{fwd}</code>"
-        f"{batch_part}{phase_part}{err_part}"
+        f"{batch_part}{phase_part}{progress_part}{err_part}"
     )
     key = (uid, job_id)
     try:
@@ -105,7 +114,9 @@ async def _notify_status(bot, job: dict, phase: str = ""):
             try:
                 await bot.edit_message_text(uid, existing_msg_id, text)
                 return
-            except Exception:
+            except Exception as e:
+                if "MESSAGE_NOT_MODIFIED" in str(e):
+                    return
                 pass  # message deleted or too old — send a new one
         sent = await bot.send_message(uid, text)
         _status_msgs[key] = sent.id
@@ -161,7 +172,8 @@ def _passes_topic(msg, from_topic_id) -> bool:
 
 
 def _passes_filters(msg, disabled: list) -> bool:
-    """Check content-type filters only. `disabled` must be pure content types (no rm_caption, no links)."""
+    """Check content-type filters. If ALL filters are ON (none in disabled), return True."""
+    if not disabled: return True # ALL filters are ON -> no content filtering
     for typ, chk in [
         ('text',      lambda m: m.text and not m.media),
         ('audio',     lambda m: m.audio),
@@ -306,13 +318,27 @@ async def _fwd(client, msg, chat, thread, cap_empty: bool, forward_tag: bool, fr
                 import re as _re2
                 display_name = _re2.sub(r'[\\/*?"<>|]', '', display_name).strip() or None
             safe_dir = f"downloads/{msg.id}"
-            os.makedirs(safe_dir, exist_ok=True)
             if msg.media:
+                import main
                 # Use the exact display name for downloading, else fallback to default name
                 df_name = (f"{safe_dir}/{display_name}") if display_name else f"{safe_dir}/"
-                fp = await client.download_media(msg, file_name=df_name)
+                
+                mo = getattr(msg, msg.media.value, None)
+                f_size = getattr(mo, "file_size", 0)
+                main.TOTAL_DOWNLOADS += 1
+                main.TOTAL_BYTES_TRANSFERRED += f_size
+                
+                async def progress(current, total):
+                    pc = int(current * 100 / total) if total > 0 else 0
+                    # Note: updating job dict directly here might not be thread-safe for notification 
+                    # but since only 1 worker handles 1 job, we just update local state if needed.
+                    pass
+
+                fp = await client.download_media(msg, file_name=df_name, progress=progress)
                 if not fp:
                     raise Exception("DownloadFailed")
+                
+                main.TOTAL_UPLOADS += 1
                 cap = modified_text if is_modified else (str(msg.caption) if msg.caption else "")
                 d_kw = {"chat_id": chat, **_thread_kw()}
                 # display_name is passed as file_name= so Telegram shows the right name
@@ -359,13 +385,31 @@ async def _fwd(client, msg, chat, thread, cap_empty: bool, forward_tag: bool, fr
             return False
 
 
+# ── Parallelism & Rate Limiting ───────────────────────────────────────────────
+_FWD_SEM = asyncio.Semaphore(15) # Up to 15 concurrent forwarding tasks
+_flood_state = {"count": 0}       # Use dict for mutability in async scope
+_fwd_lock = asyncio.Lock()
+
+async def _fwd_safe(f_func, *args, **kwargs):
+    """Execution wrapper with parallelism and global rate limiting."""
+    async with _FWD_SEM:
+        res = await f_func(*args, **kwargs)
+        async with _fwd_lock:
+            _flood_state["count"] += 1
+            if _flood_state["count"] >= 30:
+                logger.info("[Flood Control] Cooling down for 30s...")
+                _flood_state["count"] = 0
+                await asyncio.sleep(30)
+        return res
+
 async def _forward_message(client, msg, to1, th1, cap_empty, forward_tag, from_chat,
                            to2=None, th2=None, block_links=False):
     """Forward msg to primary (and optional secondary) destination.
-    block_links: if True, strip URLs from caption/text instead of skipping entirely.
+    Uses _fwd_safe for speed + safety.
     """
-    res = await _fwd(client, msg, to1, th1, cap_empty, forward_tag, from_chat, block_links)
+    res = await _fwd_safe(_fwd, client, msg, to1, th1, cap_empty, forward_tag, from_chat, block_links)
     if to2:
+        # Secondary send is usually faster (cached)
         await _fwd(client, msg, to2, th2, cap_empty, forward_tag, from_chat, block_links)
     return res
 
@@ -572,7 +616,7 @@ async def _run_job(job_id: str, user_id: int, _bot=None):
                         except FloodWait as fw:
                             await asyncio.sleep(fw.value + 2); continue
                         except Exception as ge:
-                            logger.warning(f"[Job {job_id}] get_messages failed @ {cur}: {ge}")
+                            logger.warning(f"[Job {job_id}] Batch fetch @ {cur}: {ge}")
                     else:
                         fetch_ok = False  # DO NOT USE get_messages FOR DMs/BOTS! It fetches global inbox.
                     # Fallback: get_chat_history (works for all userbots and bot DMs)
@@ -597,35 +641,35 @@ async def _run_job(job_id: str, user_id: int, _bot=None):
                     logger.warning(f"[Job {job_id}] Batch fetch outer exception @ {cur}: {e}")
                     cur += BATCH_CHUNK; await _update_job(job_id, batch_cursor=cur); continue
 
-                msgs.sort(key=lambda m: m.id if m else 0)
-                fwd_n = 0
+                msgs.sort(key=lambda m: getattr(m, 'id', 0) if m else 0)
+                
+                # Parallel Batch Processing: launch concurrent forward tasks
+                tasks = []
                 for msg in msgs:
-                    f2 = await _get_job(job_id)
-                    if not f2 or f2.get("status") != "running": return
-                    
                     if not msg or getattr(msg, 'empty', False) or getattr(msg, 'service', False):
-                        if msg: seen = max(seen, msg.id)
                         continue
-                        
-                    if not _passes_topic(msg, from_topic_id): 
-                        seen = max(seen, msg.id); continue
-                    if not _passes_filters(msg, dis):          
-                        seen = max(seen, msg.id); continue
-                    if not _passes_size(msg, max_mb, max_sec): 
-                        seen = max(seen, msg.id); continue
+                    if not _passes_topic(msg, from_topic_id): continue
+                    if not _passes_filters(msg, dis):          continue
+                    if not _passes_size(msg, max_mb, max_sec): continue
                     
-                    try:
-                        ok = await _forward_message(
-                            client, msg, to1, th1, rm_cap, forward_tag, fc,
-                            to2, th2, block_links=block_links)
-                        if ok:
+                    tasks.append(_forward_message(
+                        client, msg, to1, th1, rm_cap, forward_tag, fc,
+                        to2, th2, block_links=block_links
+                    ))
+                
+                if tasks:
+                    results = await asyncio.gather(*tasks, return_exceptions=True)
+                    for r in results:
+                        if isinstance(r, Exception):
+                            logger.error(f"[Job {job_id}] Parallel error: {r}")
+                            continue
+                        if r is True:
+                            import main
+                            main.TOTAL_FILES_FWD += 1
                             fwd_n += 1
-                            seen = max(seen, msg.id)
-                    except FloodWait as fw: await asyncio.sleep(fw.value + 1)
-                    except asyncio.CancelledError: raise
-                    except Exception as e: logger.debug(f"[Job {job_id}] Batch fwd {msg.id}: {e}")
-                    if slp: await asyncio.sleep(slp)
-                    else:   await asyncio.sleep(0)  # yield event loop
+                
+                # Advance seen after processing block
+                if msgs: seen = max(seen, msgs[-1].id)
 
                 cur = chunk_end + 1
                 await _update_job(job_id, batch_cursor=cur)
@@ -714,7 +758,9 @@ async def _run_job(job_id: str, user_id: int, _bot=None):
                         client, msg, to1, th1, rm_cap, forward_tag, fc,
                         to2, th2, block_links=block_links)
                     if ok:
+                        import main
                         fwd_n += 1
+                        main.TOTAL_FILES_FWD += 1
                         seen = max(seen, msg.id)
                         consec_fails = 0
                     else:

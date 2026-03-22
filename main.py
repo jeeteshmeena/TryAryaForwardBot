@@ -7,8 +7,12 @@ from aiohttp import web
 from pyrogram import idle
 from bot import Bot
 
-# Calculate uptime
+# Global statistics for the session
 START_TIME = time.time()
+TOTAL_FILES_FWD = 0
+TOTAL_DOWNLOADS = 0
+TOTAL_UPLOADS   = 0
+TOTAL_BYTES_TRANSFERRED = 0
 
 def get_uptime():
     elapsed = time.time() - START_TIME

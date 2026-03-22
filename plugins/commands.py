@@ -24,9 +24,10 @@ async def _main_buttons(user_id: int):
         ],
         [
             InlineKeyboardButton(_tx(lang, 'btn_settings'), callback_data='settings#main'),
-            InlineKeyboardButton(_tx(lang, 'btn_jobs'),     callback_data='job#list'),
+            InlineKeyboardButton('📜 Status',           callback_data='status'),
         ],
         [
+            InlineKeyboardButton(_tx(lang, 'btn_jobs'),     callback_data='job#list'),
             InlineKeyboardButton('🚀 Task Jobs',            callback_data='tj#list'),
         ]
     ]
@@ -221,8 +222,8 @@ async def about(bot, query):
 
 @Client.on_callback_query(filters.regex(r'^status'))
 async def status(bot, query):
+    import main
     import time as _time
-    from main import START_TIME
     user_id = query.from_user.id
 
     users_count        = await db.get_total_users_count()
@@ -231,11 +232,7 @@ async def status(bot, query):
     total_channels_cnt = await db.total_channels()
     _, bots_count      = await db.total_users_bots_count()
 
-    elapsed = _time.time() - START_TIME
-    d, rem  = divmod(int(elapsed), 86400)
-    h, rem  = divmod(rem, 3600)
-    m, s    = divmod(rem, 60)
-    uptime  = f"{d}d {h}h {m}m {s}s"
+    uptime = main.get_uptime()
 
     try:
         from .jobs import _job_tasks
@@ -249,13 +246,24 @@ async def status(bot, query):
     except Exception:
         in_memory_taskjobs = "0"
 
+    # Transfer stats
+    total_fwd = main.TOTAL_FILES_FWD
+    total_dl  = main.TOTAL_DOWNLOADS
+    total_ul  = main.TOTAL_UPLOADS
+    total_data_gb = main.TOTAL_BYTES_TRANSFERRED / (1024*1024*1024)
+
     text = (
         "<b>╭─────❰ 📊 sʏsᴛᴇᴍ sᴛᴀᴛᴜs ❱─────╮</b>\n"
         "<b>┃</b>\n"
         f"<b>┣⊸ ⏱ ᴜᴘᴛɪᴍᴇ :</b> <code>{uptime}</code>\n"
-        f"<b>┣⊸ 🟢 ᴀᴄᴛɪᴠᴇ ʟɪᴠᴇ ᴊᴏʙs :</b> <code>{active_jobs}</code> <i>(Tasks: {in_memory_tasks})</i>\n"
+        f"<b>┣⊸ 🟢 ᴀᴄᴛɪᴠᴇ ʟɪᴠᴇ ᴊᴏʙs :</b> <code>{active_jobs}</code> <i>({in_memory_tasks})</i>\n"
         f"<b>┣⊸ 🚀 ᴀᴄᴛɪᴠᴇ ᴛᴀsᴋ ᴊᴏʙs :</b> <code>{in_memory_taskjobs}</code>\n"
         f"<b>┣⊸ 📡 ɴᴏʀᴍᴀʟ ғᴏʀᴡᴀʀᴅs :</b> <code>{active_forwarding}</code>\n"
+        "<b>┃</b>\n"
+        f"<b>┣⊸ 📂 ғɪʟᴇs ғᴏʀᴡᴀʀᴅᴇᴅ :</b> <code>{total_fwd}</code>\n"
+        f"<b>┣⊸ 📥 ᴛᴏᴛᴀʟ ᴅᴏᴡɴʟᴏᴀᴅs :</b> <code>{total_dl}</code>\n"
+        f"<b>┣⊸ 📤 ᴛᴏᴛᴀʟ ᴜᴘʟᴏᴀᴅs :</b> <code>{total_ul}</code>\n"
+        f"<b>┣⊸ 📊 ᴅᴀᴛᴀ ᴛʀᴀɴsғᴇʀʀᴇᴅ :</b> <code>{total_data_gb:.2f} GB</code>\n"
         "<b>┃</b>\n"
         f"<b>┣⊸ 👥 ᴛᴏᴛᴀʟ ᴜsᴇʀs :</b> <code>{users_count}</code>\n"
         f"<b>┣⊸ 🤖 ʙᴏᴛ/ᴜsᴇʀʙᴏᴛs ᴀᴄᴛɪᴠᴇ :</b> <code>{bots_count}</code>\n"
@@ -266,7 +274,7 @@ async def status(bot, query):
 
     await query.message.edit_text(
         text=text,
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('↩ Back', callback_data='help')]]),
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('↩ Back', callback_data='back')]]),
         parse_mode=enums.ParseMode.HTML,
         disable_web_page_preview=True,
     )
