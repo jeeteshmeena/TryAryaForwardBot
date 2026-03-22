@@ -1123,15 +1123,30 @@ async def _create_job_flow(bot, uid: int):
         try:
             co     = await bot.get_chat(fc)
             ftitle = getattr(co, "title", None) or getattr(co, "first_name", str(fc))
-            # is_forum is True only on supergroups with Topics enabled
-            source_is_forum = getattr(co, "is_forum", False)
+            from pyrogram.enums import ChatType
+            if getattr(co, 'type', None) == ChatType.SUPERGROUP:
+                source_is_forum = True
+            else:
+                source_is_forum = getattr(co, "is_forum", False)
         except Exception:
-            co = None
-            ftitle = str(fc)
-            # Fallback: if input is a numeric -100 supergroup ID and detection failed
-            # (private supergroup bot can't call get_chat on), always offer topic prompt
+            # Fallback for private chats the UI bot isn't in: use the userbot to resolve accurately!
+            source_is_forum = False
             if str(fc).startswith('-100'):
-                source_is_forum = True  # ask user; they will skip if not needed
+                try:
+                    ubot = await _get_shared_client(sel)
+                    co_u = await ubot.get_chat(fc)
+                    from pyrogram.enums import ChatType
+                    if getattr(co_u, 'type', None) == ChatType.SUPERGROUP:
+                        source_is_forum = True
+                    co = co_u
+                    ftitle = getattr(co, "title", None) or str(fc)
+                    await _release_shared_client(sel)
+                except Exception:
+                    source_is_forum = True
+                    await _release_shared_client(sel)
+            if not co:
+                co = None
+                ftitle = str(fc)
 
         if await db.is_protected(raw, co):
             return await bot.send_message(uid,
@@ -1180,10 +1195,18 @@ async def _create_job_flow(bot, uid: int):
             co1 = await bot.get_chat(to1)
             from pyrogram.enums import ChatType
             if getattr(co1, 'type', None) == ChatType.SUPERGROUP:
-                to1_is_forum = getattr(co1, "is_forum", False) or True  # prompt if supergroup
+                to1_is_forum = True
         except Exception:
-            # Private supergroup — can't get_chat; but it starts with -100, so offer topic prompt
-            to1_is_forum = True
+            try:
+                ubot = await _get_shared_client(sel)
+                co1_u = await ubot.get_chat(to1)
+                from pyrogram.enums import ChatType
+                if getattr(co1_u, 'type', None) == ChatType.SUPERGROUP:
+                    to1_is_forum = True
+                await _release_shared_client(sel)
+            except Exception:
+                to1_is_forum = True
+                await _release_shared_client(sel)
 
     if to1_is_forum:
         th1 = await _pick_topic(bot, uid, "ᴅᴇsᴛ 1")
@@ -1205,10 +1228,18 @@ async def _create_job_flow(bot, uid: int):
                 co2 = await bot.get_chat(to2)
                 from pyrogram.enums import ChatType
                 if getattr(co2, 'type', None) == ChatType.SUPERGROUP:
-                    to2_is_forum = getattr(co2, "is_forum", False) or True  # prompt if supergroup
+                    to2_is_forum = True
             except Exception:
-                # Private supergroup — can't get_chat; but -100 prefix = supergroup, offer topic prompt
-                to2_is_forum = True
+                try:
+                    ubot = await _get_shared_client(sel)
+                    co2_u = await ubot.get_chat(to2)
+                    from pyrogram.enums import ChatType
+                    if getattr(co2_u, 'type', None) == ChatType.SUPERGROUP:
+                        to2_is_forum = True
+                    await _release_shared_client(sel)
+                except Exception:
+                    to2_is_forum = True
+                    await _release_shared_client(sel)
         
         if to2_is_forum:
             th2 = await _pick_topic(bot, uid, "ᴅᴇsᴛ 2")
