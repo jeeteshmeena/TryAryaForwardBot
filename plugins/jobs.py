@@ -7,6 +7,7 @@ Features: batch-first mode, dual destinations, per-job size/duration limits, top
 import time
 import asyncio
 import logging
+import main
 from database import db
 from .test import CLIENT, start_clone_bot
 from pyrogram import Client, filters
@@ -571,6 +572,8 @@ async def _run_job(job_id: str, user_id: int, _bot=None):
 
         last_hb = 0  # last heartbeat timestamp
         last_notify = 0  # last status notification timestamp
+        fwd_n = 0
+        consec_fails = 0
 
         # ── Batch phase ─────────────────────────────────────────────────────
         if job.get("batch_mode") and not job.get("batch_done"):
@@ -580,6 +583,7 @@ async def _run_job(job_id: str, user_id: int, _bot=None):
                 bend = seen
                 await _update_job(job_id, batch_end_id=bend)
 
+            fwd_n = 0 # Local batch counter
             while cur <= bend:
                 fresh = await _get_job(job_id)
                 if not fresh or fresh.get("status") != "running": return
@@ -741,7 +745,7 @@ async def _run_job(job_id: str, user_id: int, _bot=None):
                 logger.warning(f"[Job {job_id}] Live fetch: {e}")
                 await asyncio.sleep(15); continue
 
-            fwd_n = 0
+            fwd_n = 0 # Local live counter
             for msg in new:
                 if not msg or getattr(msg, 'empty', False) or getattr(msg, 'service', False):
                     seen = max(seen, getattr(msg, 'id', 0) or seen)
@@ -758,13 +762,12 @@ async def _run_job(job_id: str, user_id: int, _bot=None):
                         client, msg, to1, th1, rm_cap, forward_tag, fc,
                         to2, th2, block_links=block_links)
                     if ok:
-                        import main
                         fwd_n += 1
                         main.TOTAL_FILES_FWD += 1
                         seen = max(seen, msg.id)
                         consec_fails = 0
                     else:
-                        consec_fails = consec_fails + 1 if 'consec_fails' in locals() else 1
+                        consec_fails += 1
                         if consec_fails >= 3:
                             logger.warning(f"[Job {job_id}] Message {msg.id} failed 3 times, skipping.")
                             seen = max(seen, msg.id)
@@ -982,6 +985,7 @@ async def job_start_cb(bot, q):
         return await q.answer("⛔ ᴜɴᴀᴜᴛʜᴏʀɪᴢᴇᴅ.", show_alert=True)
     if job_id in _job_tasks and not _job_tasks[job_id].done():
         return await q.answer("ᴀʟʀᴇᴀᴅʏ ʀᴜɴɴɪɴɢ!", show_alert=True)
+    
     await _update_job(job_id, status="running")
     _start_job_task(job_id, uid, _bot=bot)
     await q.answer("▶️ ᴊᴏʙ sᴛᴀʀᴛᴇᴅ.")

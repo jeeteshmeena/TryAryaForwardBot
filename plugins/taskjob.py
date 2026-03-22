@@ -10,6 +10,7 @@ import time
 import asyncio
 import logging
 from database import db
+from config import Config
 from .test import CLIENT, start_clone_bot
 from plugins.jobs import _has_links
 from pyrogram import Client, filters
@@ -324,6 +325,7 @@ async def _run_task_job(job_id: str, user_id: int, _bot=None):
         from_topic = job.get("from_topic_id")
         end_id  = job.get("end_id", 0)
         current = job.get("current_id", job.get("start_id", 1))
+        fwd     = job.get("forwarded", 0)
 
         await _tj_update(job_id, status="running", error="")
 
@@ -515,7 +517,6 @@ async def resume_task_jobs(user_id: int = None):
 @Client.on_message(filters.command("cleanup") & filters.user(Config.BOT_OWNER_ID))
 async def cleanup_storage(bot, message):
     import shutil
-    from config import Config
     
     msg = await message.reply_text("<b>🧹 ᴄʟᴇᴀɴɪɴɢ ᴜᴘ sᴛᴏʀᴀɢᴇ...</b>")
     
