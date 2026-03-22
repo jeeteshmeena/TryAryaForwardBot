@@ -647,8 +647,7 @@ async def _run_job(job_id: str, user_id: int, _bot=None):
 
                 msgs.sort(key=lambda m: getattr(m, 'id', 0) if m else 0)
                 
-                # Parallel Batch Processing: launch concurrent forward tasks
-                tasks = []
+                # Correct Order Enforcement: process messages sequentially within each batch
                 for msg in msgs:
                     if not msg or getattr(msg, 'empty', False) or getattr(msg, 'service', False):
                         continue
@@ -656,21 +655,15 @@ async def _run_job(job_id: str, user_id: int, _bot=None):
                     if not _passes_filters(msg, dis):          continue
                     if not _passes_size(msg, max_mb, max_sec): continue
                     
-                    tasks.append(_forward_message(
+                    # Sequential call ensures order is preserved for destination
+                    ok = await _forward_message(
                         client, msg, to1, th1, rm_cap, forward_tag, fc,
                         to2, th2, block_links=block_links
-                    ))
-                
-                if tasks:
-                    results = await asyncio.gather(*tasks, return_exceptions=True)
-                    for r in results:
-                        if isinstance(r, Exception):
-                            logger.error(f"[Job {job_id}] Parallel error: {r}")
-                            continue
-                        if r is True:
-                            import main
-                            main.TOTAL_FILES_FWD += 1
-                            fwd_n += 1
+                    )
+                    
+                    if ok:
+                        main.TOTAL_FILES_FWD += 1
+                        fwd_n += 1
                 
                 # Advance seen after processing block
                 if msgs: seen = max(seen, msgs[-1].id)

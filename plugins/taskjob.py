@@ -9,8 +9,11 @@ import os
 import time
 import asyncio
 import logging
+import math
+import main
 from database import db
 from config import Config
+from .utils import STS
 from .test import CLIENT, start_clone_bot
 from plugins.jobs import _has_links
 from pyrogram import Client, filters
@@ -428,8 +431,7 @@ async def _run_task_job(job_id: str, user_id: int, _bot=None):
                     await _tj_notify(_bot, _fresh_j, "ʀᴜɴɴɪɴɢ")
                 last_notify = _now
 
-            # Parallel Batch Processing: launch concurrent forward tasks
-            tasks = []
+            # Correct Order Enforcement: process messages sequentially within each batch
             for msg in valid:
                 if from_topic:
                     if getattr(msg, 'message_thread_id', getattr(msg, 'reply_to_top_message_id', getattr(msg, 'reply_to_message_id', None))) != from_topic:
@@ -442,21 +444,15 @@ async def _run_task_job(job_id: str, user_id: int, _bot=None):
                 if not _passes_filters(msg, dis): continue
                 
                 from plugins.jobs import _fwd_safe
-                tasks.append(_fwd_safe(_send_one, client, msg, to_chat, rm_cap, cap_tpl, 
-                                       forward_tag=forward_tag, from_chat=fc, 
-                                       block_links=block_links, to_topic=to_topic))
-            
-            if tasks:
-                results = await asyncio.gather(*tasks, return_exceptions=True)
-                for r in results:
-                    if isinstance(r, Exception):
-                        logger.error(f"[TaskJob {job_id}] Parallel error: {r}")
-                        continue
-                    if r is True:
-                        import main
-                        fwd += 1
-                        main.TOTAL_FILES_FWD += 1
-                        await _tj_inc(job_id)
+                # Sequential call to _fwd_safe ensures order
+                r = await _fwd_safe(_send_one, client, msg, to_chat, rm_cap, cap_tpl, 
+                                     forward_tag=forward_tag, from_chat=fc, 
+                                     block_links=block_links, to_topic=to_topic)
+                                     
+                if r is True:
+                    fwd += 1
+                    main.TOTAL_FILES_FWD += 1
+                    await _tj_inc(job_id)
 
             current = (msgs[-1].id + 1) if msgs else (current + BATCH_SIZE)
             await _tj_update(job_id, current_id=current)
