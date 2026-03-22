@@ -244,8 +244,16 @@ class Database:
            'block_links': not filter_cfg.get('links', True),    # True by default = allow links; False = block
        }
               
-    async def add_frwd(self, user_id):
-       return await self.nfy.insert_one({'user_id': int(user_id)})
+    async def add_frwd(self, user_id, frwd_id=None, frwd_data=None):
+       doc = {'user_id': int(user_id)}
+       if frwd_id and frwd_data:
+           doc['frwd_id'] = frwd_id
+           doc['frwd_data'] = frwd_data
+       # Use replace_one with upsert to avoid duplicate entries for the same user
+       return await self.nfy.replace_one({'user_id': int(user_id)}, doc, upsert=True)
+       
+    async def update_frwd_state(self, user_id, updated_sts_data):
+       await self.nfy.update_one({'user_id': int(user_id)}, {'$set': {'frwd_data': updated_sts_data}})
     
     async def rmve_frwd(self, user_id=0, all=False):
        data = {} if all else {'user_id': int(user_id)}

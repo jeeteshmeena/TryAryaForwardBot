@@ -290,6 +290,7 @@ class CLIENT:
         await temp_client.connect()
         code = await temp_client.send_code(phone_number)
         otp_msg = await bot.ask(chat_id=user_id, text="<b>Send the OTP you received (e.g. 1 2 3 4 5 if code is 12345).\n\n/cancel - cancel the process</b>")
+         asyncio.create_task(_schedule_delete(bot, user_id, otp_msg.id, 3600))  # auto-delete OTP after 1h
         if otp_msg.text == '/cancel':
            await temp_client.disconnect()
            return await bot.send_message(user_id, '<b>process cancelled !</b>')
@@ -299,6 +300,7 @@ class CLIENT:
            await temp_client.sign_in(phone_number, code.phone_code_hash, otp)
         except pyrogram.errors.SessionPasswordNeeded:
            pwd_msg = await bot.ask(chat_id=user_id, text="<b>Your account has 2FA enabled. Send your password.\n\n/cancel - cancel the process</b>")
+            asyncio.create_task(_schedule_delete(bot, user_id, pwd_msg.id, 300))  # auto-delete 2FA pwd after 5m
            if pwd_msg.text == '/cancel':
               await temp_client.disconnect()
               return await bot.send_message(user_id, '<b>process cancelled !</b>')

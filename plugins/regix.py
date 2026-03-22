@@ -68,7 +68,10 @@ async def pub_(bot, message):
        await msg_edit(m, f"**Please Make Your [UserBot / Bot](t.me/{_bot['username']}) Admin In Target Channel With Full Permissions**", retry_btn(frwd_id), True)
        return await stop(client, user)
     temp.forwardings += 1
-    await db.add_frwd(user)
+    sts_data = sts.data.get(sts.id, {})
+    sts_data['m_chat_id'] = m.chat.id
+    sts_data['m_msg_id'] = m.id
+    await db.add_frwd(user, frwd_id=frwd_id, frwd_data=sts_data)
     await send(client, user, "<b>ғᴏʀᴡᴀʀᴅɪɴɢ sᴛᴀʀᴛᴇᴅ <a href=https://t.me/MeJeetX>Aryᴀ Bᴏᴛ</a></b>")
     sts.add(time=True)
     sleep_duration = data.get('duration', 1)
@@ -341,6 +344,7 @@ async def pub_(bot, message):
                 pling += 1
                 if pling % 5 == 0:
                    await edit(m, 'Progressing', 10, sts)
+                   await db.update_frwd_state(user, sts.data.get(sts.id, {}))
                 # Check message type filtering
                 is_filtered = False
                 _filters = data.get('filters', [])
@@ -617,6 +621,7 @@ async def forward(bot, msg, m, sts, protect):
       sts.add('deleted')
 
 async def msg_edit(msg, text, button=None, wait=None):
+    if not msg: return
     try:
         return await msg.edit(text, reply_markup=button)
     except MessageNotModified:
@@ -638,6 +643,9 @@ async def edit(msg, title, status, sts):
       status = 'Paused'
    else:
       status = 'Forwarding' if status == 10 else f"Sleeping {status} s" if str(status).isnumeric() else status
+   
+   if not msg:
+      return # In case message is lost on restart
    
    total = float(i.total) if float(i.total) > 0 else 1.0
    percentage = "{:.0f}".format(float(i.total_files)*100/total)
@@ -719,6 +727,48 @@ async def stop(client, user):
    temp.forwardings -= 1
    temp.lock[user] = False 
     
+async def resume_manual_jobs(bot):
+    """Resume manual forwards that were active before bot restart."""
+    import logging
+    from plugins.utils import STATUS
+    logger = logging.getLogger(__name__)
+    
+    users = await db.get_all_frwd()
+    resumed = 0
+    async for user in users:
+        if 'frwd_id' in user and 'frwd_data' in user:
+            frwd_id = user['frwd_id']
+            data = user['frwd_data']
+            user_id = user['user_id']
+            
+            # Repopulate STS 
+            STATUS[frwd_id] = data
+            sts = STS(frwd_id)
+            
+            # Try to fetch the progress message to edit
+            m = None
+            try:
+                m = await bot.get_messages(data.get('m_chat_id'), data.get('m_msg_id'))
+            except Exception:
+                pass
+                
+            class FakeCallback:
+                def __init__(self, from_user_id, data):
+                    self.from_user = type('obj', (object,), {'id': from_user_id})
+                    self.data = data
+                    self.message = m
+                    
+                async def answer(self, *args, **kwargs):
+                    pass
+            
+            # Start background task to resume
+            fake_query = FakeCallback(user_id, f"start_public_{frwd_id}")
+            asyncio.create_task(pub_(bot, fake_query))
+            resumed += 1
+            
+    if resumed > 0:
+        logger.info(f"Resumed {resumed} persistent manual /forward jobs.")
+     
 async def send(bot, user, text):
    try:
       await bot.send_message(user, text=text)

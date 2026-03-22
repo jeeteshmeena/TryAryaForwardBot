@@ -50,27 +50,10 @@ class Bot(Client):
             logging.warning(f"Could not create MongoDB indices: {e}")
 
         try:
-            success = failed = 0
-            users = await db.get_all_frwd()
-            async for user in users:
-               chat_id = user['user_id']
-               try:
-                  await self.send_message(chat_id, text)
-                  success += 1
-               except FloodWait as e:
-                  await asyncio.sleep(e.value + 1)
-                  await self.send_message(chat_id, text)
-                  success += 1
-               except Exception:
-                  failed += 1
-
-            if (success + failed) != 0:
-               await db.rmve_frwd(all=True)
-               logging.info(f"Restart message status"
-                     f"success: {success}"
-                     f"failed: {failed}")
+            from plugins.regix import resume_manual_jobs
+            await resume_manual_jobs(self)
         except Exception as e:
-            logging.error(f"Failed to send restart messages or connect to DB: {e}")
+            logging.error(f"Failed to resume manual jobs: {e}")
 
     async def stop(self, *args):
         msg = f"@{self.username} stopped. Bye."

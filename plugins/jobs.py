@@ -868,6 +868,8 @@ async def _render_jobs_list(bot, user_id: int, mq):
             row = []
             if st == "running":
                 row.append(InlineKeyboardButton(f"⏹ Stop [{s}]",  callback_data=f"job#stop#{jid}"))
+            elif st == "error":
+                row.append(InlineKeyboardButton(f"🔄 Restart [{s}]", callback_data=f"job#restart#{jid}"))
             else:
                 row.append(InlineKeyboardButton(f"▶️ Start [{s}]", callback_data=f"job#start#{jid}"))
             row.append(InlineKeyboardButton(f"ℹ️ [{s}]", callback_data=f"job#info#{jid}"))
@@ -982,6 +984,21 @@ async def job_start_cb(bot, q):
     await _update_job(job_id, status="running")
     _start_job_task(job_id, uid, _bot=bot)
     await q.answer("▶️ ᴊᴏʙ sᴛᴀʀᴛᴇᴅ.")
+    await _render_jobs_list(bot, uid, q)
+
+
+@Client.on_callback_query(filters.regex(r'^job#restart#'))
+async def job_restart_cb(bot, q):
+    job_id, uid = q.data.split("#", 2)[2], q.from_user.id
+    job = await _get_job(job_id)
+    if not job or job.get("user_id") != uid:
+        return await q.answer("⛔ ᴜɴᴀᴜᴛʜᴏʀɪᴢᴇᴅ.", show_alert=True)
+    if job_id in _job_tasks and not _job_tasks[job_id].done():
+        return await q.answer("ᴀʟʀᴇᴀᴅʏ ʀᴜɴɴɪɴɢ!", show_alert=True)
+    
+    await _update_job(job_id, status="running", error=None)
+    _start_job_task(job_id, uid, _bot=bot)
+    await q.answer("🔄 ᴊᴏʙ ʀᴇsᴛᴀʀᴛᴇᴅ.")
     await _render_jobs_list(bot, uid, q)
 
 
