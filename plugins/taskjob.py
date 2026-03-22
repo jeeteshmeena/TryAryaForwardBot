@@ -652,8 +652,54 @@ async def tj_list_cb(bot, q): await _render_taskjob_list(bot, q.from_user.id, q)
 @Client.on_callback_query(filters.regex(r'^tj#new$'))
 async def tj_new_cb(bot, q):
     await q.answer()
+    await bot.send_message(q.message.chat.id, "<b>⚙️ Preparing Task Job...</b>")
     await q.message.delete()
     await _create_taskjob_flow(bot, q.from_user.id)
+
+@Client.on_callback_query(filters.regex(r'^tjsched#'))
+async def tj_sched_cb(bot, q):
+    action, job_id = q.data.split("#")[1:]
+    user_id = q.from_user.id
+    
+    job = await _tj_get(job_id)
+    if not job or job.get("user_id") != user_id:
+        return await q.answer("⛔ Error: Job missing or unauthorized.", show_alert=True)
+    if job.get("status") != "pending":
+        return await q.answer("⚠️ This job has already been configured.", show_alert=True)
+        
+    is_scheduled = (action == "yes")
+    to_chat = job["to_chat"]
+    initial_status = "running"
+    
+    if is_scheduled:
+        active_to = await db.db[COLL].find_one({"to_chat": to_chat, "status": "running", "user_id": user_id})
+        if active_to:
+            initial_status = "scheduled"
+            
+    await _tj_update(job_id, status=initial_status, scheduled=is_scheduled)
+    
+    if initial_status == "running":
+        _start_task(job_id, user_id, _bot=bot)
+        
+    await q.answer("✅ Task configuration complete!")
+    
+    end_id = job.get("end_id", 0)
+    end_lbl = f"<code>{end_id}</code>" if end_id else "∞ (ᴀʟʟ ᴍsɢs)"
+    cname = job.get("custom_name")
+    
+    await q.message.edit_text(
+        f"<b>╭──────❰ ✅ ᴛᴀsᴋ ᴊᴏʙ {'ǫᴜᴇᴜᴇᴅ' if initial_status=='scheduled' else 'ᴄʀᴇᴀᴛᴇᴅ'} ❱──────╮\n"
+        f"┃\n"
+        f"┣⊸ ◈ 𝐒𝐨𝐮𝐫𝐜𝐞  : {job.get('from_title')}\n"
+        f"┣⊸ ◈ 𝐓𝐚𝐫𝐠𝐞𝐭  : {job.get('to_title')}\n"
+        f"┣⊸ ◈ 𝐑𝐚𝐧𝐠𝐞   : <code>{job.get('start_id')}</code> → {end_lbl}\n"
+        f"┣⊸ ◈ sᴛᴀᴛᴜs  : {initial_status.upper()}\n"
+        f"┣⊸ ◈ 𝐉𝐨𝐛 𝐈𝐃  : <code>{job_id[-6:]}</code>" + (f" (<b>{cname}</b>)\n" if cname else "\n") +
+        f"┃\n"
+        f"╰────────────────────────────────╯</b>",
+        reply_markup=None
+    )
+
 
 
 @Client.on_callback_query(filters.regex(r'^tj#info#'))
@@ -937,53 +983,29 @@ async def _create_taskjob_flow(bot, user_id: int):
     if "sᴋɪᴘ" not in name_r.text.lower() and "skip" not in name_r.text.lower():
         cname = name_r.text.strip()[:30]
 
+    job_id = f"tj-{user_id}-{int(time.time())}"
+    job = {
+        "job_id": job_id, "user_id": user_id, "account_id": sel["id"],
+        "from_chat": fc, "from_title": ftitle, "from_topic_id": from_topic_id,
+        "to_chat": to_chat, "to_title": to_title, "to_topic_id": to_topic_id,
+        "start_id": start_id, "end_id": end_id, "current_id": start_id,
+        "status": "pending", "created": int(time.time()),
+        "forwarded": 0, "consecutive_empty": 0, "error": "",
+        "custom_name": cname,
+        "scheduled": False
+    }
+    await _tj_save(job)
+
     # Step 6 — Scheduler
-    sched_r = await bot.ask(user_id,
+    await bot.send_message(user_id,
         "<b>╭──────❰ ⏳ sᴛᴇᴘ 6/6 — sᴄʜᴇᴅᴜʟɪɴɢ ❱──────╮\n"
         "┃\n"
         "┣⊸ ᴡᴏᴜʟᴅ ʏᴏᴜ ʟɪᴋᴇ ᴛᴏ sᴄʜᴇᴅᴜʟᴇ ᴛʜɪs ᴊᴏʙ?\n"
         "┣⊸ ɪғ YES, ɪᴛ ᴡɪʟʟ ᴡᴀɪᴛ ɪғ ᴀɴᴏᴛʜᴇʀ ᴊᴏʙ ɪs\n"
         "┃  ʀᴜɴɴɪɴɢ ᴛᴏ ᴛʜᴇ sᴀᴍᴇ ᴅᴇsᴛɪɴᴀᴛɪᴏɴ.\n"
         "┃\n╰────────────────────────────────╯</b>",
-        reply_markup=ReplyKeyboardMarkup([["ʏᴇs", "ɴᴏ"]], resize_keyboard=True, one_time_keyboard=True))
-    
-    txt = sched_r.text.lower() if sched_r.text else ""
-    is_scheduled = "ʏᴇs" in txt or "yes" in txt
-
-    # Save & Start
-    job_id = f"tj-{user_id}-{int(time.time())}"
-    
-    # Check if we should start immediately or queue it
-    initial_status = "running"
-    if is_scheduled:
-        active_to = await db.db[COLL].find_one({"to_chat": to_chat, "status": "running", "user_id": user_id})
-        if active_to:
-            initial_status = "scheduled"
-
-    job = {
-        "job_id": job_id, "user_id": user_id, "account_id": sel["id"],
-        "from_chat": fc, "from_title": ftitle, "from_topic_id": from_topic_id,
-        "to_chat": to_chat, "to_title": to_title, "to_topic_id": to_topic_id,
-        "start_id": start_id, "end_id": end_id, "current_id": start_id,
-        "status": initial_status, "created": int(time.time()),
-        "forwarded": 0, "consecutive_empty": 0, "error": "",
-        "custom_name": cname,
-        "scheduled": is_scheduled
-    }
-    await _tj_save(job)
-    if initial_status == "running":
-        _start_task(job_id, user_id, _bot=bot)
-
-    end_lbl = f"<code>{end_id}</code>" if end_id else "∞ (ᴀʟʟ ᴍsɢs)"
-    await bot.send_message(user_id,
-        f"<b>╭──────❰ ✅ ᴛᴀsᴋ ᴊᴏʙ {'ǫᴜᴇᴜᴇᴅ' if initial_status=='scheduled' else 'ᴄʀᴇᴀᴛᴇᴅ'} ❱──────╮\n"
-        f"┃\n"
-        f"┣⊸ ◈ 𝐒𝐨𝐮𝐫𝐜𝐞  : {ftitle}\n"
-        f"┣⊸ ◈ 𝐓𝐚𝐫𝐠𝐞𝐭  : {to_title}\n"
-        f"┣⊸ ◈ 𝐀𝐜𝐜𝐨𝐮𝐧𝐭 : {'🤖 ʙᴏᴛ' if ibot else '👤 ᴜsᴇʀʙᴏᴛ'} {sel.get('name','?')}\n"
-        f"┣⊸ ◈ 𝐑𝐚𝐧𝐠𝐞   : <code>{start_id}</code> → {end_lbl}\n"
-        f"┣⊸ ◈ sᴛᴀᴛᴜs  : {initial_status.upper()}\n"
-        f"┣⊸ ◈ 𝐉𝐨𝐛 𝐈𝐃  : <code>{job_id[-6:]}</code>" + (f" (<b>{cname}</b>)\n" if cname else "\n") +
-        f"┃\n"
-        f"╰────────────────────────────────╯</b>",
-        reply_markup=ReplyKeyboardRemove())
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ ʏᴇs", callback_data=f"tjsched#yes#{job_id}"),
+             InlineKeyboardButton("❌ ɴᴏ", callback_data=f"tjsched#no#{job_id}")]
+        ])
+    )
