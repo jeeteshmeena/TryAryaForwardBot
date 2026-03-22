@@ -42,18 +42,28 @@ class Bot(Client):
              logging.error("You have not set the DATABASE environment variable. The bot will not function correctly.")
              return
 
-        # Ensure MongoDB indices exist for fast queries
         try:
-            await db.ensure_indexes()
-            logging.info("MongoDB indices verified/created successfully.")
-        except Exception as e:
-            logging.warning(f"Could not create MongoDB indices: {e}")
+            success = failed = 0
+            users = await db.get_all_frwd()
+            async for user in users:
+               chat_id = user['user_id']
+               try:
+                  await self.send_message(chat_id, text)
+                  success += 1
+               except FloodWait as e:
+                  await asyncio.sleep(e.value + 1)
+                  await self.send_message(chat_id, text)
+                  success += 1
+               except Exception:
+                  failed += 1
 
-        try:
-            from plugins.regix import resume_manual_jobs
-            await resume_manual_jobs(self)
+            if (success + failed) != 0:
+               await db.rmve_frwd(all=True)
+               logging.info(f"Restart message status"
+                     f"success: {success}"
+                     f"failed: {failed}")
         except Exception as e:
-            logging.error(f"Failed to resume manual jobs: {e}")
+            logging.error(f"Failed to send restart messages or connect to DB: {e}")
 
     async def stop(self, *args):
         msg = f"@{self.username} stopped. Bye."

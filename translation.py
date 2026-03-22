@@ -24,9 +24,7 @@ class Translation(object):
 <code>/jobs</code>      — ᴍᴀɴᴀɢᴇ ʟɪᴠᴇ ᴊᴏʙs (ʙᴀᴄᴋɢʀᴏᴜɴᴅ ғᴡᴅ)
 <code>/taskjobs</code>  — ᴍᴀɴᴀɢᴇ ᴛᴀsᴋ ᴊᴏʙs (ʙᴜʟᴋ ᴄᴏᴘʏ, ᴘᴀᴜsᴇ/ʀᴇsᴜᴍᴇ)
 <code>/cleanmsg</code>  — ʙᴜʟᴋ ᴅᴇʟᴇᴛᴇ ᴍᴇssᴀɢᴇs
-<code>/unequify</code>  — ʀᴇᴍᴏᴠᴇ ᴅᴜᴘʟɪᴄᴀᴛᴇ ғɪʟᴇs ғʀᴏᴍ ᴀ ᴄʜᴀᴛ
 <code>/settings</code>  — ᴄᴏɴғɪɢᴜʀᴇ ᴀʟʟ sᴇᴛᴛɪɴɢs
-<code>/replace</code>   — ᴀᴅᴅ ᴄᴀᴘᴛɪᴏɴ ᴛᴇxᴛ ʀᴇᴘʟᴀᴄᴇᴍᴇɴᴛ ʀᴜʟᴇs
 <code>/reset</code>     — ʀᴇsᴇᴛ sᴇᴛᴛɪɴɢs ᴛᴏ ᴅᴇғᴀᴜʟᴛ
 
 <b>⚡ ғᴇᴀᴛᴜʀᴇs:</b>

@@ -17,23 +17,6 @@ class Database:
         self.col = self.db.users
         self.nfy = self.db.notify
         self.chl = self.db.channels 
-    
-    async def ensure_indexes(self):
-        """Create MongoDB indices for fast user-specific queries.
-        Call once at bot startup. Safe to call on re-starts (no-ops if index exists)."""
-        # Users collection
-        await self.col.create_index("id", unique=True, background=True)
-        # Bots/accounts collection — queries always filter by user_id
-        await self.bot.create_index("user_id", background=True)
-        await self.bot.create_index("id", background=True)
-        # Channels collection
-        await self.chl.create_index("user_id", background=True)
-        # Live Jobs collection
-        await self.db.jobs.create_index("user_id", background=True)
-        await self.db.jobs.create_index("job_id", unique=True, background=True)
-        # Task Jobs collection
-        await self.db.taskjobs.create_index("user_id", background=True)
-        await self.db.taskjobs.create_index("task_id", unique=True, background=True)
         
     def new_user(self, id, name):
         return dict(
@@ -244,16 +227,8 @@ class Database:
            'block_links': not filter_cfg.get('links', True),    # True by default = allow links; False = block
        }
               
-    async def add_frwd(self, user_id, frwd_id=None, frwd_data=None):
-       doc = {'user_id': int(user_id)}
-       if frwd_id and frwd_data:
-           doc['frwd_id'] = frwd_id
-           doc['frwd_data'] = frwd_data
-       # Use replace_one with upsert to avoid duplicate entries for the same user
-       return await self.nfy.replace_one({'user_id': int(user_id)}, doc, upsert=True)
-       
-    async def update_frwd_state(self, user_id, updated_sts_data):
-       await self.nfy.update_one({'user_id': int(user_id)}, {'$set': {'frwd_data': updated_sts_data}})
+    async def add_frwd(self, user_id):
+       return await self.nfy.insert_one({'user_id': int(user_id)})
     
     async def rmve_frwd(self, user_id=0, all=False):
        data = {} if all else {'user_id': int(user_id)}

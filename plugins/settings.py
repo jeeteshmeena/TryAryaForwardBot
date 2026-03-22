@@ -8,46 +8,12 @@ from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 CLIENT = CLIENT()
 
-async def get_overview_text(user_id):
-    title = await t(user_id, 'settings_title')
-    data = await get_configs(user_id)
-    
-    bots = await db.get_bots(user_id)
-    active_bot = next((b for b in bots if b.get('is_bot', True) and b.get('active')), None)
-    active_userbot = next((b for b in bots if not b.get('is_bot', True) and b.get('active')), None)
-    
-    bot_name = active_bot['name'] if active_bot else "None"
-    ubot_name = active_userbot['name'] if active_userbot else "None"
-    
-    channels = await db.get_user_channels(user_id)
-    ch_count = len(channels)
-    
-    cap = "Custom" if data.get('caption') else "Default"
-    btn = "Custom" if data.get('button') else "Off"
-    dl_mode = "✅ ON" if data.get('download') else "❌ OFF"
-    lim = data.get('limit', 0)
-    limit_str = f"{lim} MB" if lim else "No Limit"
-    
-    overview = (
-        f"{title}\n\n"
-        f"<b>╭──────❰ ⚙️ 𝐀𝐜𝐭𝐢𝐯𝐞 𝐒𝐞𝐭𝐭𝐢𝐧𝐠𝐬 ❱──────╮</b>\n"
-        f"┣⊸ 🤖 <b>Bot   :</b> <code>{bot_name}</code>\n"
-        f"┣⊸ 👤 <b>User  :</b> <code>{ubot_name}</code>\n"
-        f"┣⊸ 🏷 <b>Chats :</b> <code>{ch_count} configured</code>\n"
-        f"┣⊸ ⬇️ <b>DL    :</b> {dl_mode}\n"
-        f"┣⊸ 📏 <b>Limit :</b> <code>{limit_str}</code>\n"
-        f"┣⊸ 🖋️ <b>Cap   :</b> <code>{cap}</code> | <b>Btn:</b> <code>{btn}</code>\n"
-        f"<b>╰────────────────────────────────╯</b>"
-    )
-    return overview
-
 @Client.on_message(filters.command('settings'))
 async def settings(client, message):
     await message.delete()
     user_id = message.from_user.id
-    overview = await get_overview_text(user_id)
     await message.reply_text(
-        overview,
+        await t(user_id, 'settings_title'),
         reply_markup=main_buttons()
     )
     
@@ -59,9 +25,8 @@ async def settings_query(bot, query):
   
   if type=="main":
      user_id = query.from_user.id
-     overview = await get_overview_text(user_id)
      await query.message.edit_text(
-       overview,
+       await t(user_id, 'settings_title'),
        reply_markup=main_buttons())
           
   elif type=="accounts":
@@ -255,7 +220,7 @@ async def settings_query(bot, query):
                   "<b>process canceled !</b>",
                   reply_markup=InlineKeyboardMarkup(buttons))
          try:
-            preview_text = caption.text.format(filename='example_video.mp4', size='42.5 MB', caption='Original caption here...')
+            caption.text.format(filename='', size='', caption='')
          except KeyError as e:
             await caption.delete()
             return await text.edit_text(
@@ -264,7 +229,7 @@ async def settings_query(bot, query):
          await update_configs(user_id, 'caption', caption.text)
          await caption.delete()
          await text.edit_text(
-            f"<b>✅ Successfully updated!</b>\n\n<b>Preview:</b>\n<code>{preview_text}</code>",
+            "<b>successfully updated</b>",
             reply_markup=InlineKeyboardMarkup(buttons))
      except asyncio.exceptions.TimeoutError:
          await text.edit_text('Process has been automatically cancelled', reply_markup=InlineKeyboardMarkup(buttons))
@@ -372,10 +337,9 @@ async def settings_query(bot, query):
         await update_configs(user_id, key, False)
      else:
         await update_configs(user_id, key, True)
-     # These keys belong to the Extra Settings page — return to it after toggling
-     if key in ['poll', 'protect', 'download', 'rm_caption', 'links']:
+     if key in ['poll', 'protect', 'download', 'rm_caption']:
         return await query.edit_message_reply_markup(
-           reply_markup=await next_filters_buttons(user_id))
+           reply_markup=await next_filters_buttons(user_id)) 
      await query.edit_message_reply_markup(
         reply_markup=await filters_buttons(user_id))
         
@@ -553,27 +517,27 @@ def size_button(size):
        InlineKeyboardButton('+1',
                     callback_data=f'settings#update_size-{size + 1}'),
        InlineKeyboardButton('-1',
-                    callback_data=f'settings#update_size-{max(0, size - 1)}')
+                    callback_data=f'settings#update_size_-{size - 1}')
        ],[
        InlineKeyboardButton('+5',
                     callback_data=f'settings#update_size-{size + 5}'),
        InlineKeyboardButton('-5',
-                    callback_data=f'settings#update_size-{max(0, size - 5)}')
+                    callback_data=f'settings#update_size_-{size - 5}')
        ],[
        InlineKeyboardButton('+10',
                     callback_data=f'settings#update_size-{size + 10}'),
        InlineKeyboardButton('-10',
-                    callback_data=f'settings#update_size-{max(0, size - 10)}')
+                    callback_data=f'settings#update_size_-{size - 10}')
        ],[
        InlineKeyboardButton('+50',
                     callback_data=f'settings#update_size-{size + 50}'),
        InlineKeyboardButton('-50',
-                    callback_data=f'settings#update_size-{max(0, size - 50)}')
+                    callback_data=f'settings#update_size_-{size - 50}')
        ],[
        InlineKeyboardButton('+100',
                     callback_data=f'settings#update_size-{size + 100}'),
        InlineKeyboardButton('-100',
-                    callback_data=f'settings#update_size-{max(0, size - 100)}')
+                    callback_data=f'settings#update_size_-{size - 100}')
        ],[
        InlineKeyboardButton('↩ Back',
                     callback_data="settings#main")

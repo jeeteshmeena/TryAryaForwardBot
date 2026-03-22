@@ -146,7 +146,7 @@ async def _do_delete(client, chat_id, wanted: str, status_msg, is_bot: bool, che
         BATCH = 200
         current = 1
         consecutive_empty = 0
-        MAX_EMPTY_RUNS = 50  # Increased to allow up to 10000 empty IDs before stopping
+        MAX_EMPTY_RUNS = 5
 
         while True:
             ids_to_fetch = list(range(current, current + BATCH))

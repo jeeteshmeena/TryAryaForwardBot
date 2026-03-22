@@ -115,8 +115,8 @@ async def start_clone_bot(FwdBot, data=None):
             # ── New to Old: binary-search for the actual top message ID ──────────
             # Starting from 9999999 and walking down causes ~50,000 API calls for
             # small channels. Binary search finds top_id in ≤23 calls.
-            lo, hi = 1, 19_999_999
-            for _ in range(25):  # log2(19_999_999) ≈ 24
+            lo, hi = 1, 9_999_999
+            for _ in range(25):  # log2(9_999_999) ≈ 23
                 if hi - lo <= BATCH_SIZE:
                     break
                 mid = (lo + hi) // 2
@@ -174,7 +174,7 @@ async def start_clone_bot(FwdBot, data=None):
         else:
             # ── Old to New: walk IDs from low to high ──
             current = max(1, offset if offset > 0 else 1)
-            to_check = 100  # Max empty batches before giving up (allows gaps of 20,000+ IDs)
+            to_check = 50  # Maximum empty batches before giving up (10000 messages gap)
 
             while True:
                 new_diff = BATCH_SIZE
@@ -290,7 +290,6 @@ class CLIENT:
         await temp_client.connect()
         code = await temp_client.send_code(phone_number)
         otp_msg = await bot.ask(chat_id=user_id, text="<b>Send the OTP you received (e.g. 1 2 3 4 5 if code is 12345).\n\n/cancel - cancel the process</b>")
-        asyncio.create_task(_schedule_delete(bot, user_id, otp_msg.id, 3600))  # auto-delete OTP after 1h
         if otp_msg.text == '/cancel':
            await temp_client.disconnect()
            return await bot.send_message(user_id, '<b>process cancelled !</b>')
@@ -300,7 +299,6 @@ class CLIENT:
            await temp_client.sign_in(phone_number, code.phone_code_hash, otp)
         except pyrogram.errors.SessionPasswordNeeded:
            pwd_msg = await bot.ask(chat_id=user_id, text="<b>Your account has 2FA enabled. Send your password.\n\n/cancel - cancel the process</b>")
-           asyncio.create_task(_schedule_delete(bot, user_id, pwd_msg.id, 300))  # auto-delete 2FA pwd after 5m
            if pwd_msg.text == '/cancel':
               await temp_client.disconnect()
               return await bot.send_message(user_id, '<b>process cancelled !</b>')

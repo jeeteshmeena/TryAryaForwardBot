@@ -7,12 +7,9 @@ Features: batch-first mode, dual destinations, per-job size/duration limits, top
 import time
 import asyncio
 import logging
-import main
 from database import db
 from .test import CLIENT, start_clone_bot
-from .utils import _chat_is_forum
 from pyrogram import Client, filters
-from pyrogram.enums import ChatType
 from pyrogram.errors import FloodWait
 from pyrogram.types import (
     InlineKeyboardButton, InlineKeyboardMarkup,
@@ -574,8 +571,6 @@ async def _run_job(job_id: str, user_id: int, _bot=None):
 
         last_hb = 0  # last heartbeat timestamp
         last_notify = 0  # last status notification timestamp
-        fwd_n = 0
-        consec_fails = 0
 
         # ── Batch phase ─────────────────────────────────────────────────────
         if job.get("batch_mode") and not job.get("batch_done"):
@@ -585,7 +580,6 @@ async def _run_job(job_id: str, user_id: int, _bot=None):
                 bend = seen
                 await _update_job(job_id, batch_end_id=bend)
 
-            fwd_n = 0 # Local batch counter
             while cur <= bend:
                 fresh = await _get_job(job_id)
                 if not fresh or fresh.get("status") != "running": return
@@ -649,7 +643,8 @@ async def _run_job(job_id: str, user_id: int, _bot=None):
 
                 msgs.sort(key=lambda m: getattr(m, 'id', 0) if m else 0)
                 
-                # Correct Order Enforcement: process messages sequentially within each batch
+                # Parallel Batch Processing: launch concurrent forward tasks
+                tasks = []
                 for msg in msgs:
                     if not msg or getattr(msg, 'empty', False) or getattr(msg, 'service', False):
                         continue
@@ -657,22 +652,28 @@ async def _run_job(job_id: str, user_id: int, _bot=None):
                     if not _passes_filters(msg, dis):          continue
                     if not _passes_size(msg, max_mb, max_sec): continue
                     
-                    # Sequential call ensures order is preserved for destination
-                    ok = await _forward_message(
+                    tasks.append(_forward_message(
                         client, msg, to1, th1, rm_cap, forward_tag, fc,
                         to2, th2, block_links=block_links
-                    )
-                    
-                    if ok:
-                        main.TOTAL_FILES_FWD += 1
-                        await _inc_forwarded(job_id, 1)
+                    ))
                 
-                    # Advance seen and persist per-message to prevent duplicates on crash
-                    seen = max(seen, getattr(msg, 'id', 0) or seen)
-                    await _update_job(job_id, batch_cursor=seen+1, last_seen_id=seen)
+                if tasks:
+                    results = await asyncio.gather(*tasks, return_exceptions=True)
+                    for r in results:
+                        if isinstance(r, Exception):
+                            logger.error(f"[Job {job_id}] Parallel error: {r}")
+                            continue
+                        if r is True:
+                            import main
+                            main.TOTAL_FILES_FWD += 1
+                            fwd_n += 1
+                
+                # Advance seen after processing block
+                if msgs: seen = max(seen, msgs[-1].id)
 
                 cur = chunk_end + 1
-                await _update_job(job_id, batch_cursor=cur, last_seen_id=seen)
+                await _update_job(job_id, batch_cursor=cur)
+                if fwd_n: await _inc_forwarded(job_id, fwd_n)
 
             await _update_job(job_id, batch_done=True, batch_cursor=bend,
                               last_seen_id=max(seen, bend))
@@ -740,16 +741,15 @@ async def _run_job(job_id: str, user_id: int, _bot=None):
                 logger.warning(f"[Job {job_id}] Live fetch: {e}")
                 await asyncio.sleep(15); continue
 
+            fwd_n = 0
             for msg in new:
                 if not msg or getattr(msg, 'empty', False) or getattr(msg, 'service', False):
                     seen = max(seen, getattr(msg, 'id', 0) or seen)
-                    await _update_job(job_id, last_seen_id=seen)
                     continue
                     
                 # Explicit skip → advance seen so we never reprocess
                 if not _passes_topic(msg, from_topic_id) or not _passes_filters(msg, dis) or not _passes_size(msg, max_mb, max_sec):
                     seen = max(seen, msg.id)
-                    await _update_job(job_id, last_seen_id=seen)
                     continue
 
                 # Advance seen ONLY after success — failed sends are retried next poll
@@ -758,18 +758,17 @@ async def _run_job(job_id: str, user_id: int, _bot=None):
                         client, msg, to1, th1, rm_cap, forward_tag, fc,
                         to2, th2, block_links=block_links)
                     if ok:
+                        import main
+                        fwd_n += 1
                         main.TOTAL_FILES_FWD += 1
                         seen = max(seen, msg.id)
                         consec_fails = 0
-                        await _update_job(job_id, last_seen_id=seen)
-                        await _inc_forwarded(job_id, 1)
                     else:
-                        consec_fails += 1
+                        consec_fails = consec_fails + 1 if 'consec_fails' in locals() else 1
                         if consec_fails >= 3:
                             logger.warning(f"[Job {job_id}] Message {msg.id} failed 3 times, skipping.")
                             seen = max(seen, msg.id)
                             consec_fails = 0
-                            await _update_job(job_id, last_seen_id=seen)
                         else:
                             # Log failure and allow retry on next poll by BREAKING the chunk loop
                             logger.warning(f"[Job {job_id}] Message {msg.id} failed (attempt {consec_fails}/3)")
@@ -786,7 +785,6 @@ async def _run_job(job_id: str, user_id: int, _bot=None):
                     if consec_fails >= 3:
                         seen = max(seen, msg.id)
                         consec_fails = 0
-                        await _update_job(job_id, last_seen_id=seen)
                     else:
                         break
                         
@@ -794,6 +792,8 @@ async def _run_job(job_id: str, user_id: int, _bot=None):
 
             if new:
                 await _update_job(job_id, last_seen_id=seen)
+            if fwd_n:
+                await _inc_forwarded(job_id, fwd_n)
             await asyncio.sleep(poll_sleep)
 
     except asyncio.CancelledError:
@@ -872,8 +872,6 @@ async def _render_jobs_list(bot, user_id: int, mq):
             row = []
             if st == "running":
                 row.append(InlineKeyboardButton(f"⏹ Stop [{s}]",  callback_data=f"job#stop#{jid}"))
-            elif st == "error":
-                row.append(InlineKeyboardButton(f"🔄 Restart [{s}]", callback_data=f"job#restart#{jid}"))
             else:
                 row.append(InlineKeyboardButton(f"▶️ Start [{s}]", callback_data=f"job#start#{jid}"))
             row.append(InlineKeyboardButton(f"ℹ️ [{s}]", callback_data=f"job#info#{jid}"))
@@ -984,25 +982,9 @@ async def job_start_cb(bot, q):
         return await q.answer("⛔ ᴜɴᴀᴜᴛʜᴏʀɪᴢᴇᴅ.", show_alert=True)
     if job_id in _job_tasks and not _job_tasks[job_id].done():
         return await q.answer("ᴀʟʀᴇᴀᴅʏ ʀᴜɴɴɪɴɢ!", show_alert=True)
-    
     await _update_job(job_id, status="running")
     _start_job_task(job_id, uid, _bot=bot)
     await q.answer("▶️ ᴊᴏʙ sᴛᴀʀᴛᴇᴅ.")
-    await _render_jobs_list(bot, uid, q)
-
-
-@Client.on_callback_query(filters.regex(r'^job#restart#'))
-async def job_restart_cb(bot, q):
-    job_id, uid = q.data.split("#", 2)[2], q.from_user.id
-    job = await _get_job(job_id)
-    if not job or job.get("user_id") != uid:
-        return await q.answer("⛔ ᴜɴᴀᴜᴛʜᴏʀɪᴢᴇᴅ.", show_alert=True)
-    if job_id in _job_tasks and not _job_tasks[job_id].done():
-        return await q.answer("ᴀʟʀᴇᴀᴅʏ ʀᴜɴɴɪɴɢ!", show_alert=True)
-    
-    await _update_job(job_id, status="running", error=None)
-    _start_job_task(job_id, uid, _bot=bot)
-    await q.answer("🔄 ᴊᴏʙ ʀᴇsᴛᴀʀᴛᴇᴅ.")
     await _render_jobs_list(bot, uid, q)
 
 
@@ -1130,16 +1112,16 @@ async def _create_job_flow(bot, uid: int):
             return await src_r.reply(
                 "<b>❌ sᴀᴠᴇᴅ ᴍᴇssᴀɢᴇs ʀᴇqᴜɪʀᴇs ᴀ ᴜsᴇʀʙᴏᴛ ᴀᴄᴄᴏᴜɴᴛ.</b>")
         fc, ftitle = "me", "sᴀᴠᴇᴅ ᴍᴇssᴀɢᴇs"
-        source_is_forum = False
     else:
         fc = int(raw) if raw.lstrip('-').isdigit() else raw
-        source_is_forum, co = await _chat_is_forum(bot, fc)
-        ftitle = getattr(co, "title", None) or getattr(co, "first_name", str(fc)) if co else str(fc)
-
-        # If auto-detect failed (bot can't see private group) but it's a -100 ID,
-        # still show topic option — user can enter 0 to skip it
-        if not source_is_forum and str(fc).startswith('-100') and co is None:
-            source_is_forum = True
+        try:
+            co     = await bot.get_chat(fc)
+            ftitle = getattr(co, "title", None) or getattr(co, "first_name", str(fc))
+            source_is_forum = getattr(co, "is_forum", False)
+        except Exception:
+            co = None
+            ftitle = str(fc)
+            source_is_forum = False
 
         if await db.is_protected(raw, co):
             return await bot.send_message(uid,
@@ -1149,17 +1131,17 @@ async def _create_job_flow(bot, uid: int):
                 "┃\n╰────────────────────────────────╯</b>",
                 reply_markup=ReplyKeyboardRemove())
 
-    # Step 2b — Source Topic (optional, only for supergroups)
+    # Step 2b — Source Topic (optional, only for forum groups)
     from_topic_id = None
     if source_is_forum:
         src_topic_r = await bot.ask(uid,
             "<b>╭──────❰ 📋 sᴛᴇᴘ 2b — sᴏᴜʀᴄᴇ ᴛᴏᴘɪᴄ ❱──────╮\n"
             "┃\n"
-            "┣⊸ Enter Topic ID to read from a specific topic\n"
-            "┣⊸ Send 0 to read all messages (no topic filter)\n"
+            "┣⊸ ɪғ sᴏᴜʀᴄᴇ ɪs ᴀ ɢʀᴏᴜᴘ ᴡɪᴛʜ ᴛᴏᴘɪᴄs, ᴇɴᴛᴇʀ ᴛʜᴇ ᴛᴏᴘɪᴄ ɪᴅ\n"
+            "┣⊸ sᴇɴᴅ 0 ᴛᴏ ғᴏʀᴡᴀʀᴅ ᴀʟʟ ᴍᴇssᴀɢᴇs (ɴᴏ ᴛᴏᴘɪᴄ ғɪʟᴛᴇʀ)\n"
             "┃\n╰────────────────────────────────╯</b>",
             reply_markup=ReplyKeyboardMarkup(
-                [[KeyboardButton("0 (No topic filter)")], [KeyboardButton("/cancel")]],
+                [[KeyboardButton("0 (ɴᴏ ᴛᴏᴘɪᴄ ғɪʟᴛᴇʀ)")], [KeyboardButton("/cancel")]],
                 resize_keyboard=True, one_time_keyboard=True))
         if "/cancel" in src_topic_r.text:
             return await src_topic_r.reply(
@@ -1182,13 +1164,19 @@ async def _create_job_flow(bot, uid: int):
     if cancelled or not to1: return
 
     th1 = None
-    to1_is_forum, co1 = await _chat_is_forum(bot, to1)
-    # If auto-detect failed (private group) but the stored ID is a supergroup (-100),
-    # still offer the topic option so the user can enter a thread ID if needed
-    if not to1_is_forum and str(to1).startswith('-100') and co1 is None:
-        to1_is_forum = True
+    to1_is_forum = False
+    if to1 and str(to1).startswith('-100'):
+        try:
+            co1 = await bot.get_chat(to1)
+            # Only supergroups can have forum topics, never channels or private chats
+            from pyrogram.enums import ChatType
+            if getattr(co1, 'type', None) == ChatType.SUPERGROUP:
+                to1_is_forum = getattr(co1, "is_forum", False)
+        except Exception:
+            to1_is_forum = False  # Safe default: don't ask for topics if we can't confirm
+
     if to1_is_forum:
-        th1 = await _pick_topic(bot, uid, "Dest 1")
+        th1 = await _pick_topic(bot, uid, "ᴅᴇsᴛ 1")
 
     # Step 4 — Dest 2
     to2, ttl2, cancelled2 = await _pick_channel(bot, uid, channels,
@@ -1201,12 +1189,19 @@ async def _create_job_flow(bot, uid: int):
 
     th2 = None
     if to2:
-        to2_is_forum, co2 = await _chat_is_forum(bot, to2)
-        if not to2_is_forum and str(to2).startswith('-100') and co2 is None:
-            to2_is_forum = True
+        to2_is_forum = False
+        if str(to2).startswith('-100'):
+            try:
+                co2 = await bot.get_chat(to2)
+                # Only supergroups can have forum topics, never channels
+                from pyrogram.enums import ChatType
+                if getattr(co2, 'type', None) == ChatType.SUPERGROUP:
+                    to2_is_forum = getattr(co2, "is_forum", False)
+            except Exception:
+                to2_is_forum = False  # Safe default
+        
         if to2_is_forum:
-            th2 = await _pick_topic(bot, uid, "Dest 2")
-
+            th2 = await _pick_topic(bot, uid, "ᴅᴇsᴛ 2")
 
     # Step 5 — Batch mode
     batch_r = await bot.ask(uid,
@@ -1282,27 +1277,9 @@ async def _create_job_flow(bot, uid: int):
             try: max_mb = int(lt)
             except Exception: pass
 
-    # Step 7 — Download mode
-    dl_r = await bot.ask(uid,
-        "<b>╭──────❰ 📋 sᴛᴇᴘ 7/8 — ᴅᴏᴡɴʟᴏᴀᴅ ᴍᴏᴅᴇ ❱──────╮\n"
-        "┃\n┣⊸ ᴡᴀɴᴛ ᴛᴏ ᴅᴏᴡɴʟᴏᴀᴅ & ʀᴇᴜᴘʟᴏᴀᴅ ᴍᴇssᴀɢᴇs?\n"
-        "┣⊸ ✅ YES — ʀᴇᴍᴏᴠᴇs ғᴏʀᴡᴀʀᴅ ᴛᴀɢ (sʟᴏᴡᴇʀ)\n"
-        "┣⊸ ❌ NO  — sɪᴍᴘʟᴇ ғᴏʀᴡᴀʀᴅ (ғᴀsᴛᴇsᴛ)\n"
-        "┃\n╰────────────────────────────────╯</b>",
-        reply_markup=ReplyKeyboardMarkup(
-            [[KeyboardButton("✅ YES")], [KeyboardButton("❌ NO")], [KeyboardButton("/cancel")]],
-            resize_keyboard=True, one_time_keyboard=True))
-
-    if "/cancel" in dl_r.text:
-        return await dl_r.reply(
-            "<b>╭──────❰ ❌ Cancelʟᴇᴅ ❱──────╮\n┃\n╰────────────────────────────────╯</b>",
-            reply_markup=ReplyKeyboardRemove())
-
-    download_mode = "yes" in dl_r.text.lower()
-
-    # Step 8 — Custom Name
+    # Step 7 — Custom Name
     name_r = await bot.ask(uid,
-        "<b>╭──────❰ 📋 sᴛᴇᴘ 8/8 — ᴊᴏʙ ɴᴀᴍᴇ (ᴏᴘᴛɪᴏɴᴀʟ) ❱──────╮\n"
+        "<b>╭──────❰ 📋 sᴛᴇᴘ 7/7 — ᴊᴏʙ ɴᴀᴍᴇ (ᴏᴘᴛɪᴏɴᴀʟ) ❱──────╮\n"
         "┃\n┣⊸ sᴇɴᴅ ᴀ sʜᴏʀᴛ ɴᴀᴍᴇ ғᴏʀ ᴛʜɪs ᴊᴏʙ ᴛᴏ ɪᴅᴇɴᴛɪғʏ ɪᴛ ᴇᴀsɪʟʏ.\n"
         "┣⊸ ᴏʀ ᴄʟɪᴄᴋ sᴋɪᴘ ᴛᴏ ᴜsᴇ ᴅᴇғᴀᴜʟᴛ.\n"
         "┃\n╰────────────────────────────────╯</b>",
@@ -1329,7 +1306,6 @@ async def _create_job_flow(bot, uid: int):
         "batch_mode": batch_mode, "batch_start_id": bstart, "batch_end_id": bend,
         "batch_cursor": bstart, "batch_done": False,
         "max_size_mb": max_mb, "max_duration_secs": max_sec,
-        "download_mode": download_mode,
         "status": "running", "created": int(time.time()), "forwarded": 0, "last_seen_id": 0,
         "custom_name": cname,
     }
@@ -1342,14 +1318,13 @@ async def _create_job_flow(bot, uid: int):
                 (f" → {bend}" if bend else " → ʟᴀᴛᴇsᴛ")) if batch_mode else "\n┣⊸ ◈ 𝐁𝐚𝐭𝐜𝐡   : ❌ ᴏFF"
     sz_lbl   = (f"\n┣⊸ ◈ 𝐌𝐚𝐱 𝐒𝐳   : {max_mb} ᴍʙ") if max_mb else ""
     dur_lbl  = (f"\n┣⊸ ◈ 𝐌𝐚𝐱 𝐃𝐮𝐫  : {max_sec // 60} ᴍɪɴ") if max_sec else ""
-    dl_lbl   = f"\n┣⊸ ◈ 𝐃𝐋 𝐌𝐨𝐝𝐞 : {'✅ ᴏɴ' if download_mode else '❌ ᴏFF'}"
 
     await bot.send_message(uid,
         f"<b>╭──────❰ ✅ ʟɪᴠᴇ ᴊᴏʙ ᴄʀᴇᴀᴛᴇᴅ ❱──────╮\n"
         f"┃\n"
         f"┣⊸ ◈ 𝐒𝐨𝐮𝐫𝐜𝐞  : {ftitle}\n"
         f"┣⊸ ◈ 𝐃𝐞𝐬𝐭 𝟏  : {ttl1}{th1_lbl}"
-        f"{d2_lbl}{bt_lbl}{sz_lbl}{dur_lbl}{dl_lbl}\n"
+        f"{d2_lbl}{bt_lbl}{sz_lbl}{dur_lbl}\n"
         f"┣⊸ ◈ 𝐀𝐜𝐜𝐨𝐮𝐧𝐭 : {'🤖 ʙᴏᴛ' if ibot else '👤 ᴜsᴇʀʙᴏᴛ'} {sel.get('name','?')}\n"
         f"┣⊸ ◈ 𝐉𝐨𝐛 𝐈𝐃  : <code>{job_id[-6:]}</code>" + (f" (<b>{cname}</b>)\n" if cname else "\n") +
         f"┃\n"

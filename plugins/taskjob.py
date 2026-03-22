@@ -9,11 +9,7 @@ import os
 import time
 import asyncio
 import logging
-import math
-import main
 from database import db
-from config import Config
-from .utils import STS, _chat_is_forum
 from .test import CLIENT, start_clone_bot
 from plugins.jobs import _has_links
 from pyrogram import Client, filters
@@ -328,7 +324,6 @@ async def _run_task_job(job_id: str, user_id: int, _bot=None):
         from_topic = job.get("from_topic_id")
         end_id  = job.get("end_id", 0)
         current = job.get("current_id", job.get("start_id", 1))
-        fwd     = job.get("forwarded", 0)
 
         await _tj_update(job_id, status="running", error="")
 
@@ -431,7 +426,8 @@ async def _run_task_job(job_id: str, user_id: int, _bot=None):
                     await _tj_notify(_bot, _fresh_j, "ʀᴜɴɴɪɴɢ")
                 last_notify = _now
 
-            # Correct Order Enforcement: process messages sequentially within each batch
+            # Parallel Batch Processing: launch concurrent forward tasks
+            tasks = []
             for msg in valid:
                 if from_topic:
                     if getattr(msg, 'message_thread_id', getattr(msg, 'reply_to_top_message_id', getattr(msg, 'reply_to_message_id', None))) != from_topic:
@@ -444,25 +440,21 @@ async def _run_task_job(job_id: str, user_id: int, _bot=None):
                 if not _passes_filters(msg, dis): continue
                 
                 from plugins.jobs import _fwd_safe
-                # CRITICAL FIX: Wrap every individual message send in try/except.
-                # If a single file fails (e.g. 1GB file timeout, API error),
-                # it is logged and skipped, but the entire job continues without stopping.
-                try:
-                    r = await _fwd_safe(_send_one, client, msg, to_chat, rm_cap, cap_tpl, 
-                                         forward_tag=forward_tag, from_chat=fc, 
-                                         block_links=block_links, to_topic=to_topic)
-                except Exception as send_err:
-                    logger.warning(f"[TaskJob {job_id}] Failed to send msg {msg.id}: {send_err} — continuing with next message")
-                    r = False
-                    
-                if r is True:
-                    fwd += 1
-                    main.TOTAL_FILES_FWD += 1
-                    
-                # Save state per-message to guarantee 100% accurate resume on crash
-                if msg.id >= current:
-                    current = msg.id + 1
-                    await _tj_update(job_id, current_id=current, forwarded=fwd)
+                tasks.append(_fwd_safe(_send_one, client, msg, to_chat, rm_cap, cap_tpl, 
+                                       forward_tag=forward_tag, from_chat=fc, 
+                                       block_links=block_links, to_topic=to_topic))
+            
+            if tasks:
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                for r in results:
+                    if isinstance(r, Exception):
+                        logger.error(f"[TaskJob {job_id}] Parallel error: {r}")
+                        continue
+                    if r is True:
+                        import main
+                        fwd += 1
+                        main.TOTAL_FILES_FWD += 1
+                        await _tj_inc(job_id)
 
             current = (msgs[-1].id + 1) if msgs else (current + BATCH_SIZE)
             await _tj_update(job_id, current_id=current)
@@ -523,6 +515,7 @@ async def resume_task_jobs(user_id: int = None):
 @Client.on_message(filters.command("cleanup") & filters.user(Config.BOT_OWNER_ID))
 async def cleanup_storage(bot, message):
     import shutil
+    from config import Config
     
     msg = await message.reply_text("<b>🧹 ᴄʟᴇᴀɴɪɴɢ ᴜᴘ sᴛᴏʀᴀɢᴇ...</b>")
     
@@ -824,13 +817,14 @@ async def _create_taskjob_flow(bot, user_id: int):
     elif raw.lstrip('-').isdigit(): fc = int(raw)
     else: fc = raw
 
-    source_is_forum, co = await _chat_is_forum(bot, fc)
-    ftitle = getattr(co, "title", None) or str(fc) if co else str(fc)
-
-    # If auto-detect failed (bot can't see private group) but it's a -100 ID,
-    # still show topic option — user can enter 0 to skip it
-    if not source_is_forum and str(fc).startswith('-100') and co is None:
-        source_is_forum = True
+    try:
+        co     = await bot.get_chat(fc)
+        ftitle = getattr(co, "title", None) or str(fc)
+        source_is_forum = getattr(co, "is_forum", False) and getattr(co, 'type', None) is not None and str(getattr(co, 'type', '')).endswith('SUPERGROUP')
+    except Exception:
+        co = None
+        ftitle = str(fc)
+        source_is_forum = False  # Never default to asking topic if we can't check
 
     if await db.is_protected(raw, co):
         return await bot.send_message(user_id,
@@ -843,12 +837,12 @@ async def _create_taskjob_flow(bot, user_id: int):
     from_topic_id = None
     if source_is_forum:
         src_topic_r = await bot.ask(user_id,
-            "<b>╭──────❰ 📋 Step 2b — Source Topic ❱──────╮\n"
+            "<b>╭──────❰ 📋 sᴛᴇᴘ 2b — sᴏᴜʀᴄᴇ ᴛᴏᴘɪᴄ ❱──────╮\n"
             "┃\n"
-            "┣⊸ Enter Topic ID to read from a specific topic\n"
-            "┣⊸ Send 0 to read all messages (no topic filter)\n"
+            "┣⊸ ɪғ sᴏᴜʀᴄᴇ ɪs ᴀ ɢʀᴏᴜᴘ ᴡɪᴛʜ ᴛᴏᴘɪᴄs, ᴇɴᴛᴇʀ ᴛʜᴇ ᴛᴏᴘɪᴄ ɪᴅ\n"
+            "┣⊸ sᴇɴᴅ 0 ᴛᴏ ғᴏʀᴡᴀʀᴅ ᴀʟʟ ᴍᴇssᴀɢᴇs (ɴᴏ ᴛᴏᴘɪᴄ ғɪʟᴛᴇʀ)\n"
             "┃\n╰────────────────────────────────╯</b>",
-            reply_markup=ReplyKeyboardMarkup([["0 (No topic filter)"], ["/cancel"]], resize_keyboard=True, one_time_keyboard=True))
+            reply_markup=ReplyKeyboardMarkup([["0 (ɴᴏ ᴛᴏᴘɪᴄ ғɪʟᴛᴇʀ)"], ["/cancel"]], resize_keyboard=True, one_time_keyboard=True))
         if "/cancel" in src_topic_r.text:
             return await src_topic_r.reply(_CANCEL_BOX, reply_markup=ReplyKeyboardRemove())
         _st_raw = src_topic_r.text.strip()
@@ -908,22 +902,26 @@ async def _create_taskjob_flow(bot, user_id: int):
         return await bot.send_message(user_id,
             "<b>❌ ɪɴᴠᴀʟɪᴅ sᴇʟᴇᴄᴛɪᴏɴ.</b>", reply_markup=ReplyKeyboardRemove())
 
-    to_is_forum = False
-    to_is_forum, co_to = await _chat_is_forum(bot, to_chat)
-    # If auto-detect failed (private group) but the stored ID is a supergroup (-100),
-    # still offer the topic option so the user can enter a thread ID if needed
-    if not to_is_forum and str(to_chat).startswith('-100') and co_to is None:
-        to_is_forum = True
-
     to_topic_id = None
+    to_is_forum = False
+    if to_chat and str(to_chat).startswith('-100'):
+        try:
+            co_to = await bot.get_chat(to_chat)
+            from pyrogram.enums import ChatType
+            # Only SUPERGROUP can have Topics (CHANNEL cannot)
+            if getattr(co_to, 'type', None) == ChatType.SUPERGROUP:
+                to_is_forum = getattr(co_to, "is_forum", False)
+        except Exception:
+            to_is_forum = False  # Safe default: don't prompt if we can't confirm
+
     if to_is_forum:
         to_topic_r = await bot.ask(user_id,
-            "<b>╭──────❰ 💬 Topic Thread — Destination ❱──────╮\n"
+            "<b>╭──────❰ 💬 ᴛᴏᴘɪᴄ ᴛʜʀᴇᴀᴅ — ᴅᴇsᴛɪɴᴀᴛɪᴏɴ ❱──────╮\n"
             "┃\n"
-            "┣⊸ Enter Thread ID to post into a specific topic\n"
-            "┣⊸ Send 0 to post in main chat (no topic)\n"
+            "┣⊸ sᴇɴᴅ ᴛʜʀᴇᴀᴅ ɪᴅ ᴛᴏ ᴘᴏsᴛ ɪɴᴛᴏ ᴀ ᴛᴏᴘɪᴄ\n"
+            "┣⊸ sᴇɴᴅ 0 ᴛᴏ ᴘᴏsᴛ ɪɴ ᴍᴀɪɴ ᴄʜᴀᴛ\n"
             "┃\n╰────────────────────────────────╯</b>",
-            reply_markup=ReplyKeyboardMarkup([["0 (No topic)"], ["/cancel"]], resize_keyboard=True, one_time_keyboard=True))
+            reply_markup=ReplyKeyboardMarkup([["0 (ɴᴏ ᴛᴏᴘɪᴄ)"], ["/cancel"]], resize_keyboard=True, one_time_keyboard=True))
         if "/cancel" in to_topic_r.text: return await to_topic_r.reply(_CANCEL_BOX, reply_markup=ReplyKeyboardRemove())
         _t = to_topic_r.text.strip()
         to_topic_id = int(_t) if _t.isdigit() and int(_t) > 0 else None
