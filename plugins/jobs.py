@@ -478,9 +478,18 @@ async def _get_latest_id(client, chat_id, is_bot: bool) -> int:
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Core runner
+
+async def resume_live_jobs(user_id: int = None):
+    from database import db
+    q = {"status": "running"}
+    if user_id: q["user_id"] = user_id
+    async for job in db.db["jobs"].find(q):
+        jid, uid = job["job_id"], job["user_id"]
+        if jid not in _job_tasks:
+            _start_job_task(jid, uid)
 # ══════════════════════════════════════════════════════════════════════════════
 
-BATCH_CHUNK = 200
+BATCH_CHUNK = 20
 
 _active_clients = {}
 _client_locks = {}
@@ -634,11 +643,11 @@ async def _run_job(job_id: str, user_id: int, _bot=None):
                             await asyncio.sleep(fw.value + 2); continue
                         except Exception as he:
                             logger.warning(f"[Job {job_id}] history fallback also failed @ {cur}: {he}")
-                    if not fetch_ok:
-                        cur += BATCH_CHUNK
                         await _update_job(job_id, batch_cursor=cur)
                         continue
-                except asyncio.CancelledError: raise
+                except asyncio.CancelledError:
+                    await _update_job(job_id, batch_cursor=cur)
+                    raise
                 except Exception as e:
                     logger.warning(f"[Job {job_id}] Batch fetch outer exception @ {cur}: {e}")
                     cur += BATCH_CHUNK; await _update_job(job_id, batch_cursor=cur); continue
@@ -660,8 +669,12 @@ async def _run_job(job_id: str, user_id: int, _bot=None):
                     ))
                 
                 if tasks:
-                    results = await asyncio.gather(*tasks, return_exceptions=True)
-                    for r in results:
+                    try:
+                        results = await asyncio.gather(*tasks, return_exceptions=True)
+                    except asyncio.CancelledError:
+                        await _update_job(job_id, batch_cursor=cur)
+                        raise
+                    for i, r in enumerate(results):
                         if isinstance(r, Exception):
                             logger.error(f"[Job {job_id}] Parallel error: {r}")
                             continue
@@ -669,6 +682,9 @@ async def _run_job(job_id: str, user_id: int, _bot=None):
                             import main
                             main.TOTAL_FILES_FWD += 1
                             fwd_n += 1
+                            # granular step
+                            if i < len(msgs):
+                                cur = msgs[i].id
                 
                 # Advance seen after processing block
                 if msgs: seen = max(seen, msgs[-1].id)

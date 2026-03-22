@@ -98,6 +98,8 @@ async def restart(client, message):
         "┃\n"
         "╰────────────────────────────────╯</b>"
     )
+    from main import sync_stats_now
+    await sync_stats_now()
     os.execl(sys.executable, sys.executable, *sys.argv)
 
 

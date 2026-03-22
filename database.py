@@ -243,11 +243,29 @@ class Database:
             return user.get('language', 'en')
         return 'en'
 
-    async def set_language(self, user_id: int, lang: str):
-        await self.col.update_one({'id': int(user_id)}, {'$set': {'language': lang}}, upsert=True)
-
     async def get_total_users_count(self) -> int:
         return await self.col.count_documents({})
+
+    async def get_bot_stats(self):
+        stats = await self.db["bot_stats"].find_one({"_id": "global_stats"})
+        if not stats:
+            stats = {
+                "_id": "global_stats",
+                "TOTAL_FILES_FWD": 0,
+                "TOTAL_DOWNLOADS": 0,
+                "TOTAL_UPLOADS": 0,
+                "TOTAL_BYTES_TRANSFERRED": 0,
+            }
+            await self.db["bot_stats"].insert_one(stats)
+        return stats
+
+    async def update_bot_stats(self, **kwargs):
+        if not kwargs: return
+        await self.db["bot_stats"].update_one(
+            {"_id": "global_stats"},
+            {"$inc": kwargs},
+            upsert=True
+        )
 
     async def get_active_forwardings_count(self) -> int:
         """Count users who are currently running a forwarding task."""

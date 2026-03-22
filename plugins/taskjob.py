@@ -396,10 +396,12 @@ async def _run_task_job(job_id: str, user_id: int, _bot=None):
                             # if no message after 'current', we are done
                             await _tj_update(job_id, status="done")
                             break
-                    except:
+                    except Exception:
                         current += BATCH_SIZE; await _tj_update(job_id, current_id=current)
                     continue
-            except asyncio.CancelledError: raise
+            except asyncio.CancelledError:
+                await _tj_update(job_id, current_id=current)
+                raise
             except Exception as e:
                 logger.warning(f"[TaskJob {job_id}] Fetch outer exception {current}: {e}")
                 current += BATCH_SIZE; await _tj_update(job_id, current_id=current); continue
@@ -446,8 +448,12 @@ async def _run_task_job(job_id: str, user_id: int, _bot=None):
                                        block_links=block_links, to_topic=to_topic))
             
             if tasks:
-                results = await asyncio.gather(*tasks, return_exceptions=True)
-                for r in results:
+                try:
+                    results = await asyncio.gather(*tasks, return_exceptions=True)
+                except asyncio.CancelledError:
+                    await _tj_update(job_id, current_id=current)
+                    raise
+                for i, r in enumerate(results):
                     if isinstance(r, Exception):
                         logger.error(f"[TaskJob {job_id}] Parallel error: {r}")
                         continue
