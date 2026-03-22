@@ -17,6 +17,23 @@ class Database:
         self.col = self.db.users
         self.nfy = self.db.notify
         self.chl = self.db.channels 
+    
+    async def ensure_indexes(self):
+        """Create MongoDB indices for fast user-specific queries.
+        Call once at bot startup. Safe to call on re-starts (no-ops if index exists)."""
+        # Users collection
+        await self.col.create_index("id", unique=True, background=True)
+        # Bots/accounts collection — queries always filter by user_id
+        await self.bot.create_index("user_id", background=True)
+        await self.bot.create_index("id", background=True)
+        # Channels collection
+        await self.chl.create_index("user_id", background=True)
+        # Live Jobs collection
+        await self.db.jobs.create_index("user_id", background=True)
+        await self.db.jobs.create_index("job_id", unique=True, background=True)
+        # Task Jobs collection
+        await self.db.taskjobs.create_index("user_id", background=True)
+        await self.db.taskjobs.create_index("task_id", unique=True, background=True)
         
     def new_user(self, id, name):
         return dict(

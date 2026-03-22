@@ -106,6 +106,15 @@ async def ping_server():
             logging.error(f"Self-ping failed: {e}")
 
 async def main():
+    # ── Startup cleanup — remove any leftover partial download files ─────────
+    import shutil
+    downloads_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "downloads")
+    if os.path.exists(downloads_dir):
+        shutil.rmtree(downloads_dir, ignore_errors=True)
+        logging.info("Cleared leftover downloads/ folder from previous session.")
+    os.makedirs(downloads_dir, exist_ok=True)
+    # ────────────────────────────────────────────────────────────────────────
+
     bot = Bot()
     await bot.start()
 

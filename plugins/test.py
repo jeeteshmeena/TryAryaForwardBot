@@ -115,8 +115,8 @@ async def start_clone_bot(FwdBot, data=None):
             # ── New to Old: binary-search for the actual top message ID ──────────
             # Starting from 9999999 and walking down causes ~50,000 API calls for
             # small channels. Binary search finds top_id in ≤23 calls.
-            lo, hi = 1, 9_999_999
-            for _ in range(25):  # log2(9_999_999) ≈ 23
+            lo, hi = 1, 19_999_999
+            for _ in range(25):  # log2(19_999_999) ≈ 24
                 if hi - lo <= BATCH_SIZE:
                     break
                 mid = (lo + hi) // 2
@@ -174,7 +174,7 @@ async def start_clone_bot(FwdBot, data=None):
         else:
             # ── Old to New: walk IDs from low to high ──
             current = max(1, offset if offset > 0 else 1)
-            to_check = 50  # Maximum empty batches before giving up (10000 messages gap)
+            to_check = 100  # Max empty batches before giving up (allows gaps of 20,000+ IDs)
 
             while True:
                 new_diff = BATCH_SIZE

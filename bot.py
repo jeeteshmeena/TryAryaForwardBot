@@ -42,6 +42,13 @@ class Bot(Client):
              logging.error("You have not set the DATABASE environment variable. The bot will not function correctly.")
              return
 
+        # Ensure MongoDB indices exist for fast queries
+        try:
+            await db.ensure_indexes()
+            logging.info("MongoDB indices verified/created successfully.")
+        except Exception as e:
+            logging.warning(f"Could not create MongoDB indices: {e}")
+
         try:
             success = failed = 0
             users = await db.get_all_frwd()

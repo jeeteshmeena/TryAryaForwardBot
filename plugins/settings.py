@@ -337,9 +337,10 @@ async def settings_query(bot, query):
         await update_configs(user_id, key, False)
      else:
         await update_configs(user_id, key, True)
-     if key in ['poll', 'protect', 'download', 'rm_caption']:
+     # These keys belong to the Extra Settings page — return to it after toggling
+     if key in ['poll', 'protect', 'download', 'rm_caption', 'links']:
         return await query.edit_message_reply_markup(
-           reply_markup=await next_filters_buttons(user_id)) 
+           reply_markup=await next_filters_buttons(user_id))
      await query.edit_message_reply_markup(
         reply_markup=await filters_buttons(user_id))
         
@@ -517,27 +518,27 @@ def size_button(size):
        InlineKeyboardButton('+1',
                     callback_data=f'settings#update_size-{size + 1}'),
        InlineKeyboardButton('-1',
-                    callback_data=f'settings#update_size_-{size - 1}')
+                    callback_data=f'settings#update_size-{max(0, size - 1)}')
        ],[
        InlineKeyboardButton('+5',
                     callback_data=f'settings#update_size-{size + 5}'),
        InlineKeyboardButton('-5',
-                    callback_data=f'settings#update_size_-{size - 5}')
+                    callback_data=f'settings#update_size-{max(0, size - 5)}')
        ],[
        InlineKeyboardButton('+10',
                     callback_data=f'settings#update_size-{size + 10}'),
        InlineKeyboardButton('-10',
-                    callback_data=f'settings#update_size_-{size - 10}')
+                    callback_data=f'settings#update_size-{max(0, size - 10)}')
        ],[
        InlineKeyboardButton('+50',
                     callback_data=f'settings#update_size-{size + 50}'),
        InlineKeyboardButton('-50',
-                    callback_data=f'settings#update_size_-{size - 50}')
+                    callback_data=f'settings#update_size-{max(0, size - 50)}')
        ],[
        InlineKeyboardButton('+100',
                     callback_data=f'settings#update_size-{size + 100}'),
        InlineKeyboardButton('-100',
-                    callback_data=f'settings#update_size_-{size - 100}')
+                    callback_data=f'settings#update_size-{max(0, size - 100)}')
        ],[
        InlineKeyboardButton('↩ Back',
                     callback_data="settings#main")

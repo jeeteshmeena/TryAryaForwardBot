@@ -174,6 +174,15 @@ async def update_bot(client, message):
 
 # ==================Callback Functions==================
 
+@Client.on_callback_query(filters.regex(r'^close_btn$'))
+async def close_btn_cb(bot, query):
+    """Dismiss / delete the message that contains this button."""
+    try:
+        await query.message.delete()
+    except Exception:
+        await query.answer()
+
+
 @Client.on_callback_query(filters.regex(r'^help'))
 async def helpcb(bot, query):
     user_id = query.from_user.id
