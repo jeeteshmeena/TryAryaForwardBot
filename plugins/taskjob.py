@@ -444,10 +444,17 @@ async def _run_task_job(job_id: str, user_id: int, _bot=None):
                 if not _passes_filters(msg, dis): continue
                 
                 from plugins.jobs import _fwd_safe
-                # Sequential call to _fwd_safe ensures order
-                r = await _fwd_safe(_send_one, client, msg, to_chat, rm_cap, cap_tpl, 
-                                     forward_tag=forward_tag, from_chat=fc, 
-                                     block_links=block_links, to_topic=to_topic)
+                # CRITICAL FIX: Wrap every individual message send in try/except.
+                # If a single file fails (e.g. 1GB file timeout, API error),
+                # it is logged and skipped, but the entire job continues without stopping.
+                try:
+                    r = await _fwd_safe(_send_one, client, msg, to_chat, rm_cap, cap_tpl, 
+                                         forward_tag=forward_tag, from_chat=fc, 
+                                         block_links=block_links, to_topic=to_topic)
+                except Exception as send_err:
+                    logger.warning(f"[TaskJob {job_id}] Failed to send msg {msg.id}: {send_err} — continuing with next message")
+                    r = False
+                    
                 if r is True:
                     fwd += 1
                     main.TOTAL_FILES_FWD += 1
@@ -820,6 +827,11 @@ async def _create_taskjob_flow(bot, user_id: int):
     source_is_forum, co = await _chat_is_forum(bot, fc)
     ftitle = getattr(co, "title", None) or str(fc) if co else str(fc)
 
+    # If auto-detect failed (bot can't see private group) but it's a -100 ID,
+    # still show topic option — user can enter 0 to skip it
+    if not source_is_forum and str(fc).startswith('-100') and co is None:
+        source_is_forum = True
+
     if await db.is_protected(raw, co):
         return await bot.send_message(user_id,
             "<b>╭──────❰ ⚠️ Pʀᴏᴛᴇᴄᴛɪᴏɴ Eʀʀᴏʀ ❱──────╮\n"
@@ -831,12 +843,12 @@ async def _create_taskjob_flow(bot, user_id: int):
     from_topic_id = None
     if source_is_forum:
         src_topic_r = await bot.ask(user_id,
-            "<b>╭──────❰ 📋 sᴛᴇᴘ 2b — sᴏᴜʀᴄᴇ ᴛᴏᴘɪᴄ ❱──────╮\n"
+            "<b>╭──────❰ 📋 Step 2b — Source Topic ❱──────╮\n"
             "┃\n"
-            "┣⊸ ɪғ sᴏᴜʀᴄᴇ ɪs ᴀ ɢʀᴏᴜᴘ ᴡɪᴛʜ ᴛᴏᴘɪᴄs, ᴇɴᴛᴇʀ ᴛʜᴇ ᴛᴏᴘɪᴄ ɪᴅ\n"
-            "┣⊸ sᴇɴᴅ 0 ᴛᴏ ғᴏʀᴡᴀʀᴅ ᴀʟʟ ᴍᴇssᴀɢᴇs (ɴᴏ ᴛᴏᴘɪᴄ ғɪʟᴛᴇʀ)\n"
+            "┣⊸ Enter Topic ID to read from a specific topic\n"
+            "┣⊸ Send 0 to read all messages (no topic filter)\n"
             "┃\n╰────────────────────────────────╯</b>",
-            reply_markup=ReplyKeyboardMarkup([["0 (ɴᴏ ᴛᴏᴘɪᴄ ғɪʟᴛᴇʀ)"], ["/cancel"]], resize_keyboard=True, one_time_keyboard=True))
+            reply_markup=ReplyKeyboardMarkup([["0 (No topic filter)"], ["/cancel"]], resize_keyboard=True, one_time_keyboard=True))
         if "/cancel" in src_topic_r.text:
             return await src_topic_r.reply(_CANCEL_BOX, reply_markup=ReplyKeyboardRemove())
         _st_raw = src_topic_r.text.strip()
@@ -898,16 +910,20 @@ async def _create_taskjob_flow(bot, user_id: int):
 
     to_is_forum = False
     to_is_forum, co_to = await _chat_is_forum(bot, to_chat)
+    # If auto-detect failed (private group) but the stored ID is a supergroup (-100),
+    # still offer the topic option so the user can enter a thread ID if needed
+    if not to_is_forum and str(to_chat).startswith('-100') and co_to is None:
+        to_is_forum = True
 
     to_topic_id = None
     if to_is_forum:
         to_topic_r = await bot.ask(user_id,
-            "<b>╭──────❰ 💬 ᴛᴏᴘɪᴄ ᴛʜʀᴇᴀᴅ — ᴅᴇsᴛɪɴᴀᴛɪᴏɴ ❱──────╮\n"
+            "<b>╭──────❰ 💬 Topic Thread — Destination ❱──────╮\n"
             "┃\n"
-            "┣⊸ sᴇɴᴅ ᴛʜʀᴇᴀᴅ ɪᴅ ᴛᴏ ᴘᴏsᴛ ɪɴᴛᴏ ᴀ ᴛᴏᴘɪᴄ\n"
-            "┣⊸ sᴇɴᴅ 0 ᴛᴏ ᴘᴏsᴛ ɪɴ ᴍᴀɪɴ ᴄʜᴀᴛ\n"
+            "┣⊸ Enter Thread ID to post into a specific topic\n"
+            "┣⊸ Send 0 to post in main chat (no topic)\n"
             "┃\n╰────────────────────────────────╯</b>",
-            reply_markup=ReplyKeyboardMarkup([["0 (ɴᴏ ᴛᴏᴘɪᴄ)"], ["/cancel"]], resize_keyboard=True, one_time_keyboard=True))
+            reply_markup=ReplyKeyboardMarkup([["0 (No topic)"], ["/cancel"]], resize_keyboard=True, one_time_keyboard=True))
         if "/cancel" in to_topic_r.text: return await to_topic_r.reply(_CANCEL_BOX, reply_markup=ReplyKeyboardRemove())
         _t = to_topic_r.text.strip()
         to_topic_id = int(_t) if _t.isdigit() and int(_t) > 0 else None

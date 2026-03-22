@@ -1130,10 +1130,16 @@ async def _create_job_flow(bot, uid: int):
             return await src_r.reply(
                 "<b>❌ sᴀᴠᴇᴅ ᴍᴇssᴀɢᴇs ʀᴇqᴜɪʀᴇs ᴀ ᴜsᴇʀʙᴏᴛ ᴀᴄᴄᴏᴜɴᴛ.</b>")
         fc, ftitle = "me", "sᴀᴠᴇᴅ ᴍᴇssᴀɢᴇs"
+        source_is_forum = False
     else:
         fc = int(raw) if raw.lstrip('-').isdigit() else raw
         source_is_forum, co = await _chat_is_forum(bot, fc)
         ftitle = getattr(co, "title", None) or getattr(co, "first_name", str(fc)) if co else str(fc)
+
+        # If auto-detect failed (bot can't see private group) but it's a -100 ID,
+        # still show topic option — user can enter 0 to skip it
+        if not source_is_forum and str(fc).startswith('-100') and co is None:
+            source_is_forum = True
 
         if await db.is_protected(raw, co):
             return await bot.send_message(uid,
@@ -1143,17 +1149,17 @@ async def _create_job_flow(bot, uid: int):
                 "┃\n╰────────────────────────────────╯</b>",
                 reply_markup=ReplyKeyboardRemove())
 
-    # Step 2b — Source Topic (optional, only for forum groups)
+    # Step 2b — Source Topic (optional, only for supergroups)
     from_topic_id = None
     if source_is_forum:
         src_topic_r = await bot.ask(uid,
             "<b>╭──────❰ 📋 sᴛᴇᴘ 2b — sᴏᴜʀᴄᴇ ᴛᴏᴘɪᴄ ❱──────╮\n"
             "┃\n"
-            "┣⊸ ɪғ sᴏᴜʀᴄᴇ ɪs ᴀ ɢʀᴏᴜᴘ ᴡɪᴛʜ ᴛᴏᴘɪᴄs, ᴇɴᴛᴇʀ ᴛʜᴇ ᴛᴏᴘɪᴄ ɪᴅ\n"
-            "┣⊸ sᴇɴᴅ 0 ᴛᴏ ғᴏʀᴡᴀʀᴅ ᴀʟʟ ᴍᴇssᴀɢᴇs (ɴᴏ ᴛᴏᴘɪᴄ ғɪʟᴛᴇʀ)\n"
+            "┣⊸ Enter Topic ID to read from a specific topic\n"
+            "┣⊸ Send 0 to read all messages (no topic filter)\n"
             "┃\n╰────────────────────────────────╯</b>",
             reply_markup=ReplyKeyboardMarkup(
-                [[KeyboardButton("0 (ɴᴏ ᴛᴏᴘɪᴄ ғɪʟᴛᴇʀ)")], [KeyboardButton("/cancel")]],
+                [[KeyboardButton("0 (No topic filter)")], [KeyboardButton("/cancel")]],
                 resize_keyboard=True, one_time_keyboard=True))
         if "/cancel" in src_topic_r.text:
             return await src_topic_r.reply(
@@ -1177,8 +1183,12 @@ async def _create_job_flow(bot, uid: int):
 
     th1 = None
     to1_is_forum, co1 = await _chat_is_forum(bot, to1)
+    # If auto-detect failed (private group) but the stored ID is a supergroup (-100),
+    # still offer the topic option so the user can enter a thread ID if needed
+    if not to1_is_forum and str(to1).startswith('-100') and co1 is None:
+        to1_is_forum = True
     if to1_is_forum:
-        th1 = await _pick_topic(bot, uid, "ᴅᴇsᴛ 1")
+        th1 = await _pick_topic(bot, uid, "Dest 1")
 
     # Step 4 — Dest 2
     to2, ttl2, cancelled2 = await _pick_channel(bot, uid, channels,
@@ -1192,8 +1202,11 @@ async def _create_job_flow(bot, uid: int):
     th2 = None
     if to2:
         to2_is_forum, co2 = await _chat_is_forum(bot, to2)
+        if not to2_is_forum and str(to2).startswith('-100') and co2 is None:
+            to2_is_forum = True
         if to2_is_forum:
-            th2 = await _pick_topic(bot, uid, "ᴅᴇsᴛ 2")
+            th2 = await _pick_topic(bot, uid, "Dest 2")
+
 
     # Step 5 — Batch mode
     batch_r = await bot.ask(uid,
