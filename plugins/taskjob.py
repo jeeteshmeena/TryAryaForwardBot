@@ -985,7 +985,7 @@ async def _create_taskjob_flow(bot, user_id: int):
 
     job_id = f"tj-{user_id}-{int(time.time())}"
     job = {
-        "job_id": job_id, "user_id": user_id, "account_id": sel["id"],
+        "job_id": job_id, "user_id": user_id, "account_id": sel.get("id"),
         "from_chat": fc, "from_title": ftitle, "from_topic_id": from_topic_id,
         "to_chat": to_chat, "to_title": to_title, "to_topic_id": to_topic_id,
         "start_id": start_id, "end_id": end_id, "current_id": start_id,
@@ -994,7 +994,12 @@ async def _create_taskjob_flow(bot, user_id: int):
         "custom_name": cname,
         "scheduled": False
     }
+    
     await _tj_save(job)
+
+    # Clear lingering keyboard from step 5
+    clr = await bot.send_message(user_id, "<i>Pʀᴏᴄᴇssɪɴɢ...</i>", reply_markup=ReplyKeyboardRemove())
+    await clr.delete()
 
     # Step 6 — Scheduler
     await bot.send_message(user_id,
