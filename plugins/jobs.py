@@ -1135,34 +1135,12 @@ async def _create_job_flow(bot, uid: int):
         fc, ftitle = "me", "sᴀᴠᴇᴅ ᴍᴇssᴀɢᴇs"
     else:
         fc = int(raw) if raw.lstrip('-').isdigit() else raw
-        source_is_forum = False
         try:
-            co     = await bot.get_chat(fc)
+            co = await bot.get_chat(fc)
             ftitle = getattr(co, "title", None) or getattr(co, "first_name", str(fc))
-            from pyrogram.enums import ChatType
-            if getattr(co, 'type', None) == ChatType.SUPERGROUP:
-                source_is_forum = True
-            else:
-                source_is_forum = getattr(co, "is_forum", False)
         except Exception:
-            # Fallback for private chats the UI bot isn't in: use the userbot to resolve accurately!
-            source_is_forum = False
-            if str(fc).startswith('-100'):
-                try:
-                    ubot = await _get_shared_client(sel)
-                    co_u = await ubot.get_chat(fc)
-                    from pyrogram.enums import ChatType
-                    if getattr(co_u, 'type', None) == ChatType.SUPERGROUP:
-                        source_is_forum = True
-                    co = co_u
-                    ftitle = getattr(co, "title", None) or str(fc)
-                    await _release_shared_client(sel)
-                except Exception:
-                    source_is_forum = True
-                    await _release_shared_client(sel)
-            if not co:
-                co = None
-                ftitle = str(fc)
+            co = None
+            ftitle = str(fc)
 
         if await db.is_protected(raw, co):
             return await bot.send_message(uid,
@@ -1174,7 +1152,7 @@ async def _create_job_flow(bot, uid: int):
 
     # Step 2b — Source Topic (optional, only for forum groups)
     from_topic_id = None
-    if source_is_forum:
+    if str(fc) != "me":
         src_topic_r = await bot.ask(uid,
             "<b>╭──────❰ 📋 sᴛᴇᴘ 2b — sᴏᴜʀᴄᴇ ᴛᴏᴘɪᴄ ❱──────╮\n"
             "┃\n"
@@ -1205,26 +1183,7 @@ async def _create_job_flow(bot, uid: int):
     if cancelled or not to1: return
 
     th1 = None
-    to1_is_forum = False
-    if to1 and str(to1).startswith('-100'):
-        try:
-            co1 = await bot.get_chat(to1)
-            from pyrogram.enums import ChatType
-            if getattr(co1, 'type', None) == ChatType.SUPERGROUP:
-                to1_is_forum = True
-        except Exception:
-            try:
-                ubot = await _get_shared_client(sel)
-                co1_u = await ubot.get_chat(to1)
-                from pyrogram.enums import ChatType
-                if getattr(co1_u, 'type', None) == ChatType.SUPERGROUP:
-                    to1_is_forum = True
-                await _release_shared_client(sel)
-            except Exception:
-                to1_is_forum = True
-                await _release_shared_client(sel)
-
-    if to1_is_forum:
+    if to1:
         th1 = await _pick_topic(bot, uid, "ᴅᴇsᴛ 1")
 
     # Step 4 — Dest 2
@@ -1238,27 +1197,7 @@ async def _create_job_flow(bot, uid: int):
 
     th2 = None
     if to2:
-        to2_is_forum = False
-        if str(to2).startswith('-100'):
-            try:
-                co2 = await bot.get_chat(to2)
-                from pyrogram.enums import ChatType
-                if getattr(co2, 'type', None) == ChatType.SUPERGROUP:
-                    to2_is_forum = True
-            except Exception:
-                try:
-                    ubot = await _get_shared_client(sel)
-                    co2_u = await ubot.get_chat(to2)
-                    from pyrogram.enums import ChatType
-                    if getattr(co2_u, 'type', None) == ChatType.SUPERGROUP:
-                        to2_is_forum = True
-                    await _release_shared_client(sel)
-                except Exception:
-                    to2_is_forum = True
-                    await _release_shared_client(sel)
-        
-        if to2_is_forum:
-            th2 = await _pick_topic(bot, uid, "ᴅᴇsᴛ 2")
+        th2 = await _pick_topic(bot, uid, "ᴅᴇsᴛ 2")
 
     # Step 5 — Batch mode
     batch_r = await bot.ask(uid,

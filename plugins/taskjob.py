@@ -824,34 +824,11 @@ async def _create_taskjob_flow(bot, user_id: int):
     else: fc = raw
 
     try:
-        co     = await bot.get_chat(fc)
+        co = await bot.get_chat(fc)
         ftitle = getattr(co, "title", None) or str(fc)
-        from pyrogram.enums import ChatType
-        if getattr(co, 'type', None) == ChatType.SUPERGROUP:
-            source_is_forum = True
-        else:
-            source_is_forum = getattr(co, "is_forum", False)
     except Exception:
-        source_is_forum = False
-        if str(fc).startswith('-100'):
-            try:
-                from plugins.jobs import _get_shared_client, _release_shared_client
-                ubot = await _get_shared_client(sel)
-                co_u = await ubot.get_chat(fc)
-                from pyrogram.enums import ChatType
-                if getattr(co_u, 'type', None) == ChatType.SUPERGROUP:
-                    source_is_forum = True
-                co = co_u
-                ftitle = getattr(co, "title", None) or str(fc)
-                await _release_shared_client(sel)
-            except Exception:
-                source_is_forum = True
-                try:
-                    await _release_shared_client(sel)
-                except Exception: pass
-        if not co:
-            co = None
-            ftitle = str(fc)
+        co = None
+        ftitle = str(fc)
 
     if await db.is_protected(raw, co):
         return await bot.send_message(user_id,
@@ -862,7 +839,7 @@ async def _create_taskjob_flow(bot, user_id: int):
             reply_markup=ReplyKeyboardRemove())
 
     from_topic_id = None
-    if source_is_forum:
+    if str(fc) != "me":
         src_topic_r = await bot.ask(user_id,
             "<b>╭──────❰ 📋 sᴛᴇᴘ 2b — sᴏᴜʀᴄᴇ ᴛᴏᴘɪᴄ ❱──────╮\n"
             "┃\n"
@@ -930,29 +907,7 @@ async def _create_taskjob_flow(bot, user_id: int):
             "<b>❌ ɪɴᴠᴀʟɪᴅ sᴇʟᴇᴄᴛɪᴏɴ.</b>", reply_markup=ReplyKeyboardRemove())
 
     to_topic_id = None
-    to_is_forum = False
-    if to_chat and str(to_chat).startswith('-100'):
-        try:
-            co_to = await bot.get_chat(to_chat)
-            from pyrogram.enums import ChatType
-            if getattr(co_to, 'type', None) == ChatType.SUPERGROUP:
-                to_is_forum = True
-        except Exception:
-            try:
-                from plugins.jobs import _get_shared_client, _release_shared_client
-                ubot = await _get_shared_client(sel)
-                co_to_u = await ubot.get_chat(to_chat)
-                from pyrogram.enums import ChatType
-                if getattr(co_to_u, 'type', None) == ChatType.SUPERGROUP:
-                    to_is_forum = True
-                await _release_shared_client(sel)
-            except Exception:
-                to_is_forum = True
-                try:
-                    await _release_shared_client(sel)
-                except Exception: pass
-
-    if to_is_forum:
+    if to_chat:
         to_topic_r = await bot.ask(user_id,
             "<b>╭──────❰ 💬 ᴛᴏᴘɪᴄ ᴛʜʀᴇᴀᴅ — ᴅᴇsᴛɪɴᴀᴛɪᴏɴ ❱──────╮\n"
             "┃\n"
