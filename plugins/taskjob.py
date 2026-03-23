@@ -975,7 +975,7 @@ async def _create_taskjob_flow(bot, user_id: int):
         f"┣⊸ ◈ 𝐀𝐜𝐜𝐨𝐮𝐧𝐭 : {'🤖 ʙᴏᴛ' if ibot else '👤 ᴜsᴇʀʙᴏᴛ'} {sel.get('name','?')}\n"
         f"┣⊸ ◈ 𝐑𝐚𝐧𝐠𝐞   : <code>{start_id}</code> → {end_lbl}\n"
         f"┣⊸ ◈ sᴛᴀᴛᴜs  : {initial_status.upper()}\n"
-        f"┣⊸ ◈ 𝐉𝐨𝐛 𝐈𝐃  : <code>{job_id[-6:]}</code>" + (f" (<b>{cname_safe}</b>)\n" if cname_safe else "\n")
+        f"┣⊸ ◈ 𝐉𝐨𝐛 𝐈𝐃  : <code>{job_id[-6:]}</code>" + (f" (<b>{cname_safe}</b>)\n" if cname_safe else "\n") +
         f"┃\n╰────────────────────────────────╯</b>"
     )
 
