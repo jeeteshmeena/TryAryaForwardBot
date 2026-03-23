@@ -35,8 +35,8 @@ _ch_queue:  dict = {}
 
 COLL = "batchjobs"
 
-# Batch download semaphore
-_DOWNLOAD_SEM = asyncio.Semaphore(2)
+# Batch download semaphore — Oracle VPS has plenty of bandwidth
+_DOWNLOAD_SEM = asyncio.Semaphore(6)
 
 # ── Unicode helpers ────────────────────────────────────────────────────────────
 def _st(status: str) -> str:
@@ -77,23 +77,50 @@ async def _tj_notify(bot, job: dict, phase: str = ""):
     job_id = job["job_id"]
     st     = _st(job.get("status", "running"))
     fwd    = job.get("forwarded", 0)
-    cur    = job.get("current_id", "?")
+    cur    = job.get("current_id", 0)
     end    = job.get("end_id", 0)
+    start  = job.get("start_id", 1)
     cname  = job.get("custom_name", "")
-    name_p = f" <b>{cname}</b>" if cname else ""
-    rng_p  = f"<code>{job.get('start_id',1)}</code> → <code>{end}</code>" if end else f"<code>{job.get('start_id',1)}</code> → ∞"
-    err_p  = f"\n┣⊸ ⚠️ <code>{job['error']}</code>" if job.get("error") else ""
-    phase_p = f"\n  • <b>Phase:</b> <code>{phase}</code>" if phase else ""
+    name_p = f"  <b>{cname}</b>" if cname else ""
+
+    # Progress bar
+    if end and end > start:
+        pct = min(100, max(0, int((cur - start) / (end - start) * 100)))
+        filled = pct // 5
+        bar = "█" * filled + "░" * (20 - filled)
+        pct_str = f"{pct}%"
+    else:
+        bar = "░" * 20
+        pct_str = "—"
+
+    # Speed from tracker
+    try:
+        snap = _tracker.snapshot()
+        spd = snap["dl_speed"] + snap["ul_speed"]
+        spd_str = f"{spd:.2f} MB/s" if spd > 0.01 else "—"
+    except Exception:
+        spd_str = "—"
+
+    err_p = f"\n<b>┣⊸ ⚠️  ᴇʀʀᴏʀ :</b>  <code>{job['error'][:80]}</code>" if job.get("error") else ""
+
     text = (
-        f"<b>Batch Job Progress</b>\n\n"
-        f"  • <b>ID:</b> <code>{job_id[-6:]}</code>{name_p}\n"
-        f"  • <b>Status:</b> {st} {job.get('status','running')}\n"
-        f"  • <b>Source:</b> {job.get('from_title','?')}\n"
-        f"  • <b>Target:</b> {job.get('to_title','?')}\n\n"
-        f"  • <b>Range:</b> {rng_p}\n"
-        f"  • <b>Current:</b> <code>{cur}</code>\n"
-        f"  • <b>Forwarded:</b> <code>{fwd}</code>"
-        f"{phase_p}{err_p}"
+        f"<b>╭━━━━━━❰ 🚀 𝗕𝗔𝗧𝗖𝗛  𝗝𝗢𝗕 ❱━━━━━━╮</b>\n"
+        f"<b>┃</b>\n"
+        f"<b>┣⊸ 🆔 ᴊᴏʙ :</b>  <code>{job_id[-6:]}</code>{name_p}\n"
+        f"<b>┣⊸</b>  {st}  <b>{job.get('status','running').upper()}</b>\n"
+        f"<b>┃</b>\n"
+        f"<b>┣⊸ 📤 sᴏᴜʀᴄᴇ  :</b>  {job.get('from_title','?')}\n"
+        f"<b>┣⊸ 📥 ᴛᴀʀɢᴇᴛ  :</b>  {job.get('to_title','?')}\n"
+        f"<b>┃</b>\n"
+        f"<b>┣⊸ 📊 ʀᴀɴɢᴇ   :</b>  <code>{start}</code> → <code>{end or '∞'}</code>\n"
+        f"<b>┣⊸ 📍 ᴄᴜʀʀᴇɴᴛ :</b>  <code>{cur}</code>\n"
+        f"<b>┣⊸ ✅ sᴇɴᴛ     :</b>  <code>{fwd:,}</code>\n"
+        f"<b>┣⊸ ⚡ sᴘᴇᴇᴅ    :</b>  <code>{spd_str}</code>\n"
+        f"<b>┃</b>\n"
+        f"<b>┣⊸</b>  <code>{bar}</code>  <b>{pct_str}</b>\n"
+        f"{err_p}"
+        f"<b>┃</b>\n"
+        f"<b>╰━━━━━━━━━━━━━━━━━━━━━━━━━━╯</b>"
     )
     key = (uid, job_id)
     try:
@@ -233,6 +260,7 @@ async def _send_one(client, msg, to_chat: int, remove_caption: bool, caption_tpl
                 file_size = os.path.getsize(fp) if fp and os.path.exists(fp) else 0
                 _tracker.add_download_bytes(file_size)
                 import main; main.TOTAL_DOWNLOADS += 1; main.TOTAL_BYTES_TRANSFERRED += file_size
+                _tracker.start_upload()
                 kw = {"chat_id": to_chat,
                       "caption": caption if caption is not None else (str(msg.caption) if msg.caption else "")}
                 if to_topic: kw["message_thread_id"] = kw["reply_to_message_id"] = to_topic
@@ -355,7 +383,7 @@ def _queue_or_start(job_id: str, user_id: int, to_chat: int, _bot=None):
 # Core runner
 # ══════════════════════════════════════════════════════════════════════════════
 
-BATCH_SIZE = 200
+BATCH_SIZE = 500
 
 async def _run_task_job(job_id: str, user_id: int, _bot=None):
     job = await _tj_get(job_id)
@@ -486,13 +514,14 @@ async def _run_task_job(job_id: str, user_id: int, _bot=None):
 
             # Auto notify every 60s
             _now = int(time.time())
-            if _bot and _now - last_notify >= 60:
+            if _bot and _now - last_notify >= 30:
                 _fresh_j = await _tj_get(job_id)
                 if _fresh_j:
                     await _tj_notify(_bot, _fresh_j, "ʀᴜɴɴɪɴɢ")
                 last_notify = _now
 
             fwd = 0
+            msg_count = 0
             for msg in valid:
                 if from_topic:
                     tid = getattr(msg, 'message_thread_id',
@@ -502,15 +531,17 @@ async def _run_task_job(job_id: str, user_id: int, _bot=None):
                         continue
 
                 await pause_ev.wait()
-                f2 = await _tj_get(job_id)
-                if not f2 or f2.get("status") in ("stopped",): return
+                # Check DB status every 20 messages instead of every message
+                msg_count += 1
+                if msg_count % 20 == 0:
+                    f2 = await _tj_get(job_id)
+                    if not f2 or f2.get("status") in ("stopped",): return
                 if not _passes_filters(msg, dis): continue
                 ok = await _send_one(client, msg, to_chat, rm_cap, cap_tpl,
                                      forward_tag=forward_tag, from_chat=fc,
                                      block_links=block_links, to_topic=to_topic)
                 if ok: fwd += 1; await _tj_inc(job_id)
                 if slp: await asyncio.sleep(slp)
-                else:   await asyncio.sleep(0)
 
             current = (valid[-1].id + 1) if valid else (current + BATCH_SIZE)
             await _tj_update(job_id, current_id=current)

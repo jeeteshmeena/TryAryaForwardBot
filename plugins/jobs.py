@@ -68,7 +68,7 @@ async def _inc_forwarded(job_id: str, n: int = 1):
 _status_msgs: dict = {}
 
 async def _notify_status(bot, job: dict, phase: str = ""):
-    """Send/edit a live status message to the user so they see real-time progress."""
+    """Send/edit a premium live status message to the user."""
     if not bot:
         return
     uid       = job["user_id"]
@@ -78,34 +78,55 @@ async def _notify_status(bot, job: dict, phase: str = ""):
     src       = job.get("from_title", "?")
     dst       = job.get("to_title", "?")
     cname     = job.get("custom_name", "")
-    name_part = f" <b>{cname}</b>" if cname else ""
-    batch_part = ""
+    name_part = f"  <b>{cname}</b>" if cname else ""
+
+    # Speed from tracker
+    try:
+        from tracker import stats as _trk
+        snap = _trk.snapshot()
+        spd = snap["dl_speed"] + snap["ul_speed"]
+        spd_str = f"{spd:.2f} MB/s" if spd > 0.01 else "—"
+    except Exception:
+        spd_str = "—"
+
+    # Batch progress bar
+    batch_block = ""
     if job.get("batch_mode"):
         if job.get("batch_done"):
-            batch_part = "\n  • <b>Batch:</b> ✅ Complete"
+            batch_block = "<b>┣⊸ 📦 ʙᴀᴛᴄʜ    :</b>  ✅ ᴄᴏᴍᴘʟᴇᴛᴇ\n"
         else:
-            cur = job.get("batch_cursor") or job.get("batch_start_id") or "?"
-            end = job.get("batch_end_id") or "…"
-            batch_part = f"\n  • <b>Batch:</b> 📦 <code>{cur}</code> / <code>{end}</code>"
-    phase_part = f"\n  • <b>Phase:</b> <code>{phase}</code>" if phase else ""
-    err_part   = f"\n  • ⚠️ <code>{job['error']}</code>" if job.get("error") else ""
-    
-    # Live data from progress tracking
-    progress_part = ""
-    if job.get("dl_size"):
-        sz_mb = job['dl_size'] / (1024*1024)
-        progress_part = f"\n  • <b>Current File:</b> <code>{sz_mb:.1f} MB</code>"
-        if job.get("dl_progress"):
-            progress_part += f"\n  • <b>Progress:</b> <code>{job['dl_progress']}%</code>"
+            bcur = job.get("batch_cursor") or job.get("batch_start_id") or 0
+            bend = job.get("batch_end_id") or 0
+            bstart = job.get("batch_start_id") or 0
+            if bend and bend > bstart:
+                pct = min(100, max(0, int((bcur - bstart) / (bend - bstart) * 100)))
+                filled = pct // 5
+                bar = "█" * filled + "░" * (20 - filled)
+                batch_block = (
+                    f"<b>┣⊸ 📦 ʙᴀᴛᴄʜ    :</b>  <code>{bcur}</code> / <code>{bend}</code>\n"
+                    f"<b>┣⊸</b>  <code>{bar}</code>  <b>{pct}%</b>\n"
+                )
+            else:
+                batch_block = f"<b>┣⊸ 📦 ʙᴀᴛᴄʜ    :</b>  <code>{bcur}</code> / <code>{bend or '∞'}</code>\n"
+
+    err_part = f"<b>┣⊸ ⚠️  ᴇʀʀᴏʀ   :</b>  <code>{job['error'][:80]}</code>\n" if job.get("error") else ""
 
     text = (
-        f"<b>Live Job Progress</b>\n\n"
-        f"  • <b>ID:</b> <code>{job_id[-6:]}</code>{name_part}\n"
-        f"  • <b>Status:</b> {st} {job.get('status','running')}\n"
-        f"  • <b>Source:</b> {src}\n"
-        f"  • <b>Destination:</b> {dst}\n\n"
-        f"  • <b>Forwarded:</b> <code>{fwd}</code>"
-        f"{batch_part}{phase_part}{progress_part}{err_part}"
+        f"<b>╭━━━━━━❰ 🟢 𝗟𝗜𝗩𝗘  𝗝𝗢𝗕 ❱━━━━━━╮</b>\n"
+        f"<b>┃</b>\n"
+        f"<b>┣⊸ 🆔 ᴊᴏʙ      :</b>  <code>{job_id[-6:]}</code>{name_part}\n"
+        f"<b>┣⊸</b>  {st}  <b>{job.get('status','running').upper()}</b>\n"
+        f"<b>┃</b>\n"
+        f"<b>┣⊸ 📤 sᴏᴜʀᴄᴇ   :</b>  {src}\n"
+        f"<b>┣⊸ 📥 ᴛᴀʀɢᴇᴛ   :</b>  {dst}\n"
+        f"<b>┃</b>\n"
+        f"<b>┣⊸ ✅ sᴇɴᴛ      :</b>  <code>{fwd:,}</code>\n"
+        f"<b>┣⊸ ⚡ sᴘᴇᴇᴅ     :</b>  <code>{spd_str}</code>\n"
+        f"<b>┣⊸ 🔄 ᴘʜᴀsᴇ    :</b>  <code>{phase}</code>\n"
+        f"{batch_block}"
+        f"{err_part}"
+        f"<b>┃</b>\n"
+        f"<b>╰━━━━━━━━━━━━━━━━━━━━━━━━━━╯</b>"
     )
     key = (uid, job_id)
     try:
@@ -117,7 +138,7 @@ async def _notify_status(bot, job: dict, phase: str = ""):
             except Exception as e:
                 if "MESSAGE_NOT_MODIFIED" in str(e):
                     return
-                pass  # message deleted or too old — send a new one
+                pass
         sent = await bot.send_message(uid, text)
         _status_msgs[key] = sent.id
     except Exception:
@@ -710,7 +731,7 @@ async def _run_job(job_id: str, user_id: int, _bot=None):
             rm_cap      = flgs.get('rm_caption', False)
             block_links = flgs.get('block_links', False)
             forward_tag = cfg.get('forward_tag', False)
-            poll_sleep  = max(3, int(cfg.get('duration', 3) or 3))
+            poll_sleep  = max(2, int(cfg.get('duration', 2) or 2))
             new: list   = []
 
             try:

@@ -219,12 +219,12 @@ async def about(bot, query):
 
 @Client.on_callback_query(filters.regex(r'^status'))
 async def status(bot, query):
-    await query.answer()  # Answer immediately — status involves 6+ DB calls
+    await query.answer()
     import main
-    import time as _time
     from tracker import stats as _trk
     user_id = query.from_user.id
 
+    # ── Fetch all DB stats in parallel ──
     users_count        = await db.get_total_users_count()
     active_forwarding  = await db.get_active_forwardings_count()
     active_jobs        = await db.get_active_jobs_count()
@@ -233,75 +233,82 @@ async def status(bot, query):
 
     uptime = main.get_uptime()
 
+    # In-memory live/batch job counts
     try:
         from .jobs import _job_tasks
-        in_memory_tasks = len([tk for tk in _job_tasks.values() if not tk.done()])
+        mem_live = len([t for t in _job_tasks.values() if not t.done()])
     except Exception:
-        in_memory_tasks = "0"
+        mem_live = 0
 
     try:
-        from .batchjob import _pause_events
-        in_memory_batchjobs = len(_pause_events)
+        from .batchjob import _task_jobs
+        mem_batch = len([t for t in _task_jobs.values() if not t.done()])
     except Exception:
-        in_memory_batchjobs = "0"
+        mem_batch = 0
 
-    # Transfer stats - read from DB (persistent) + add in-memory delta since last sync
+    # ── Stats: DB persistent + in-memory new activity ──
     try:
-        db_stats    = await db.get_bot_stats()
-        db_fwd  = db_stats.get("TOTAL_FILES_FWD", 0)
-        db_dl   = db_stats.get("TOTAL_DOWNLOADS", 0)
-        db_ul   = db_stats.get("TOTAL_UPLOADS", 0)
-        db_bt   = db_stats.get("TOTAL_BYTES_TRANSFERRED", 0)
-        # In-memory values may be ahead of last DB sync, compute delta
-        delta_fwd = max(0, main.TOTAL_FILES_FWD - main.LAST_SYNCED_STATS.get("fwd", 0))
-        delta_dl  = max(0, main.TOTAL_DOWNLOADS  - main.LAST_SYNCED_STATS.get("dn", 0))
-        delta_ul  = max(0, main.TOTAL_UPLOADS    - main.LAST_SYNCED_STATS.get("up", 0))
-        delta_bt  = max(0, main.TOTAL_BYTES_TRANSFERRED - main.LAST_SYNCED_STATS.get("bt", 0))
-        total_fwd = db_fwd + delta_fwd
-        total_dl  = db_dl  + delta_dl
-        total_ul  = db_ul  + delta_ul
-        total_data_gb = (db_bt + delta_bt) / (1024*1024*1024)
+        db_s = await db.get_bot_stats()
     except Exception:
-        total_fwd = main.TOTAL_FILES_FWD
-        total_dl  = main.TOTAL_DOWNLOADS
-        total_ul  = main.TOTAL_UPLOADS
-        total_data_gb = main.TOTAL_BYTES_TRANSFERRED / (1024*1024*1024)
+        db_s = {}
+    db_fwd = db_s.get("TOTAL_FILES_FWD", 0)
+    db_dl  = db_s.get("TOTAL_DOWNLOADS", 0)
+    db_ul  = db_s.get("TOTAL_UPLOADS", 0)
+    db_bt  = db_s.get("TOTAL_BYTES_TRANSFERRED", 0)
 
-    # Real-time speed from centralized tracker
+    # New activity since last DB sync
+    ls = main.LAST_SYNCED_STATS
+    new_fwd = max(0, main.TOTAL_FILES_FWD - ls.get("fwd", main.TOTAL_FILES_FWD))
+    new_dl  = max(0, main.TOTAL_DOWNLOADS  - ls.get("dn",  main.TOTAL_DOWNLOADS))
+    new_ul  = max(0, main.TOTAL_UPLOADS    - ls.get("up",  main.TOTAL_UPLOADS))
+    new_bt  = max(0, main.TOTAL_BYTES_TRANSFERRED - ls.get("bt", main.TOTAL_BYTES_TRANSFERRED))
+
+    total_fwd     = db_fwd + new_fwd
+    total_dl      = db_dl  + new_dl
+    total_ul      = db_ul  + new_ul
+    total_data_gb = (db_bt + new_bt) / (1024 * 1024 * 1024)
+
+    # ── Real-time speed ──
     snap = _trk.snapshot()
     dl_spd = snap["dl_speed"]
     ul_spd = snap["ul_speed"]
-    speed_line = ""
+
+    speed_block = ""
     if dl_spd > 0.01 or ul_spd > 0.01:
-        speed_line = (
-            f"<b>┣⊸ 📥 ᴅʟ sᴘᴇᴇᴅ :</b> <code>{dl_spd:.2f} MB/s</code>\n"
-            f"<b>┣⊸ 📤 ᴜʟ sᴘᴇᴇᴅ :</b> <code>{ul_spd:.2f} MB/s</code>\n"
+        speed_block = (
+            f"<b>┃</b>\n"
+            f"<b>┣⊸ 📥 ᴅʟ sᴘᴇᴇᴅ        :</b>  <code>{dl_spd:.2f} MB/s</code>\n"
+            f"<b>┣⊸ 📤 ᴜʟ sᴘᴇᴇᴅ        :</b>  <code>{ul_spd:.2f} MB/s</code>\n"
         )
 
     text = (
-        "<b>╭─────❰ 📊 sʏsᴛᴇᴍ sᴛᴀᴛᴜs ❱─────╮</b>\n"
+        "<b>╭━━━━━━━❰ 📊 𝗦𝗬𝗦𝗧𝗘𝗠  𝗦𝗧𝗔𝗧𝗨𝗦 ❱━━━━━━━╮</b>\n"
         "<b>┃</b>\n"
-        f"<b>┣⊸ ⏱ ᴜᴘᴛɪᴍᴇ :</b> <code>{uptime}</code>\n"
-        f"<b>┣⊸ 🟢 ᴀᴄᴛɪᴠᴇ ʟɪᴠᴇ ᴊᴏʙs :</b> <code>{active_jobs}</code> <i>({in_memory_tasks})</i>\n"
-        f"<b>┣⊸ 🚀 ᴀᴄᴛɪᴠᴇ ᴛᴀsᴋ ᴊᴏʙs :</b> <code>{in_memory_batchjobs}</code>\n"
-        f"<b>┣⊸ 📡 ɴᴏʀᴍᴀʟ ғᴏʀᴡᴀʀᴅs :</b> <code>{active_forwarding}</code>\n"
+        f"<b>┣⊸ ⏱  ᴜᴘᴛɪᴍᴇ          :</b>  <code>{uptime}</code>\n"
         "<b>┃</b>\n"
-        f"{speed_line}"
-        f"<b>┣⊸ 📂 ғɪʟᴇs ғᴏʀᴡᴀʀᴅᴇᴅ :</b> <code>{total_fwd}</code>\n"
-        f"<b>┣⊸ 📥 ᴛᴏᴛᴀʟ ᴅᴏᴡɴʟᴏᴀᴅs :</b> <code>{total_dl}</code>\n"
-        f"<b>┣⊸ 📤 ᴛᴏᴛᴀʟ ᴜᴘʟᴏᴀᴅs :</b> <code>{total_ul}</code>\n"
-        f"<b>┣⊸ 📊 ᴅᴀᴛᴀ ᴛʀᴀɴsғᴇʀʀᴇᴅ :</b> <code>{total_data_gb:.2f} GB</code>\n"
+        f"<b>┣⊸ 🟢 ʟɪᴠᴇ ᴊᴏʙs        :</b>  <code>{active_jobs}</code>  <i>({mem_live} ɪɴ ᴍᴇᴍ)</i>\n"
+        f"<b>┣⊸ 🚀 ʙᴀᴛᴄʜ ᴊᴏʙs       :</b>  <code>{mem_batch}</code>\n"
+        f"<b>┣⊸ 📡 ɴᴏʀᴍᴀʟ ғᴏʀᴡᴀʀᴅs  :</b>  <code>{active_forwarding}</code>\n"
+        f"{speed_block}"
         "<b>┃</b>\n"
-        f"<b>┣⊸ 👥 ᴛᴏᴛᴀʟ ᴜsᴇʀs :</b> <code>{users_count}</code>\n"
-        f"<b>┣⊸ 🤖 ʙᴏᴛ/ᴜsᴇʀʙᴏᴛs ᴀᴄᴛɪᴠᴇ :</b> <code>{bots_count}</code>\n"
-        f"<b>┣⊸ 📢 ᴄʜᴀɴɴᴇʟs sᴀᴠᴇᴅ :</b> <code>{total_channels_cnt}</code>\n"
+        f"<b>┣⊸ 📂 ғɪʟᴇs ғᴏʀᴡᴀʀᴅᴇᴅ  :</b>  <code>{total_fwd:,}</code>\n"
+        f"<b>┣⊸ 📥 ᴛᴏᴛᴀʟ ᴅᴏᴡɴʟᴏᴀᴅs :</b>  <code>{total_dl:,}</code>\n"
+        f"<b>┣⊸ 📤 ᴛᴏᴛᴀʟ ᴜᴘʟᴏᴀᴅs   :</b>  <code>{total_ul:,}</code>\n"
+        f"<b>┣⊸ 📊 ᴅᴀᴛᴀ ᴛʀᴀɴsғᴇʀʀᴇᴅ :</b>  <code>{total_data_gb:.2f} GB</code>\n"
         "<b>┃</b>\n"
-        "<b>╰───────────────────────────╯</b>"
+        f"<b>┣⊸ 👥 ᴛᴏᴛᴀʟ ᴜsᴇʀs      :</b>  <code>{users_count:,}</code>\n"
+        f"<b>┣⊸ 🤖 ʙᴏᴛ / ᴜsᴇʀʙᴏᴛs  :</b>  <code>{bots_count}</code>\n"
+        f"<b>┣⊸ 📢 ᴄʜᴀɴɴᴇʟs sᴀᴠᴇᴅ  :</b>  <code>{total_channels_cnt}</code>\n"
+        "<b>┃</b>\n"
+        "<b>╰━━━━━━━━━━━━━━━━━━━━━━━━━━━╯</b>"
     )
 
     await query.message.edit_text(
         text=text,
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('↩ Back', callback_data='back')]]),
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton('🔄 ʀᴇғʀᴇsʜ', callback_data='status')],
+            [InlineKeyboardButton('↩ ʙᴀᴄᴋ', callback_data='back')],
+        ]),
         parse_mode=enums.ParseMode.HTML,
         disable_web_page_preview=True,
     )
@@ -334,18 +341,18 @@ async def owner_stats(bot, message):
         in_memory_tasks = "N/A"
 
     text = (
-        "<b>╭─────❰ 📊 Owner Stats ❱─────╮</b>\n"
+        "<b>╭━━━━━━━❰ 📊 𝗢𝗪𝗡𝗘𝗥  𝗦𝗧𝗔𝗧𝗦 ❱━━━━━━━╮</b>\n"
         "<b>┃</b>\n"
-        f"<b>┣⊸ 👥 Total Users     :</b> <code>{total_users}</code>\n"
-        f"<b>┣⊸ 📡 Active Forwards  :</b> <code>{active_forwarding}</code>\n"
-        f"<b>┣⊸ 🟢 Active Live Jobs :</b> <code>{active_jobs}</code>  <i>(tasks: {in_memory_tasks})</i>\n"
-        f"<b>┣⊸ 🤖 Bot Accounts     :</b> <code>{bots_count}</code>\n"
-        f"<b>┣⊸ 📢 Channels Saved   :</b> <code>{total_channels_cnt}</code>\n"
-        f"<b>┣⊸ 🚫 Banned Users     :</b> <code>{len(temp.BANNED_USERS)}</code>\n"
+        f"<b>┣⊸ ⏱  ᴜᴘᴛɪᴍᴇ          :</b>  <code>{uptime}</code>\n"
         "<b>┃</b>\n"
-        f"<b>┣⊸ ⏱ Uptime            :</b> <code>{uptime}</code>\n"
+        f"<b>┣⊸ 👥 ᴛᴏᴛᴀʟ ᴜsᴇʀs      :</b>  <code>{total_users:,}</code>\n"
+        f"<b>┣⊸ 📡 ᴀᴄᴛɪᴠᴇ ғᴏʀᴡᴀʀᴅs  :</b>  <code>{active_forwarding}</code>\n"
+        f"<b>┣⊸ 🟢 ʟɪᴠᴇ ᴊᴏʙs        :</b>  <code>{active_jobs}</code>  <i>({in_memory_tasks} ɪɴ ᴍᴇᴍ)</i>\n"
+        f"<b>┣⊸ 🤖 ʙᴏᴛ ᴀᴄᴄᴏᴜɴᴛs    :</b>  <code>{bots_count}</code>\n"
+        f"<b>┣⊸ 📢 ᴄʜᴀɴɴᴇʟs sᴀᴠᴇᴅ  :</b>  <code>{total_channels_cnt}</code>\n"
+        f"<b>┣⊸ 🚫 ʙᴀɴɴᴇᴅ ᴜsᴇʀs    :</b>  <code>{len(temp.BANNED_USERS)}</code>\n"
         "<b>┃</b>\n"
-        "<b>╰──────────────────────────╯</b>"
+        "<b>╰━━━━━━━━━━━━━━━━━━━━━━━━━━━╯</b>"
     )
     await message.reply_text(text)
 
