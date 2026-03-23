@@ -1,5 +1,5 @@
 """
-Task Jobs Plugin — Unicode-styled
+TMP Task Jobs Plugin — Unicode-styled
 ===================================
 Persistent background bulk-copy jobs with pause/resume.
 Styled identically to the rest of Arya Bot (box borders, small-caps, 𝐛𝐨𝐥𝐝 𝐦𝐚𝐭𝐡 field names).
@@ -11,6 +11,7 @@ import asyncio
 import logging
 from database import db
 from .test import CLIENT, start_clone_bot
+from config import Config
 from plugins.jobs import _has_links
 from pyrogram import Client, filters
 from pyrogram.errors import FloodWait
@@ -25,7 +26,7 @@ _CLIENT = CLIENT()
 _task_jobs:   dict[str, asyncio.Task] = {}
 _pause_events: dict[str, asyncio.Event] = {}
 
-COLL = "taskjobs"
+COLL = "tmptaskjobs"
 
 # Global semaphore: limit concurrent heavy downloads to 2 so large files
 # (500MB-1GB) don't starve other running task jobs. Copy/forward ops skip it.
@@ -76,8 +77,17 @@ async def _tj_notify(bot, job: dict, phase: str = ""):
     rng_p  = f"<code>{job.get('start_id',1)}</code> → <code>{end}</code>" if end else f"<code>{job.get('start_id',1)}</code> → ∞"
     err_p  = f"\n┣⊸ ⚠️ <code>{job['error']}</code>" if job.get("error") else ""
     phase_p = f"\n  • <b>Phase:</b> <code>{phase}</code>" if phase else ""
+    
+    # Live data from progress tracking
+    progress_p = ""
+    if job.get("dl_size"):
+        sz_mb = job['dl_size'] / (1024*1024)
+        progress_p = f"\n  • <b>Current File:</b> <code>{sz_mb:.1f} MB</code>"
+        if job.get("dl_progress"):
+            progress_p += f"\n  • <b>Progress:</b> <code>{job['dl_progress']}%</code>"
+
     text = (
-        f"<b>Task Job Progress</b>\n\n"
+        f"<b>TMP Task Job Progress</b>\n\n"
         f"  • <b>ID:</b> <code>{job_id[-6:]}</code>{name_p}\n"
         f"  • <b>Status:</b> {st} {job.get('status','running')}\n"
         f"  • <b>Source:</b> {job.get('from_title','?')}\n"
@@ -85,7 +95,7 @@ async def _tj_notify(bot, job: dict, phase: str = ""):
         f"  • <b>Range:</b> {rng_p}\n"
         f"  • <b>Current:</b> <code>{cur}</code>\n"
         f"  • <b>Forwarded:</b> <code>{fwd}</code>"
-        f"{phase_p}{err_p}"
+        f"{phase_p}{progress_p}{err_p}"
     )
     key = (uid, job_id)
     try:
@@ -94,7 +104,9 @@ async def _tj_notify(bot, job: dict, phase: str = ""):
             try:
                 await bot.edit_message_text(uid, existing_mid, text)
                 return
-            except Exception:
+            except Exception as e:
+                if "MESSAGE_NOT_MODIFIED" in str(e):
+                    return
                 pass
         sent = await bot.send_message(uid, text)
         _tj_status_msgs[key] = sent.id
@@ -107,8 +119,9 @@ async def _tj_notify(bot, job: dict, phase: str = ""):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _passes_filters(msg, dis: list) -> bool:
-    """Content-type check only. `dis` must be pure content types (no rm_caption, no links)."""
+    """Content-type check. If ALL filters are ON (none in dis), return True."""
     if msg.empty or msg.service: return False
+    if not dis: return True # ALL filters are ON -> no content filtering
     for typ, chk in [
         ('text',      lambda m: m.text and not m.media),
         ('audio',     lambda m: m.audio), ('voice',     lambda m: m.voice),
@@ -129,6 +142,8 @@ async def _send_one(client, msg, to_chat: int, remove_caption: bool, caption_tpl
     caption = None
     is_modified = False
 
+    # FIX: Preserve ORIGINAL formatting unless explicitly asked to modify
+    # Filter behavior: if rm_caption is OFF and caption_tpl is NONE, keep raw.
     if caption_tpl and msg.media:
         caption = caption_tpl
         is_modified = True
@@ -138,6 +153,7 @@ async def _send_one(client, msg, to_chat: int, remove_caption: bool, caption_tpl
     elif block_links and _has_links(msg):
         content = getattr(msg, 'caption' if msg.media else 'text', None)
         if content:
+            # Use html to preserve bold/italic/etc
             raw = getattr(content, 'html', str(content))
             import re as _lre
             _LRE = _lre.compile(
@@ -185,7 +201,9 @@ async def _send_one(client, msg, to_chat: int, remove_caption: bool, caption_tpl
             await client.send_message(chat_id=to_chat, text=caption or "", **kw_msg)
             return True
 
-        if caption is not None and msg.media:
+        # IF NOT MODIFIED: copy_message preserves formatting natively.
+        # IF MODIFIED: we pass the modified text.
+        if is_modified:
             await client.copy_message(chat_id=to_chat, from_chat_id=from_id,
                                       message_id=msg.id, caption=caption, **kw_msg)
         else:
@@ -205,14 +223,29 @@ async def _send_one(client, msg, to_chat: int, remove_caption: bool, caption_tpl
                     import re as _re4
                     display_name = _re4.sub(r'[\\/*?:"<>|]', '', display_name).strip() or None
                 import shutil as _shu2
+                import main
                 safe_dir = f"downloads/{msg.id}"
                 os.makedirs(safe_dir, exist_ok=True)
                 df_name = f"{safe_dir}/{display_name}" if display_name else f"{safe_dir}/"
+                
+                f_size = getattr(mo, "file_size", 0)
+                main.TOTAL_DOWNLOADS += 1
+                main.TOTAL_BYTES_TRANSFERRED += f_size
+                
+                async def progress(current, total):
+                    pc = int(current * 100 / total) if total > 0 else 0
+                    # Note: updating job dict directly here might not be thread-safe for notification 
+                    # but since only 1 worker handles 1 job, we just update local state if needed.
+                    # This update is just for the local task runner to pass to _tj_notify
+                    pass
+
                 # Semaphore: only 2 heavy downloads can run simultaneously. Others wait, not blocked.
                 # This prevents a 1GB file from delaying ALL other task jobs completely.
                 async with _DOWNLOAD_SEM:
-                    fp = await client.download_media(msg, file_name=df_name)
+                    fp = await client.download_media(msg, file_name=df_name, progress=progress)
                 if not fp: raise Exception("DownloadFailed")
+                
+                main.TOTAL_UPLOADS += 1
                 kw = {"chat_id": to_chat, "caption": caption if caption is not None else (str(msg.caption) if msg.caption else "")}
                 if to_topic: kw["message_thread_id"] = kw["reply_to_message_id"] = to_topic
                 try:
@@ -259,12 +292,15 @@ async def _run_task_job(job_id: str, user_id: int, _bot=None):
         if not acc:
             await _tj_update(job_id, status="error", error="Account not found"); return
 
-        from plugins.jobs import _get_shared_client
         from config import Config
-        if acc.get("is_bot") and acc.get("token") == Config.BOT_TOKEN and getattr(_bot, "is_connected", False):
+        is_main_bot = acc.get("is_bot") and acc.get("token") == Config.BOT_TOKEN
+        if is_main_bot and getattr(_bot, 'is_connected', False):
             client = _bot
         else:
-            client  = await _get_shared_client(acc)
+            from plugins.jobs import _get_shared_client
+            client = await _get_shared_client(acc)
+            if not client: raise Exception(f"Failed to start client for acc {acc.get('name')}")
+
         is_bot  = acc.get("is_bot", True)
         fc      = job["from_chat"]
 
@@ -330,6 +366,9 @@ async def _run_task_job(job_id: str, user_id: int, _bot=None):
                     try:
                         msgs = await client.get_messages(fc, batch_ids)
                         if not isinstance(msgs, list): msgs = [msgs]
+                        # Ordering fix: msgs from get_messages(IDs) might not be ordered.
+                        msgs = [m for m in msgs if m and not m.empty]
+                        msgs.sort(key=lambda x: x.id)
                         fetch_ok = True
                     except FloodWait as fw:
                         await asyncio.sleep(fw.value + 2); continue
@@ -344,14 +383,29 @@ async def _run_task_job(job_id: str, user_id: int, _bot=None):
                         async for hmsg in client.get_chat_history(fc, offset_id=chunk_end + 1, limit=BATCH_SIZE):
                             if hmsg.id < current: break
                             col.append(hmsg)
-                        msgs = list(reversed(col))
+                        msgs = list(reversed(col)) # History is newest-first, flip it
                         fetch_ok = True
                     except FloodWait as fw:
                         await asyncio.sleep(fw.value + 2); continue
                     except Exception as he:
                         logger.warning(f"[TaskJob {job_id}] history fallback failed @ {current}: {he}")
-                if not fetch_ok:
-                    current += BATCH_SIZE; await _tj_update(job_id, current_id=current); continue
+                
+                if not fetch_ok or not msgs:
+                    # FIX Auto-Stop: Instead of skipping large gaps, we probe history for the NEXT valid ID 
+                    # before jumping ahead blindly.
+                    try:
+                        async for nm in client.get_chat_history(fc, offset_id=current, limit=1, reverse=True):
+                            if nm.id > current:
+                                current = nm.id
+                                await _tj_update(job_id, current_id=current)
+                                break
+                        else:
+                            # if no message after 'current', we are done
+                            await _tj_update(job_id, status="done")
+                            break
+                    except:
+                        current += BATCH_SIZE; await _tj_update(job_id, current_id=current)
+                    continue
             except asyncio.CancelledError: raise
             except Exception as e:
                 logger.warning(f"[TaskJob {job_id}] Fetch outer exception {current}: {e}")
@@ -380,7 +434,8 @@ async def _run_task_job(job_id: str, user_id: int, _bot=None):
                     await _tj_notify(_bot, _fresh_j, "ʀᴜɴɴɪɴɢ")
                 last_notify = _now
 
-            fwd = 0
+            # Parallel Batch Processing: launch concurrent forward tasks
+            tasks = []
             for msg in valid:
                 if from_topic:
                     if getattr(msg, 'message_thread_id', getattr(msg, 'reply_to_top_message_id', getattr(msg, 'reply_to_message_id', None))) != from_topic:
@@ -391,14 +446,32 @@ async def _run_task_job(job_id: str, user_id: int, _bot=None):
                 f2 = await _tj_get(job_id)
                 if not f2 or f2.get("status") in ("stopped",): return
                 if not _passes_filters(msg, dis): continue
-                # we pass block_links to strip links rather than skipping the file entirely
-                ok = await _send_one(client, msg, to_chat, rm_cap, cap_tpl, forward_tag=forward_tag, from_chat=fc, block_links=block_links, to_topic=to_topic)
-                if ok: fwd += 1; await _tj_inc(job_id)
-                if slp: await asyncio.sleep(slp)
-                else:   await asyncio.sleep(0)
+                
+                from plugins.jobs import _fwd_safe
+                tasks.append(_fwd_safe(_send_one, client, msg, to_chat, rm_cap, cap_tpl, 
+                                       forward_tag=forward_tag, from_chat=fc, 
+                                       block_links=block_links, to_topic=to_topic))
+            
+            fwd = job.get("forwarded", 0)
+            if tasks:
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                for r in results:
+                    if isinstance(r, Exception):
+                        logger.error(f"[TaskJob {job_id}] Parallel error: {r}")
+                        continue
+                    if r is True:
+                        import main
+                        fwd += 1
+                        main.TOTAL_FILES_FWD += 1
+                        await _tj_inc(job_id)
 
-            current = (valid[-1].id + 1) if valid else (current + BATCH_SIZE)
+            current = (msgs[-1].id + 1) if msgs else (current + BATCH_SIZE)
             await _tj_update(job_id, current_id=current)
+
+        # ── End of TMP Task Job logic ─────────────────────────────────────────────
+        job_f = await _tj_get(job_id)
+        if job_f and job_f.get("status") == "done":
+            pass
 
     except asyncio.CancelledError:
         logger.info(f"[TaskJob {job_id}] Cancelled")
@@ -409,9 +482,10 @@ async def _run_task_job(job_id: str, user_id: int, _bot=None):
     finally:
         _task_jobs.pop(job_id, None); _pause_events.pop(job_id, None)
         if acc:
-            from plugins.jobs import _release_shared_client
             from config import Config
-            if not (acc.get("is_bot") and acc.get("token") == Config.BOT_TOKEN and getattr(_bot, "is_connected", False)):
+            is_main_bot = acc.get("is_bot") and acc.get("token") == Config.BOT_TOKEN
+            if not (is_main_bot and getattr(_bot, 'is_connected', False)):
+                from plugins.jobs import _release_shared_client
                 await _release_shared_client(acc)
 
 
@@ -423,32 +497,89 @@ def _start_task(job_id: str, user_id: int, _bot=None):
     return task
 
 
-async def resume_task_jobs(user_id: int = None, _bot=None):
+async def resume_tmp_task_jobs(user_id: int = None, _bot=None):
     q = {"status": "running"}
     if user_id: q["user_id"] = user_id
     async for job in db.db[COLL].find(q):
         jid, uid = job["job_id"], job["user_id"]
         if jid not in _task_jobs:
-            _start_task(jid, uid, _bot=_bot)
+            _start_task(jid, uid)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Storage Cleanup Command
+# ══════════════════════════════════════════════════════════════════════════════
+
+@Client.on_message(filters.command("tmpcleanup") & filters.user(Config.BOT_OWNER_ID))
+async def cleanup_storage(bot, message):
+    import shutil
+    from config import Config
+    
+    msg = await message.reply_text("<b>🧹 ᴄʟᴇᴀɴɪɴɢ ᴜᴘ sᴛᴏʀᴀɢᴇ...</b>")
+    
+    freed = 0
+    dirs = ["downloads", "tmp"]
+    
+    for d in dirs:
+        if os.path.exists(d):
+            # Calculate size before cleanup
+            for root, _, files in os.walk(d):
+                for f in files:
+                    freed += os.path.getsize(os.path.join(root, f))
+            shutil.rmtree(d, ignore_errors=True)
+            os.makedirs(d, exist_ok=True)
+
+    freed_mb = freed / (1024*1024)
+    
+    await msg.edit(
+        "<b>╭──────❰ 🧹 ᴄʟᴇᴀɴᴜᴘ ᴅᴏɴᴇ ❱──────╮\n"
+        "┃\n"
+        f"┣⊸ ᴅɪʀs ᴘᴜʀɢᴇᴅ: <code>downloads, tmp</code>\n"
+        f"┣⊸ sᴘᴀᴄᴇ ғʀᴇᴇᴅ: <code>{freed_mb:.2f} MB</code>\n"
+        "┣⊸ sʏsᴛᴇᴍ ɪs ɴᴏᴡ ᴏᴘᴛɪᴍɪᴢᴇᴅ ✅\n"
+        "┃\n"
+        "╰────────────────────────────────╯</b>"
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # UI — render list
 # ══════════════════════════════════════════════════════════════════════════════
 
-async def _render_taskjob_list(bot, user_id: int, mq):
+async def _render_tmptaskjob_list(bot, user_id: int, mq):
     jobs  = await _tj_list(user_id)
     is_cb = hasattr(mq, "message")
 
     if not jobs:
         text = (
-            "<b>Task Jobs</b>\n\n  • No task jobs yet.\n\nCopies all existing messages from a source to a target in the background."
+            "<b>╭──────❰ 📦 ᴛᴀsᴋ ᴊᴏʙs ❱──────╮\n"
+            "┃\n"
+            "┣⊸ ɴᴏ ᴛᴀsᴋ ᴊᴏʙs ʏᴇᴛ.\n"
+            "┣⊸ ᴄᴏᴘɪᴇs ᴀʟʟ ᴇxɪsᴛɪɴɢ ᴍᴇssᴀɢᴇs.\n"
+            "┃\n"
+            "╰────────────────────────────────╯</b>"
         )
         btns = InlineKeyboardMarkup([[
-            InlineKeyboardButton("➕ Create Task Job", callback_data="tj#new")
+            InlineKeyboardButton("➕ ᴄʀᴇᴀᴛᴇ ᴛᴀsᴋ ᴊᴏʙ", callback_data="tmptj#new")
         ]])
     else:
-        lines = ["<b>Task Jobs</b>\n"]
+        lines = ["<b>╭──────❰ 📦 ᴛᴀsᴋ ᴊᴏʙs ❱──────╮</b>\n┃"]
+        for j in jobs:
+            st  = _st(j.get("status", "stopped"))
+            fwd = j.get("forwarded", 0)
+            err = f"\n┃  ⚠️ <code>{j.get('error','')}</code>" if j.get("status") == "error" else ""
+            c_name = j.get("custom_name")
+            name_disp = f" <b>{c_name}</b>" if c_name else ""
+            cur = j.get("current_id", "?")
+            end = j.get("end_id", 0)
+            rng_lbl = f"<code>{j.get('start_id',1)}</code> → <code>{end}</code>" if end else f"<code>{j.get('start_id',1)}</code> → ∞"
+            
+            lines.append(
+                f"┣⊸ {st} <b>{j.get('from_title','?')} → {j.get('to_title','?')}</b>"
+                f"  <code>[{j['job_id'][-6:]}]</code>{name_disp}"
+                f"\n┃   ◈ 𝐅𝐨𝐫𝐰𝐚𝐫𝐝𝐞𝐝: <code>{fwd}</code>  |  𝐂𝐮𝐫𝐫𝐞𝐧𝐭: <code>{cur}</code>"
+                f"\n┃   ◈ 𝐑𝐚𝐧𝐠𝐞: {rng_lbl}{err}"
+            )
         text = "\n".join(lines)
 
         rows = []
@@ -458,19 +589,19 @@ async def _render_taskjob_list(bot, user_id: int, mq):
             s   = jid[-6:]
             row = []
             if st == "running":
-                row.append(InlineKeyboardButton(f"⏸ Pause [{s}]",  callback_data=f"tj#pause#{jid}"))
-                row.append(InlineKeyboardButton(f"⏹ Stop [{s}]",   callback_data=f"tj#stop#{jid}"))
+                row.append(InlineKeyboardButton(f"⏸ Pause [{s}]",  callback_data=f"tmptj#pause#{jid}"))
+                row.append(InlineKeyboardButton(f"⏹ Stop [{s}]",   callback_data=f"tmptj#stop#{jid}"))
             elif st == "paused":
-                row.append(InlineKeyboardButton(f"▶️ Resume [{s}]", callback_data=f"tj#resume#{jid}"))
-                row.append(InlineKeyboardButton(f"⏹ Stop [{s}]",   callback_data=f"tj#stop#{jid}"))
+                row.append(InlineKeyboardButton(f"▶️ Resume [{s}]", callback_data=f"tmptj#resume#{jid}"))
+                row.append(InlineKeyboardButton(f"⏹ Stop [{s}]",   callback_data=f"tmptj#stop#{jid}"))
             else:
-                row.append(InlineKeyboardButton(f"▶️ Start [{s}]",  callback_data=f"tj#start#{jid}"))
-            row.append(InlineKeyboardButton(f"ℹ️ [{s}]", callback_data=f"tj#info#{jid}"))
-            row.append(InlineKeyboardButton(f"🗑 [{s}]",  callback_data=f"tj#del#{jid}"))
+                row.append(InlineKeyboardButton(f"▶️ Start [{s}]",  callback_data=f"tmptj#start#{jid}"))
+            row.append(InlineKeyboardButton(f"ℹ️ [{s}]", callback_data=f"tmptj#info#{jid}"))
+            row.append(InlineKeyboardButton(f"🗑 [{s}]",  callback_data=f"tmptj#del#{jid}"))
             rows.append(row)
 
-        rows.append([InlineKeyboardButton("➕ Create Task Job", callback_data="tj#new")])
-        rows.append([InlineKeyboardButton("🔄 ʀᴇғʀᴇsʜ",          callback_data="tj#list")])
+        rows.append([InlineKeyboardButton("➕ Create TMP Task Job", callback_data="tmptj#new")])
+        rows.append([InlineKeyboardButton("🔄 ʀᴇғʀᴇsʜ",          callback_data="tmptj#list")])
         btns = InlineKeyboardMarkup(rows)
 
     try:
@@ -486,14 +617,14 @@ async def _render_taskjob_list(bot, user_id: int, mq):
 # Commands
 # ══════════════════════════════════════════════════════════════════════════════
 
-@Client.on_message(filters.private & filters.command(["taskjobs", "taskjob"]))
-async def taskjobs_cmd(bot, msg):
-    await _render_taskjob_list(bot, msg.from_user.id, msg)
+@Client.on_message(filters.private & filters.command(["tmptaskjobs", "tmptaskjob"]))
+async def tmptaskjobs_cmd(bot, msg):
+    await _render_tmptaskjob_list(bot, msg.from_user.id, msg)
 
 
-@Client.on_message(filters.private & filters.command("newtaskjob"))
-async def newtaskjob_cmd(bot, msg):
-    await _create_taskjob_flow(bot, msg.from_user.id)
+@Client.on_message(filters.private & filters.command("newtmptaskjob"))
+async def newtmptaskjob_cmd(bot, msg):
+    await _create_tmptaskjob_flow(bot, msg.from_user.id)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -506,17 +637,17 @@ _CANCEL_BOX = (
 )
 
 
-@Client.on_callback_query(filters.regex(r'^tj#list$'))
-async def tj_list_cb(bot, q): await _render_taskjob_list(bot, q.from_user.id, q)
+@Client.on_callback_query(filters.regex(r'^tmptj#list$'))
+async def tj_list_cb(bot, q): await _render_tmptaskjob_list(bot, q.from_user.id, q)
 
 
-@Client.on_callback_query(filters.regex(r'^tj#new$'))
+@Client.on_callback_query(filters.regex(r'^tmptj#new$'))
 async def tj_new_cb(bot, q):
     await q.message.delete()
-    await _create_taskjob_flow(bot, q.from_user.id)
+    await _create_tmptaskjob_flow(bot, q.from_user.id)
 
 
-@Client.on_callback_query(filters.regex(r'^tj#info#'))
+@Client.on_callback_query(filters.regex(r'^tmptj#info#'))
 async def tj_info_cb(bot, query):
     job_id = query.data.split("#", 2)[2]
     job = await _tj_get(job_id)
@@ -534,7 +665,7 @@ async def tj_info_cb(bot, query):
     name_lbl = f" <b>({c_name})</b>" if c_name else ""
 
     text = (
-        f"<b>📋 Task Job Information</b>\n\n"
+        f"<b>📋 TMP Task Job Information</b>\n\n"
         f"  • <b>ID:</b> <code>{job_id[-6:]}</code>{name_lbl}\n"
         f"  • <b>Status:</b> {st} {job.get('status','?')}\n"
         f"  • <b>Source:</b> {job.get('from_title','?')}\n"
@@ -546,11 +677,11 @@ async def tj_info_cb(bot, query):
         f"{err_lbl}"
     )
     await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup([[
-        InlineKeyboardButton("↩ ʙᴀᴄᴋ", callback_data="tj#list")
+        InlineKeyboardButton("↩ ʙᴀᴄᴋ", callback_data="tmptj#list")
     ]]))
 
 
-@Client.on_callback_query(filters.regex(r'^tj#pause#'))
+@Client.on_callback_query(filters.regex(r'^tmptj#pause#'))
 async def tj_pause_cb(bot, q):
     job_id, uid = q.data.split("#", 2)[2], q.from_user.id
     job = await _tj_get(job_id)
@@ -560,10 +691,10 @@ async def tj_pause_cb(bot, q):
     if ev: ev.clear()
     await _tj_update(job_id, status="paused")
     await q.answer("⏸ Pauseᴅ.")
-    await _render_taskjob_list(bot, uid, q)
+    await _render_tmptaskjob_list(bot, uid, q)
 
 
-@Client.on_callback_query(filters.regex(r'^tj#resume#'))
+@Client.on_callback_query(filters.regex(r'^tmptj#resume#'))
 async def tj_resume_cb(bot, q):
     job_id, uid = q.data.split("#", 2)[2], q.from_user.id
     job = await _tj_get(job_id)
@@ -578,10 +709,10 @@ async def tj_resume_cb(bot, q):
         await _tj_update(job_id, status="running")
         _start_task(job_id, uid, _bot=bot)
         await q.answer("▶️ ʀᴇsᴛᴀʀᴛᴇᴅ ғʀᴏᴍ sᴀᴠᴇᴅ ᴘᴏsɪᴛɪᴏɴ!")
-    await _render_taskjob_list(bot, uid, q)
+    await _render_tmptaskjob_list(bot, uid, q)
 
 
-@Client.on_callback_query(filters.regex(r'^tj#stop#'))
+@Client.on_callback_query(filters.regex(r'^tmptj#stop#'))
 async def tj_stop_cb(bot, q):
     job_id, uid = q.data.split("#", 2)[2], q.from_user.id
     job = await _tj_get(job_id)
@@ -593,10 +724,10 @@ async def tj_stop_cb(bot, q):
     if ev: ev.set()
     await _tj_update(job_id, status="stopped")
     await q.answer("⏹ Stopᴘᴇᴅ.")
-    await _render_taskjob_list(bot, uid, q)
+    await _render_tmptaskjob_list(bot, uid, q)
 
 
-@Client.on_callback_query(filters.regex(r'^tj#start#'))
+@Client.on_callback_query(filters.regex(r'^tmptj#start#'))
 async def tj_start_cb(bot, q):
     job_id, uid = q.data.split("#", 2)[2], q.from_user.id
     job = await _tj_get(job_id)
@@ -607,10 +738,10 @@ async def tj_start_cb(bot, q):
     await _tj_update(job_id, status="running")
     _start_task(job_id, uid, _bot=bot)
     await q.answer("▶️ Startᴇᴅ!")
-    await _render_taskjob_list(bot, uid, q)
+    await _render_tmptaskjob_list(bot, uid, q)
 
 
-@Client.on_callback_query(filters.regex(r'^tj#del#'))
+@Client.on_callback_query(filters.regex(r'^tmptj#del#'))
 async def tj_del_cb(bot, q):
     job_id, uid = q.data.split("#", 2)[2], q.from_user.id
     job = await _tj_get(job_id)
@@ -622,14 +753,29 @@ async def tj_del_cb(bot, q):
     if ev: ev.set()
     await _tj_delete(job_id)
     await q.answer("🗑 ᴅᴇʟᴇᴛᴇᴅ.")
-    await _render_taskjob_list(bot, uid, q)
+    await _render_tmptaskjob_list(bot, uid, q)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Create Task Job — Interactive flow
+# Create TMP Task Job — Interactive flow
 # ══════════════════════════════════════════════════════════════════════════════
 
-async def _create_taskjob_flow(bot, user_id: int):
+def _clear_listeners(bot, user_id: int):
+    try:
+        import pyrogram.enums as _pe
+        _lst = bot.listeners.get(_pe.ListenerTypes.MESSAGE, [])
+        to_remove = [l for l in list(_lst) if (
+            l.identifier.chat_id == user_id or
+            l.identifier.from_user_id == user_id
+        )]
+        for l in to_remove:
+            _lst.remove(l)
+            if not l.future.done(): l.future.cancel()
+    except Exception:
+        pass
+
+async def _create_tmptaskjob_flow(bot, user_id: int):
+    _clear_listeners(bot, user_id)
     # Step 1 — Account
     accounts = await db.get_bots(user_id)
     if not accounts:
@@ -686,12 +832,10 @@ async def _create_taskjob_flow(bot, user_id: int):
 
     try:
         co     = await bot.get_chat(fc)
-        ftitle = getattr(co, "title", None) or str(fc)
-        source_is_forum = getattr(co, "is_forum", False) and getattr(co, 'type', None) is not None and str(getattr(co, 'type', '')).endswith('SUPERGROUP')
+        ftitle = getattr(co, "title", None) or getattr(co, "first_name", str(fc))
     except Exception:
         co = None
         ftitle = str(fc)
-        source_is_forum = False  # Never default to asking topic if we can't check
 
     if await db.is_protected(raw, co):
         return await bot.send_message(user_id,
@@ -702,20 +846,21 @@ async def _create_taskjob_flow(bot, user_id: int):
             reply_markup=ReplyKeyboardRemove())
 
     from_topic_id = None
-    if source_is_forum:
-        src_topic_r = await bot.ask(user_id,
-            "<b>╭──────❰ 📋 sᴛᴇᴘ 2b — sᴏᴜʀᴄᴇ ᴛᴏᴘɪᴄ ❱──────╮\n"
-            "┃\n"
-            "┣⊸ ɪғ sᴏᴜʀᴄᴇ ɪs ᴀ ɢʀᴏᴜᴘ ᴡɪᴛʜ ᴛᴏᴘɪᴄs, ᴇɴᴛᴇʀ ᴛʜᴇ ᴛᴏᴘɪᴄ ɪᴅ\n"
-            "┣⊸ sᴇɴᴅ 0 ᴛᴏ ғᴏʀᴡᴀʀᴅ ᴀʟʟ ᴍᴇssᴀɢᴇs (ɴᴏ ᴛᴏᴘɪᴄ ғɪʟᴛᴇʀ)\n"
-            "┃\n╰────────────────────────────────╯</b>",
-            reply_markup=ReplyKeyboardMarkup([["0 (ɴᴏ ᴛᴏᴘɪᴄ ғɪʟᴛᴇʀ)"], ["/cancel"]], resize_keyboard=True, one_time_keyboard=True))
-        if "/cancel" in src_topic_r.text:
-            return await src_topic_r.reply(_CANCEL_BOX, reply_markup=ReplyKeyboardRemove())
-        _st_raw = src_topic_r.text.strip()
-        from_topic_id = int(_st_raw) if _st_raw.isdigit() and int(_st_raw) > 0 else None
+    _clear_listeners(bot, user_id)
+    src_topic_r = await bot.ask(user_id,
+        "<b>╭──────❰ 📋 sᴛᴇᴘ 2b — sᴏᴜʀᴄᴇ ᴛᴏᴘɪᴄ ❱──────╮\n"
+        "┃\n"
+        "┣⊸ ɪғ sᴏᴜʀᴄᴇ ɪs ᴀ ɢʀᴏᴜᴘ ᴡɪᴛʜ ᴛᴏᴘɪᴄs, ᴇɴᴛᴇʀ ᴛʜᴇ ᴛᴏᴘɪᴄ ɪᴅ\n"
+        "┣⊸ sᴇɴᴅ 0 ᴛᴏ ғᴏʀᴡᴀʀᴅ ᴀʟʟ ᴍᴇssᴀɢᴇs (ɴᴏ ᴛᴏᴘɪᴄ ғɪʟᴛᴇʀ)\n"
+        "┃\n╰────────────────────────────────╯</b>",
+        reply_markup=ReplyKeyboardMarkup([["0 (ɴᴏ ᴛᴏᴘɪᴄ ғɪʟᴛᴇʀ)"], ["/cancel"]], resize_keyboard=True, one_time_keyboard=True))
+    if "/cancel" in src_topic_r.text:
+        return await src_topic_r.reply(_CANCEL_BOX, reply_markup=ReplyKeyboardRemove())
+    _st_raw = src_topic_r.text.strip()
+    from_topic_id = int(_st_raw) if _st_raw.isdigit() and int(_st_raw) > 0 else None
 
     # Step 3 — Range
+    _clear_listeners(bot, user_id)
     rng_r = await bot.ask(user_id,
         "<b>╭──────❰ 📦 sᴛᴇᴘ 3/4 — ᴍᴇssᴀɢᴇ ʀᴀɴɢᴇ ❱──────╮\n"
         "┃\n┣⊸ ALL      — ᴀʟʟ ᴍsɢs ғʀᴏᴍ ᴛʜᴇ ʙᴇɢɪɴɴɪɴɢ\n"
@@ -749,6 +894,7 @@ async def _create_taskjob_flow(bot, user_id: int):
     ch_btns = [[KeyboardButton(ch['title'])] for ch in channels]
     ch_btns.append([KeyboardButton("/cancel")])
 
+    _clear_listeners(bot, user_id)
     ch_r = await bot.ask(user_id,
         "<b>╭──────❰ 📦 sᴛᴇᴘ 4/5 — ᴛᴀʀɢᴇᴛ ᴄʜᴀɴɴᴇʟ ❱──────╮\n"
         "┃\n┣⊸ ᴄʜᴏᴏsᴇ ᴡʜᴇʀᴇ ᴛᴏ ᴄᴏᴘʏ ᴍᴇssᴀɢᴇs\n"
@@ -770,32 +916,22 @@ async def _create_taskjob_flow(bot, user_id: int):
             "<b>❌ ɪɴᴠᴀʟɪᴅ sᴇʟᴇᴄᴛɪᴏɴ.</b>", reply_markup=ReplyKeyboardRemove())
 
     to_topic_id = None
-    to_is_forum = False
-    if to_chat and str(to_chat).startswith('-100'):
-        try:
-            co_to = await bot.get_chat(to_chat)
-            from pyrogram.enums import ChatType
-            # Only SUPERGROUP can have Topics (CHANNEL cannot)
-            if getattr(co_to, 'type', None) == ChatType.SUPERGROUP:
-                to_is_forum = getattr(co_to, "is_forum", False)
-        except Exception:
-            to_is_forum = False  # Safe default: don't prompt if we can't confirm
-
-    if to_is_forum:
-        to_topic_r = await bot.ask(user_id,
-            "<b>╭──────❰ 💬 ᴛᴏᴘɪᴄ ᴛʜʀᴇᴀᴅ — ᴅᴇsᴛɪɴᴀᴛɪᴏɴ ❱──────╮\n"
-            "┃\n"
-            "┣⊸ sᴇɴᴅ ᴛʜʀᴇᴀᴅ ɪᴅ ᴛᴏ ᴘᴏsᴛ ɪɴᴛᴏ ᴀ ᴛᴏᴘɪᴄ\n"
-            "┣⊸ sᴇɴᴅ 0 ᴛᴏ ᴘᴏsᴛ ɪɴ ᴍᴀɪɴ ᴄʜᴀᴛ\n"
-            "┃\n╰────────────────────────────────╯</b>",
-            reply_markup=ReplyKeyboardMarkup([["0 (ɴᴏ ᴛᴏᴘɪᴄ)"], ["/cancel"]], resize_keyboard=True, one_time_keyboard=True))
-        if "/cancel" in to_topic_r.text: return await to_topic_r.reply(_CANCEL_BOX, reply_markup=ReplyKeyboardRemove())
-        _t = to_topic_r.text.strip()
-        to_topic_id = int(_t) if _t.isdigit() and int(_t) > 0 else None
+    _clear_listeners(bot, user_id)
+    to_topic_r = await bot.ask(user_id,
+        "<b>╭──────❰ 💬 ᴛᴏᴘɪᴄ ᴛʜʀᴇᴀᴅ — ᴅᴇsᴛɪɴᴀᴛɪᴏɴ ❱──────╮\n"
+        "┃\n"
+        "┣⊸ sᴇɴᴅ ᴛʜʀᴇᴀᴅ ɪᴅ ᴛᴏ ᴘᴏsᴛ ɪɴᴛᴏ ᴀ ᴛᴏᴘɪᴄ\n"
+        "┣⊸ sᴇɴᴅ 0 ᴛᴏ ᴘᴏsᴛ ɪɴ ᴍᴀɪɴ ᴄʜᴀᴛ\n"
+        "┃\n╰────────────────────────────────╯</b>",
+        reply_markup=ReplyKeyboardMarkup([["0 (ɴᴏ ᴛᴏᴘɪᴄ)"], ["/cancel"]], resize_keyboard=True, one_time_keyboard=True))
+    if "/cancel" in to_topic_r.text: return await to_topic_r.reply(_CANCEL_BOX, reply_markup=ReplyKeyboardRemove())
+    _t = to_topic_r.text.strip()
+    to_topic_id = int(_t) if _t.isdigit() and int(_t) > 0 else None
 
     # Step 5 — Custom Name
+    _clear_listeners(bot, user_id)
     name_r = await bot.ask(user_id,
-        "<b>╭──────❰ 📋 sᴛᴇᴘ 5/5 — ᴊᴏʙ ɴᴀᴍᴇ (ᴏᴘᴛɪᴏɴᴀʟ) ❱──────╮\n"
+        "<b>╭──────❰ 📋 sᴛᴇᴘ 5/6 — ᴊᴏʙ ɴᴀᴍᴇ (ᴏᴘᴛɪᴏɴᴀʟ) ❱──────╮\n"
         "┃\n┣⊸ sᴇɴᴅ ᴀ sʜᴏʀᴛ ɴᴀᴍᴇ ғᴏʀ ᴛʜɪs ᴊᴏʙ ᴛᴏ ɪᴅᴇɴᴛɪғʏ ɪᴛ ᴇᴀsɪʟʏ.\n"
         "┣⊸ ᴏʀ ᴄʟɪᴄᴋ sᴋɪᴘ ᴛᴏ ᴜsᴇ ᴅᴇғᴀᴜʟᴛ.\n"
         "┃\n╰────────────────────────────────╯</b>",
@@ -810,29 +946,51 @@ async def _create_taskjob_flow(bot, user_id: int):
     if "sᴋɪᴘ" not in name_r.text.lower() and "skip" not in name_r.text.lower():
         cname = name_r.text.strip()[:30]
 
+    # ---------------------------------------------------------
+    # ---------------------------------------------------------
+    # Auto-Scheduler Logic has been removed as per user request.
+    # TMP Task Jobs always start immediately.
+    # ---------------------------------------------------------
+    initial_status = "running"
+    is_scheduled = False
+
     # Save & Start
     job_id = f"tj-{user_id}-{int(time.time())}"
+
     job = {
         "job_id": job_id, "user_id": user_id, "account_id": sel["id"],
         "from_chat": fc, "from_title": ftitle, "from_topic_id": from_topic_id,
         "to_chat": to_chat, "to_title": to_title, "to_topic_id": to_topic_id,
         "start_id": start_id, "end_id": end_id, "current_id": start_id,
-        "status": "running", "created": int(time.time()),
+        "status": initial_status, "created": int(time.time()),
         "forwarded": 0, "consecutive_empty": 0, "error": "",
         "custom_name": cname,
+        "scheduled": False
     }
     await _tj_save(job)
-    _start_task(job_id, user_id)
+    _start_task(job_id, user_id, _bot=bot)
 
     end_lbl = f"<code>{end_id}</code>" if end_id else "∞ (ᴀʟʟ ᴍsɢs)"
-    await bot.send_message(user_id,
+    
+    import html as html_lib
+    ftitle_safe = html_lib.escape(str(ftitle)) if ftitle else "?"
+    to_title_safe = html_lib.escape(str(to_title)) if to_title else "?"
+    cname_safe = html_lib.escape(str(cname)) if cname else None
+    
+    status_msg = (
         f"<b>╭──────❰ ✅ ᴛᴀsᴋ ᴊᴏʙ ᴄʀᴇᴀᴛᴇᴅ ❱──────╮\n"
         f"┃\n"
-        f"┣⊸ ◈ 𝐒𝐨𝐮𝐫𝐜𝐞  : {ftitle}\n"
-        f"┣⊸ ◈ 𝐓𝐚𝐫𝐠𝐞𝐭  : {to_title}\n"
+        f"┣⊸ ◈ 𝐒𝐨𝐮𝐫𝐜𝐞  : {ftitle_safe}\n"
+        f"┣⊸ ◈ 𝐓𝐚𝐫𝐠𝐞𝐭  : {to_title_safe}\n"
         f"┣⊸ ◈ 𝐀𝐜𝐜𝐨𝐮𝐧𝐭 : {'🤖 ʙᴏᴛ' if ibot else '👤 ᴜsᴇʀʙᴏᴛ'} {sel.get('name','?')}\n"
         f"┣⊸ ◈ 𝐑𝐚𝐧𝐠𝐞   : <code>{start_id}</code> → {end_lbl}\n"
-        f"┣⊸ ◈ 𝐉𝐨𝐛 𝐈𝐃  : <code>{job_id[-6:]}</code>" + (f" (<b>{cname}</b>)\n" if cname else "\n") +
-        f"┃\n"
-        f"╰────────────────────────────────╯</b>",
-        reply_markup=ReplyKeyboardRemove())
+        f"┣⊸ ◈ sᴛᴀᴛᴜs  : {initial_status.upper()}\n"
+        f"┣⊸ ◈ 𝐉𝐨𝐛 𝐈𝐃  : <code>{job_id[-6:]}</code>" + (f" (<b>{cname_safe}</b>)\n" if cname_safe else "\n") +
+        f"┃\n╰────────────────────────────────╯</b>"
+    )
+
+    try:
+        await bot.send_message(user_id, status_msg, reply_markup=ReplyKeyboardRemove())
+    except Exception as _e:
+        await bot.send_message(user_id, f"✅ ᴛᴀsᴋ ᴊᴏʙ ᴄʀᴇᴀᴛᴇᴅ\nJob ID: <code>{job_id}</code>\n<i>(HTML syntax error saved)</i>", reply_markup=ReplyKeyboardRemove())
+
