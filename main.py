@@ -176,10 +176,10 @@ async def main():
     asyncio.create_task(ping_server())
 
     from plugins.taskjob import resume_task_jobs
-    from plugins.old_taskjob import resume_oldtaskjobs
+    from plugins.old_taskjob import resume_old_task_jobs
     from plugins.jobs import resume_live_jobs
     asyncio.create_task(resume_task_jobs(_bot=bot))
-    asyncio.create_task(resume_oldtaskjobs(_bot=bot))
+    asyncio.create_task(resume_old_task_jobs(_bot=bot))
     asyncio.create_task(resume_live_jobs(_bot=bot))
 
     await idle()

@@ -423,7 +423,7 @@ def _start_task(job_id: str, user_id: int, _bot=None):
     return task
 
 
-async def resume_task_jobs(user_id: int = None):
+async def resume_old_task_jobs(user_id: int = None, _bot=None):
     q = {"status": "running"}
     if user_id: q["user_id"] = user_id
     async for job in db.db[COLL].find(q):
