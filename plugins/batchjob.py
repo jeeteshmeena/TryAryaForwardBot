@@ -836,7 +836,7 @@ async def _create_batchjob_flow(bot, user_id: int):
 
     # Step 2 — Source
     src_r = await bot.ask(user_id,
-        "<b>╭──────❰ 📦 sᴛᴇᴘ 2/4 — sᴏᴜʀᴄᴇ ᴄʜᴀᴛ ❱──────╮\n"
+        "<b>╭──────❰ 📦 sᴛᴇᴘ 2/7 — sᴏᴜʀᴄᴇ ᴄʜᴀᴛ ❱──────╮\n"
         "┃\n"
         "┣⊸ @ᴜsᴇʀɴᴀᴍᴇ       — ᴘᴜʙʟɪᴄ ᴄʜᴀɴɴᴇʟ ᴏʀ ɢʀᴏᴜᴘ\n"
         "┣⊸ -1001234567890   — ɴᴜᴍᴇʀɪᴄ ᴄʜᴀɴɴᴇʟ ɪᴅ\n"
@@ -858,15 +858,35 @@ async def _create_batchjob_flow(bot, user_id: int):
         co     = await bot.get_chat(fc)
         ftitle = getattr(co, "title", None) or str(fc)
     except Exception:
+        co = None
         ftitle = str(fc)
 
-    # Step 3 — Range
+    # Step 3 — Source Topic ID (optional)
+    from_topic_id = None
+    src_topic_r = await bot.ask(user_id,
+        "<b>╭──────❰ 📋 sᴛᴇᴘ 3/7 — sᴏᴜʀᴄᴇ ᴛᴏᴘɪᴄ ɪᴅ ❱──────╮\n"
+        "┃\n"
+        "┣⊸ ɪғ sᴏᴜʀᴄᴇ ɪs ᴀ ɢʀᴏᴜᴘ ᴡɪᴛʜ ᴛᴏᴘɪᴄs, ᴇɴᴛᴇʀ\n"
+        "┣⊸ ᴛʜᴇ ᴛᴏᴘɪᴄ ɪᴅ ᴛᴏ ᴄᴏᴘʏ ғʀᴏᴍ.\n"
+        "┣⊸ sᴇɴᴅ 0 ᴏʀ ᴄʟɪᴄᴋ sᴋɪᴘ ᴛᴏ ᴄᴏᴘʏ ᴀʟʟ ᴍᴇssᴀɢᴇs.\n"
+        "┃\n╰────────────────────────────────╯</b>",
+        reply_markup=ReplyKeyboardMarkup(
+            [[KeyboardButton("0 — ɴᴏ ᴛᴏᴘɪᴄ ғɪʟᴛᴇʀ")], [KeyboardButton("/cancel")]],
+            resize_keyboard=True, one_time_keyboard=True))
+    if "/cancel" in src_topic_r.text:
+        return await src_topic_r.reply(_CANCEL_BOX, reply_markup=ReplyKeyboardRemove())
+    _st_raw = src_topic_r.text.strip().split()[0]
+    if _st_raw.isdigit() and int(_st_raw) > 0:
+        from_topic_id = int(_st_raw)
+
+    # Step 4 — Range
     rng_r = await bot.ask(user_id,
-        "<b>╭──────❰ 📦 sᴛᴇᴘ 3/4 — ᴍᴇssᴀɢᴇ ʀᴀɴɢᴇ ❱──────╮\n"
+        "<b>╭──────❰ 📦 sᴛᴇᴘ 4/7 — ᴍᴇssᴀɢᴇ ʀᴀɴɢᴇ ❱──────╮\n"
         "┃\n┣⊸ ALL      — ᴀʟʟ ᴍsɢs ғʀᴏᴍ ᴛʜᴇ ʙᴇɢɪɴɴɪɴɢ\n"
         "┣⊸ 500      — sᴛᴀʀᴛ ғʀᴏᴍ ɪᴅ 500\n"
         "┣⊸ 500:2000 — ᴏɴʟʏ ɪᴅs 500 ᴛʜʀᴏᴜɢʜ 2000\n"
-        "┃\n╰────────────────────────────────╯</b>")
+        "┃\n╰────────────────────────────────╯</b>",
+        reply_markup=ReplyKeyboardRemove())
 
     if "/cancel" in rng_r.text:
         return await rng_r.reply(_CANCEL_BOX)
@@ -884,7 +904,7 @@ async def _create_batchjob_flow(bot, user_id: int):
             try: start_id = int(rt)
             except Exception: pass
 
-    # Step 4 — Target
+    # Step 5 — Target
     channels = await db.get_user_channels(user_id)
     if not channels:
         return await bot.send_message(user_id,
@@ -895,7 +915,7 @@ async def _create_batchjob_flow(bot, user_id: int):
     ch_btns.append([KeyboardButton("/cancel")])
 
     ch_r = await bot.ask(user_id,
-        "<b>╭──────❰ 📦 sᴛᴇᴘ 4/5 — ᴛᴀʀɢᴇᴛ ᴄʜᴀɴɴᴇʟ ❱──────╮\n"
+        "<b>╭──────❰ 📦 sᴛᴇᴘ 5/7 — ᴛᴀʀɢᴇᴛ ᴄʜᴀɴɴᴇʟ ❱──────╮\n"
         "┃\n┣⊸ ᴄʜᴏᴏsᴇ ᴡʜᴇʀᴇ ᴛᴏ ᴄᴏᴘʏ ᴍᴇssᴀɢᴇs\n"
         "┃\n╰────────────────────────────────╯</b>",
         reply_markup=ReplyKeyboardMarkup(ch_btns, resize_keyboard=True, one_time_keyboard=True))
@@ -914,9 +934,27 @@ async def _create_batchjob_flow(bot, user_id: int):
         return await bot.send_message(user_id,
             "<b>❌ ɪɴᴠᴀʟɪᴅ sᴇʟᴇᴄᴛɪᴏɴ.</b>", reply_markup=ReplyKeyboardRemove())
 
-    # Step 5 — Custom Name
+    # Step 6 — Destination Topic ID (optional)
+    to_topic_id = None
+    dst_topic_r = await bot.ask(user_id,
+        "<b>╭──────❰ 💬 sᴛᴇᴘ 6/7 — ᴅᴇsᴛɪɴᴀᴛɪᴏɴ ᴛᴏᴘɪᴄ ɪᴅ ❱──────╮\n"
+        "┃\n"
+        "┣⊸ ɪғ ᴛᴀʀɢᴇᴛ ɪs ᴀ ɢʀᴏᴜᴘ ᴡɪᴛʜ ᴛᴏᴘɪᴄs, ᴇɴᴛᴇʀ\n"
+        "┣⊸ ᴛʜᴇ ᴛᴏᴘɪᴄ ɪᴅ ᴛᴏ sᴇɴᴅ ɪɴᴛᴏ.\n"
+        "┣⊸ sᴇɴᴅ 0 ᴏʀ ᴄʟɪᴄᴋ sᴋɪᴘ ᴛᴏ sᴇɴᴅ ᴛᴏ ᴍᴀɪɴ ᴄʜᴀᴛ.\n"
+        "┃\n╰────────────────────────────────╯</b>",
+        reply_markup=ReplyKeyboardMarkup(
+            [[KeyboardButton("0 — ɴᴏ ᴛᴏᴘɪᴄ")], [KeyboardButton("/cancel")]],
+            resize_keyboard=True, one_time_keyboard=True))
+    if "/cancel" in dst_topic_r.text:
+        return await dst_topic_r.reply(_CANCEL_BOX, reply_markup=ReplyKeyboardRemove())
+    _dt_raw = dst_topic_r.text.strip().split()[0]
+    if _dt_raw.isdigit() and int(_dt_raw) > 0:
+        to_topic_id = int(_dt_raw)
+
+    # Step 7 — Custom Name
     name_r = await bot.ask(user_id,
-        "<b>╭──────❰ 📋 sᴛᴇᴘ 5/5 — ᴊᴏʙ ɴᴀᴍᴇ (ᴏᴘᴛɪᴏɴᴀʟ) ❱──────╮\n"
+        "<b>╭──────❰ 📋 sᴛᴇᴘ 7/7 — ᴊᴏʙ ɴᴀᴍᴇ (ᴏᴘᴛɪᴏɴᴀʟ) ❱──────╮\n"
         "┃\n┣⊸ sᴇɴᴅ ᴀ sʜᴏʀᴛ ɴᴀᴍᴇ ғᴏʀ ᴛʜɪs ᴊᴏʙ ᴛᴏ ɪᴅᴇɴᴛɪғʏ ɪᴛ ᴇᴀsɪʟʏ.\n"
         "┣⊸ ᴏʀ ᴄʟɪᴄᴋ sᴋɪᴘ ᴛᴏ ᴜsᴇ ᴅᴇғᴀᴜʟᴛ.\n"
         "┃\n╰────────────────────────────────╯</b>",
@@ -931,38 +969,46 @@ async def _create_batchjob_flow(bot, user_id: int):
     if "sᴋɪᴘ" not in name_r.text.lower() and "skip" not in name_r.text.lower():
         cname = name_r.text.strip()[:30]
 
-    # Save & Smart-schedule
+    # ── CRITICAL: Save to DB FIRST, then start ──
     job_id = f"bj-{user_id}-{int(time.time())}"
     job = {
         "job_id": job_id, "user_id": user_id, "account_id": sel["id"],
-        "from_chat": fc, "from_title": ftitle,
-        "to_chat": to_chat, "to_title": to_title,
+        "from_chat": fc, "from_title": ftitle, "from_topic_id": from_topic_id,
+        "to_chat": to_chat, "to_title": to_title, "to_topic_id": to_topic_id,
         "start_id": start_id, "end_id": end_id, "current_id": start_id,
         "status": "running", "created": int(time.time()),
         "forwarded": 0, "consecutive_empty": 0, "error": "",
         "custom_name": cname,
     }
+    # Save BEFORE starting — runner reads DB immediately
+    await _tj_save(job)
 
     started = _queue_or_start(job_id, user_id, to_chat, _bot=bot)
     if not started:
-        job["status"] = "queued"
+        await _tj_update(job_id, status="queued")
         queue_pos = len(_ch_queue.get(to_chat, []))
 
-    await _tj_save(job)
-
     end_lbl = f"<code>{end_id}</code>" if end_id else "∞ (ᴀʟʟ ᴍsɢs)"
+    acc_lbl = '🤖 ʙᴏᴛ' if ibot else '👤 ᴜsᴇʀʙᴏᴛ'
     if started:
         status_line = "▶️ ʀᴜɴɴɪɴɢ ɴᴏᴡ"
     else:
         status_line = f"🕐 Queued at position {queue_pos} (waiting for {to_title} to free up)"
+
+    topic_info = ""
+    if from_topic_id:
+        topic_info += f"┣⊸ ◈ 𝐒𝐫𝐜 𝐓𝐨𝐩𝐢𝐜: <code>{from_topic_id}</code>\n"
+    if to_topic_id:
+        topic_info += f"┣⊸ ◈ 𝐃𝐬𝐭 𝐓𝐨𝐩𝐢𝐜: <code>{to_topic_id}</code>\n"
 
     await bot.send_message(user_id,
         f"<b>╭──────❰ ✅ ʙᴀᴛᴄʜ ᴊᴏʙ ᴄʀᴇᴀᴛᴇᴅ ❱──────╮\n"
         f"┃\n"
         f"┣⊸ ◈ 𝐒𝐨𝐮𝐫𝐜𝐞  : {ftitle}\n"
         f"┣⊸ ◈ 𝐓𝐚𝐫𝐠𝐞𝐭  : {to_title}\n"
-        f"┣⊸ ◈ 𝐀𝐜𝐜𝐨𝐮𝐧𝐭 : {{'🤖 ʙᴏᴛ' if ibot else '👤 ᴜsᴇʀʙᴏᴛ'}} {sel.get('name','?')}\n"
+        f"┣⊸ ◈ 𝐀𝐜𝐜𝐨𝐮𝐧𝐭 : {acc_lbl} {sel.get('name','?')}\n"
         f"┣⊸ ◈ 𝐑𝐚𝐧𝐠𝐞   : <code>{start_id}</code> → {end_lbl}\n"
+        f"{topic_info}"
         f"┣⊸ ◈ 𝐉𝐨𝐛 𝐈𝐃  : <code>{job_id[-6:]}</code>" + (f" (<b>{cname}</b>)\n" if cname else "\n") +
         f"┣⊸ ◈ 𝐒𝐭𝐚𝐭𝐮𝐬  : {status_line}\n"
         f"┃\n"
