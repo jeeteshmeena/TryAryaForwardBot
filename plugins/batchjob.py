@@ -36,7 +36,8 @@ _ch_queue:  dict = {}
 COLL = "batchjobs"
 
 # Batch download semaphore — Oracle VPS has plenty of bandwidth
-_DOWNLOAD_SEM = asyncio.Semaphore(6)
+# Limit concurrent downloads per job (not global, each job gets its own SEM)
+_GLOBAL_DL_SEM = asyncio.Semaphore(4)  # Max 4 concurrent downloads across ALL batch jobs
 
 # ── Unicode helpers ────────────────────────────────────────────────────────────
 def _st(status: str) -> str:
@@ -250,7 +251,7 @@ async def _send_one(client, msg, to_chat: int, remove_caption: bool, caption_tpl
                 os.makedirs(safe_dir, exist_ok=True)
                 df_name = f"{safe_dir}/{display_name}" if display_name else f"{safe_dir}/"
                 tid = f"{msg.id}_{time.time()}"
-                async with _DOWNLOAD_SEM:
+                async with _GLOBAL_DL_SEM:
                     _tracker.start_download()
                     try:
                         fp = await client.download_media(msg, file_name=df_name,
@@ -386,7 +387,35 @@ def _queue_or_start(job_id: str, user_id: int, to_chat: int, _bot=None):
 # Core runner
 # ══════════════════════════════════════════════════════════════════════════════
 
-BATCH_SIZE = 500
+BATCH_SIZE = 200  # Fetch 200 messages at a time (faster iterations)
+_SEND_CONCURRENCY = 6  # Concurrent sends per batch job
+
+async def _send_one_with_timeout(client, msg, to_chat, rm_cap, cap_tpl,
+                                  forward_tag, fc, block_links, to_topic):
+    """Wrapper that enforces a per-file timeout to prevent stuck jobs."""
+    # Calculate timeout: large audio files (7-12h) need longer timeout
+    mo = getattr(msg, msg.media.value, None) if msg.media else None
+    file_size = getattr(mo, 'file_size', 0) or 0
+    # 90 min for files > 200MB, 5 min for files > 20MB, 2 min for small
+    if file_size > 200 * 1024 * 1024:
+        timeout = 90 * 60
+    elif file_size > 20 * 1024 * 1024:
+        timeout = 10 * 60
+    else:
+        timeout = 3 * 60
+    try:
+        return await asyncio.wait_for(
+            _send_one(client, msg, to_chat, rm_cap, cap_tpl,
+                      forward_tag=forward_tag, from_chat=fc,
+                      block_links=block_links, to_topic=to_topic),
+            timeout=timeout
+        )
+    except asyncio.TimeoutError:
+        logger.warning(f"[BatchJob] Timeout sending msg {msg.id} (size={file_size//1024}KB, timeout={timeout}s) — skipping")
+        return False
+    except asyncio.CancelledError:
+        raise
+
 
 async def _run_task_job(job_id: str, user_id: int, _bot=None):
     job = await _tj_get(job_id)
@@ -515,7 +544,7 @@ async def _run_task_job(job_id: str, user_id: int, _bot=None):
 
             await _tj_update(job_id, consecutive_empty=0)
 
-            # Auto notify every 60s
+            # Auto notify every 30s
             _now = int(time.time())
             if _bot and _now - last_notify >= 30:
                 _fresh_j = await _tj_get(job_id)
@@ -523,31 +552,40 @@ async def _run_task_job(job_id: str, user_id: int, _bot=None):
                     await _tj_notify(_bot, _fresh_j, "ʀᴜɴɴɪɴɢ")
                 last_notify = _now
 
+            # ── Concurrent parallel send (respects order via indexed result collection) ──
             fwd = 0
-            msg_count = 0
-            for msg in valid:
+            sem = asyncio.Semaphore(_SEND_CONCURRENCY)
+
+            async def _bounded_send(msg):
+                # Topic filter
                 if from_topic:
                     tid = getattr(msg, 'message_thread_id',
                           getattr(msg, 'reply_to_top_message_id',
                           getattr(msg, 'reply_to_message_id', None)))
                     if tid != from_topic and msg.id != from_topic:
-                        continue
-
+                        return False
+                if not _passes_filters(msg, dis):
+                    return False
                 await pause_ev.wait()
-                # Check DB status every 20 messages instead of every message
-                msg_count += 1
-                if msg_count % 20 == 0:
-                    f2 = await _tj_get(job_id)
-                    if not f2 or f2.get("status") in ("stopped",): return
-                if not _passes_filters(msg, dis): continue
-                ok = await _send_one(client, msg, to_chat, rm_cap, cap_tpl,
-                                     forward_tag=forward_tag, from_chat=fc,
-                                     block_links=block_links, to_topic=to_topic)
-                if ok: fwd += 1; await _tj_inc(job_id)
-                if slp: await asyncio.sleep(slp)
+                async with sem:
+                    return await _send_one_with_timeout(
+                        client, msg, to_chat, rm_cap, cap_tpl,
+                        forward_tag, fc, block_links, to_topic)
+
+            tasks = [asyncio.create_task(_bounded_send(m)) for m in valid]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for r in results:
+                if r is True:
+                    fwd += 1
+                    await _tj_inc(job_id)
+                elif isinstance(r, Exception) and not isinstance(r, asyncio.CancelledError):
+                    logger.debug(f"[BatchJob {job_id}] send error: {r}")
+            if slp and fwd:
+                await asyncio.sleep(slp)
 
             current = (valid[-1].id + 1) if valid else (current + BATCH_SIZE)
             await _tj_update(job_id, current_id=current)
+            await asyncio.sleep(0)  # yield to event loop
 
     except asyncio.CancelledError:
         logger.info(f"[BatchJob {job_id}] Cancelled")
@@ -634,44 +672,66 @@ async def _render_batchjob_list(bot, user_id: int, mq):
 
     if not jobs:
         text = (
-            "<b>Batch Jobs</b>\n\n  • No batch jobs yet.\n\nCopies all existing messages from a source to a target in the background."
+            "<b>📦 ʙᴀᴛᴄʜ ᴊᴏʙs</b>\n\n  • No batch jobs yet.\n\nCopies all existing messages from a source to a target in the background."
         )
         btns = InlineKeyboardMarkup([[
-            InlineKeyboardButton("➕ Create Batch Job", callback_data="bj#new")
+            InlineKeyboardButton("➕ ᴄʀᴇᴀᴛᴇ", callback_data="bj#new")
         ]])
     else:
-        # Build overview header with all jobs as collapsible blockquotes
-        overview_parts = ["<b>📋 ʙᴀᴛᴄʜ ᴊᴏʙs ᴏᴠᴇʀᴠɪᴇᴡ</b>\n"]
-        for j in jobs:
-            overview_parts.append(_job_overview_block(j))
-        text = "\n".join(overview_parts)
-
+        # ── Compact per-job card: name + progress bar + icon row ──
+        lines = ["<b>📋 ʙᴀᴛᴄʜ ᴊᴏʙs</b>\n"]
         rows = []
+
         for j in jobs:
-            st  = j.get("status", "stopped")
-            jid = j["job_id"]
-            s   = jid[-6:]
+            st     = j.get("status", "stopped")
+            jid    = j["job_id"]
+            s      = jid[-6:]
+            cname  = j.get("custom_name") or s
+            # Trim job name to ≤14 chars for compact display
+            cap_name = cname[:14] + "…" if len(cname) > 14 else cname
+            fwd    = j.get("forwarded", 0)
+            cur    = j.get("current_id", j.get("start_id", 1))
+            start  = j.get("start_id", 1)
+            end    = j.get("end_id", 0)
+
+            # Progress bar (10-char wide)
+            if end and end > start:
+                pct    = min(100, max(0, int((cur - start) / (end - start) * 100)))
+                filled = round(pct / 10)
+                bar    = "█" * filled + "░" * (10 - filled)
+                pct_s  = f"{pct}%"
+            else:
+                bar   = "░░░░░░░░░░"
+                pct_s = "…"
+
+            st_icon = _st(st)
+            lines.append(
+                f"<b>{st_icon} {cap_name}</b>  ·  <code>{fwd:,} sent</code>\n"
+                f"<code>{bar}</code> <b>{pct_s}</b>\n"
+            )
+
+            # ── Action buttons: one row per job, icon-only, 5 buttons max ──
             row = []
             if st == "running":
-                row.append(InlineKeyboardButton(f"⏸️ [{s}]",  callback_data=f"bj#pause#{jid}"))
-                row.append(InlineKeyboardButton(f"⏹️ [{s}]",   callback_data=f"bj#stop#{jid}"))
+                row.append(InlineKeyboardButton("⏸", callback_data=f"bj#pause#{jid}"))
+                row.append(InlineKeyboardButton("⏹", callback_data=f"bj#stop#{jid}"))
             elif st == "paused":
-                row.append(InlineKeyboardButton(f"▶️ [{s}]", callback_data=f"bj#resume#{jid}"))
-                row.append(InlineKeyboardButton(f"⏹️ [{s}]",   callback_data=f"bj#stop#{jid}"))
+                row.append(InlineKeyboardButton("▶️", callback_data=f"bj#resume#{jid}"))
+                row.append(InlineKeyboardButton("⏹", callback_data=f"bj#stop#{jid}"))
             elif st == "queued":
-                row.append(InlineKeyboardButton(f"🚀! [{s}]", callback_data=f"bj#forcestart#{jid}"))
-                row.append(InlineKeyboardButton(f"❌ [{s}]", callback_data=f"bj#dequeue#{jid}"))
-            else:
-                row.append(InlineKeyboardButton(f"▶️ [{s}]",  callback_data=f"bj#start#{jid}"))
+                row.append(InlineKeyboardButton("🚀", callback_data=f"bj#forcestart#{jid}"))
+                row.append(InlineKeyboardButton("❌", callback_data=f"bj#dequeue#{jid}"))
+            else:  # stopped / done / error
+                row.append(InlineKeyboardButton("▶️", callback_data=f"bj#start#{jid}"))
+                row.append(InlineKeyboardButton("⏹", callback_data=f"bj#stop#{jid}"))
+            row.append(InlineKeyboardButton("ℹ️", callback_data=f"bj#info#{jid}"))
+            row.append(InlineKeyboardButton("✏️", callback_data=f"bj#edit#{jid}"))
+            row.append(InlineKeyboardButton("🗑", callback_data=f"bj#del#{jid}"))
             rows.append(row)
-            rows.append([
-                InlineKeyboardButton(f"ℹ️ [{s}]", callback_data=f"bj#info#{jid}"),
-                InlineKeyboardButton(f"✏️ [{s}]", callback_data=f"bj#edit#{jid}"),
-                InlineKeyboardButton(f"🗑️ [{s}]",  callback_data=f"bj#del#{jid}"),
-            ])
 
-        rows.append([InlineKeyboardButton("➕ ᴄʀᴇᴀᴛᴇ ʙᴀᴛᴄʜ ᴊᴏʙ", callback_data="bj#new")])
-        rows.append([InlineKeyboardButton("🔄 ʀᴇғʀᴇsʜ",          callback_data="bj#list")])
+        text = "\n".join(lines)
+        rows.append([InlineKeyboardButton("➕ ᴄʀᴇᴀᴛᴇ", callback_data="bj#new"),
+                     InlineKeyboardButton("🔄 ʀᴇғʀᴇsʜ", callback_data="bj#list")])
         btns = InlineKeyboardMarkup(rows)
 
     try:

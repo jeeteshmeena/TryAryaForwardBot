@@ -166,6 +166,43 @@ async def update_bot(client, message):
     await asyncio.sleep(3)
     os.execl(sys.executable, sys.executable, *sys.argv)
 
+
+@Client.on_message(filters.private & filters.command(['resetstats']) & filters.user(Config.BOT_OWNER_ID))
+async def reset_stats(bot, message):
+    """Reset all bot statistics in DB and memory to zero."""
+    from database import db as _db
+    await _db.db["bot_stats"].update_one(
+        {"_id": "global_stats"},
+        {"$set": {
+            "TOTAL_FILES_FWD": 0,
+            "TOTAL_DOWNLOADS": 0,
+            "TOTAL_UPLOADS": 0,
+            "TOTAL_BYTES_TRANSFERRED": 0,
+        }},
+        upsert=True
+    )
+    import main as _main
+    from tracker import stats as _trk
+    # Reset in-memory tracker
+    _trk.total_download_bytes = 0
+    _trk.total_upload_bytes = 0
+    _trk.total_files_forwarded = 0
+    _trk.total_downloads_count = 0
+    _trk.total_uploads_count = 0
+    _trk._dl_window.clear()
+    _trk._ul_window.clear()
+    _trk._dl_last_bytes.clear()
+    _trk._ul_last_bytes.clear()
+    # Reset sync snapshot
+    _main.PREV_TRACKER_SNAP = {"fwd": 0, "dn": 0, "up": 0, "bt": 0}
+    await message.reply_text(
+        "<b>✅ Stats reset to zero!</b>\n\n"
+        "All DB stats and in-memory stats have been cleared.\n"
+        "Use /status to verify.",
+        parse_mode=enums.ParseMode.HTML
+    )
+
+
 # ==================Callback Functions==================
 
 @Client.on_callback_query(filters.regex(r'^help'))
@@ -247,26 +284,35 @@ async def status(bot, query):
     except Exception:
         mem_batch = 0
 
-    # ── Stats: DB persistent + tracker in-memory ──
+    # ── Stats: Always-fresh DB baseline + tracker deltas since boot ──
     try:
-        if hasattr(main, "INITIAL_DB_STATS") and main.INITIAL_DB_STATS:
-            db_s = main.INITIAL_DB_STATS
-        else:
-            db_s = await db.get_bot_stats()
-            main.INITIAL_DB_STATS = db_s
+        db_s = await db.get_bot_stats()  # always fresh
     except Exception:
         db_s = {}
-        
+
     db_fwd = db_s.get("TOTAL_FILES_FWD", 0)
     db_dl  = db_s.get("TOTAL_DOWNLOADS", 0)
     db_ul  = db_s.get("TOTAL_UPLOADS", 0)
     db_bt  = db_s.get("TOTAL_BYTES_TRANSFERRED", 0)
 
+    # PREV_TRACKER_SNAP tracks what was already written to DB from tracker
     snap = _trk.snapshot()
-    total_fwd     = db_fwd + snap["total_files_fwd"]
-    total_dl      = db_dl  + snap["total_downloads_count"]
-    total_ul      = db_ul  + snap["total_uploads_count"]
-    total_data_gb = (db_bt + snap["total_dl_bytes"] + snap["total_ul_bytes"]) / (1024 * 1024 * 1024)
+    # In-session new (not yet persisted) = current tracker - last persisted batch
+    try:
+        prev = main.PREV_TRACKER_SNAP
+        new_fwd = max(0, snap["total_files_fwd"] - prev.get("fwd", 0))
+        new_dl  = max(0, snap["total_downloads_count"] - prev.get("dn", 0))
+        new_ul  = max(0, snap["total_uploads_count"] - prev.get("up", 0))
+        snap_bt = snap["total_dl_bytes"] + snap["total_ul_bytes"]
+        new_bt  = max(0, snap_bt - prev.get("bt", 0))
+    except Exception:
+        new_fwd = new_dl = new_ul = new_bt = 0
+
+    total_fwd     = db_fwd + new_fwd
+    total_dl      = db_dl  + new_dl
+    total_ul      = db_ul  + new_ul
+    # Convert bytes to GB (only real transferred bytes, not double counted)
+    total_data_gb = (db_bt + new_bt) / (1024 * 1024 * 1024)
 
     # ── Real-time speed ──
     dl_spd = snap["dl_speed"]
