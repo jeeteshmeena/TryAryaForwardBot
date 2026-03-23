@@ -461,24 +461,10 @@ async def _run_task_job(job_id: str, user_id: int, _bot=None):
             current = (msgs[-1].id + 1) if msgs else (current + BATCH_SIZE)
             await _tj_update(job_id, current_id=current)
 
-        # ── Scheduling logic ──────────────────────────────────────────────────
+        # ── End of Task Job logic ─────────────────────────────────────────────
         job_f = await _tj_get(job_id)
-        if job_f and job_f.get("status") == "done" and job_f.get("scheduled"):
-            # Look for NEXT job in queue for same destination
-            q = {"to_chat": job_f["to_chat"], "status": "scheduled", "user_id": user_id}
-            next_j = await db.db[COLL].find_one(q, sort=[("created", 1)])
-            if next_j:
-                if _bot:
-                    await _bot.send_message(user_id, 
-                        "<b>╭──────❰ ⏳ Tᴀsᴋ Sᴄʜᴇᴅᴜʟᴇʀ ❱──────╮\n"
-                        "┃\n"
-                        "┣⊸ Pʀᴇᴠɪᴏᴜs ᴛᴀsᴋ ᴄᴏᴍᴘʟᴇᴛᴇᴅ ✅\n"
-                        "┣⊸ Gᴀᴘ: 1 ᴍɪɴᴜᴛᴇ sᴛᴀʀᴛɪɴɢ ɴᴏᴡ.\n"
-                        "┣⊸ <i>Yᴏᴜ ᴄᴀɴ sᴇɴᴅ ʏᴏᴜʀ ᴍᴇssᴀɢᴇs ɴᴏᴡ.</i>\n"
-                        f"┣⊸ Nᴇxᴛ ᴛᴀsᴋ: <b>{next_j.get('from_title')}</b>\n"
-                        "┃\n╰────────────────────────────────╯</b>")
-                await asyncio.sleep(60)
-                _start_task(next_j["job_id"], user_id, _bot)
+        if job_f and job_f.get("status") == "done":
+            pass
 
     except asyncio.CancelledError:
         logger.info(f"[TaskJob {job_id}] Cancelled")
@@ -951,17 +937,12 @@ async def _create_taskjob_flow(bot, user_id: int):
         cname = name_r.text.strip()[:30]
 
     # ---------------------------------------------------------
-    # Auto-Scheduler Logic
     # ---------------------------------------------------------
-    # Instead of asking, the bot now automatically checks if the destination 
-    # is currently busy with another running task job.
+    # Auto-Scheduler Logic has been removed as per user request.
+    # Task Jobs always start immediately.
+    # ---------------------------------------------------------
     initial_status = "running"
     is_scheduled = False
-    
-    active_to = await db.db[COLL].find_one({"to_chat": to_chat, "status": "running", "user_id": user_id})
-    if active_to:
-        initial_status = "scheduled"
-        is_scheduled = True
 
     # Save & Start
     job_id = f"tj-{user_id}-{int(time.time())}"
@@ -974,11 +955,10 @@ async def _create_taskjob_flow(bot, user_id: int):
         "status": initial_status, "created": int(time.time()),
         "forwarded": 0, "consecutive_empty": 0, "error": "",
         "custom_name": cname,
-        "scheduled": is_scheduled
+        "scheduled": False
     }
     await _tj_save(job)
-    if initial_status == "running":
-        _start_task(job_id, user_id, _bot=bot)
+    _start_task(job_id, user_id, _bot=bot)
 
     end_lbl = f"<code>{end_id}</code>" if end_id else "∞ (ᴀʟʟ ᴍsɢs)"
     
@@ -988,7 +968,7 @@ async def _create_taskjob_flow(bot, user_id: int):
     cname_safe = html_lib.escape(str(cname)) if cname else None
     
     status_msg = (
-        f"<b>╭──────❰ ✅ ᴛᴀsᴋ ᴊᴏʙ {'ǫᴜᴇᴜᴇᴅ (ᴀᴜᴛᴏ-sᴄʜᴇᴅᴜʟᴇᴅ)' if initial_status=='scheduled' else 'ᴄʀᴇᴀᴛᴇᴅ'} ❱──────╮\n"
+        f"<b>╭──────❰ ✅ ᴛᴀsᴋ ᴊᴏʙ ᴄʀᴇᴀᴛᴇᴅ ❱──────╮\n"
         f"┃\n"
         f"┣⊸ ◈ 𝐒𝐨𝐮𝐫𝐜𝐞  : {ftitle_safe}\n"
         f"┣⊸ ◈ 𝐓𝐚𝐫𝐠𝐞𝐭  : {to_title_safe}\n"
@@ -996,15 +976,11 @@ async def _create_taskjob_flow(bot, user_id: int):
         f"┣⊸ ◈ 𝐑𝐚𝐧𝐠𝐞   : <code>{start_id}</code> → {end_lbl}\n"
         f"┣⊸ ◈ sᴛᴀᴛᴜs  : {initial_status.upper()}\n"
         f"┣⊸ ◈ 𝐉𝐨𝐛 𝐈𝐃  : <code>{job_id[-6:]}</code>" + (f" (<b>{cname_safe}</b>)\n" if cname_safe else "\n")
+        f"┃\n╰────────────────────────────────╯</b>"
     )
-    
-    if initial_status == "scheduled":
-        status_msg += f"┣⊸ <i>*ᴀᴜᴛᴏ-ǫᴜᴇᴜᴇᴅ: ᴀɴᴏᴛʜᴇʀ ᴊᴏʙ ɪs ᴄᴜʀʀᴇɴᴛʟʏ ғᴏʀᴡᴀʀᴅɪɴɢ ᴛᴏ ᴛʜɪs ᴅᴇsᴛɪɴᴀᴛɪᴏɴ. ɪᴛ ᴡɪʟʟ sᴛᴀʀᴛ ᴀᴜᴛᴏᴍᴀᴛɪᴄᴀʟʟʏ ᴡʜᴇɴ ғʀᴇᴇ.*</i>\n"
-        
-    status_msg += f"┃\n╰────────────────────────────────╯</b>"
 
     try:
         await bot.send_message(user_id, status_msg, reply_markup=ReplyKeyboardRemove())
     except Exception as _e:
-        await bot.send_message(user_id, f"✅ ᴛᴀsᴋ ᴊᴏʙ {'ǫᴜᴇᴜᴇᴅ' if initial_status=='scheduled' else 'ᴄʀᴇᴀᴛᴇᴅ'}\nJob ID: <code>{job_id}</code>\n<i>(HTML syntax error saved)</i>", reply_markup=ReplyKeyboardRemove())
+        await bot.send_message(user_id, f"✅ ᴛᴀsᴋ ᴊᴏʙ ᴄʀᴇᴀᴛᴇᴅ\nJob ID: <code>{job_id}</code>\n<i>(HTML syntax error saved)</i>", reply_markup=ReplyKeyboardRemove())
 
