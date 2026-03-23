@@ -660,8 +660,11 @@ async def _render_batchjob_list(bot, user_id: int, mq):
                 row.append(InlineKeyboardButton(f"❌ Remove Queue [{s}]", callback_data=f"bj#dequeue#{jid}"))
             else:
                 row.append(InlineKeyboardButton(f"▶️ Start [{s}]",  callback_data=f"bj#start#{jid}"))
-            row.append(InlineKeyboardButton(f"🗑 [{s}]",  callback_data=f"bj#del#{jid}"))
             rows.append(row)
+            rows.append([
+                InlineKeyboardButton(f"ℹ️ Info [{s}]", callback_data=f"bj#info#{jid}"),
+                InlineKeyboardButton(f"🗑 Delete [{s}]",  callback_data=f"bj#del#{jid}"),
+            ])
 
         rows.append([InlineKeyboardButton("➕ Create Batch Job", callback_data="bj#new")])
         rows.append([InlineKeyboardButton("🔄 ʀᴇғʀᴇsʜ",          callback_data="bj#list")])
@@ -822,6 +825,79 @@ async def tj_dequeue_cb(bot, q):
     await _tj_update(job_id, status="stopped")
     await q.answer("❌ Removed from queue.", show_alert=True)
     await _render_batchjob_list(bot, uid, q)
+
+
+@Client.on_callback_query(filters.regex(r'^bj#info#'))
+async def tj_info_cb(bot, q):
+    """Show detailed info for a single batch job."""
+    job_id, uid = q.data.split("#", 2)[2], q.from_user.id
+    job = await _tj_get(job_id)
+    if not job or job.get("user_id") != uid:
+        return await q.answer("⛔ ᴜɴᴀᴜᴛʜᴏʀɪᴢᴇᴅ.", show_alert=True)
+    await q.answer()
+
+    st      = _st(job.get("status", "stopped"))
+    status  = job.get("status", "stopped").upper()
+    cname   = job.get("custom_name", "")
+    name_p  = f"  <b>{cname}</b>" if cname else ""
+    fwd     = job.get("forwarded", 0)
+    start   = job.get("start_id", 1)
+    end     = job.get("end_id", 0)
+    cur     = job.get("current_id", 0)
+    is_bot  = job.get("is_bot", True)
+    acc_lbl = "🤖 ʙᴏᴛ" if is_bot else "👤 ᴜsᴇʀʙᴏᴛ"
+    created = job.get("created_at", "—")
+    f_topic = job.get("from_topic_id", 0)
+    t_topic = job.get("to_topic_id", 0)
+    err     = job.get("error", "")
+
+    # Progress bar
+    if end and end > start:
+        pct = min(100, max(0, int((cur - start) / (end - start) * 100)))
+        filled = pct // 5
+        bar = "█" * filled + "░" * (20 - filled)
+        pct_str = f"{pct}%"
+    else:
+        bar = "░" * 20
+        pct_str = "—"
+
+    topic_info = ""
+    if f_topic:
+        topic_info += f"<b>┣⊸ 📌 sʀᴄ ᴛᴏᴘɪᴄ   :</b>  <code>{f_topic}</code>\n"
+    if t_topic:
+        topic_info += f"<b>┣⊸ 📌 ᴅsᴛ ᴛᴏᴘɪᴄ   :</b>  <code>{t_topic}</code>\n"
+
+    err_line = f"<b>┣⊸ ⚠️  ᴇʀʀᴏʀ      :</b>  <code>{err[:100]}</code>\n" if err else ""
+
+    text = (
+        f"<b>╭━━━━━━❰ ℹ️ 𝗕𝗔𝗧𝗖𝗛  𝗝𝗢𝗕  𝗜𝗡𝗙𝗢 ❱━━━━━━╮</b>\n"
+        f"<b>┃</b>\n"
+        f"<b>┣⊸ 🆔 ᴊᴏʙ ɪᴅ      :</b>  <code>{job_id[-6:]}</code>{name_p}\n"
+        f"<b>┣⊸</b>  {st}  <b>{status}</b>\n"
+        f"<b>┣⊸ {acc_lbl}</b>\n"
+        f"<b>┃</b>\n"
+        f"<b>┣⊸ 📤 sᴏᴜʀᴄᴇ      :</b>  {job.get('from_title', '?')}\n"
+        f"<b>┣⊸ 📥 ᴛᴀʀɢᴇᴛ      :</b>  {job.get('to_title', '?')}\n"
+        f"{topic_info}"
+        f"<b>┃</b>\n"
+        f"<b>┣⊸ 📊 ʀᴀɴɢᴇ       :</b>  <code>{start}</code> → <code>{end or '∞'}</code>\n"
+        f"<b>┣⊸ 📍 ᴄᴜʀʀᴇɴᴛ     :</b>  <code>{cur}</code>\n"
+        f"<b>┣⊸ ✅ ғᴏʀᴡᴀʀᴅᴇᴅ   :</b>  <code>{fwd:,}</code>\n"
+        f"<b>┃</b>\n"
+        f"<b>┣⊸</b>  <code>{bar}</code>  <b>{pct_str}</b>\n"
+        f"<b>┃</b>\n"
+        f"<b>┣⊸ 📅 ᴄʀᴇᴀᴛᴇᴅ     :</b>  <code>{created}</code>\n"
+        f"{err_line}"
+        f"<b>┃</b>\n"
+        f"<b>╰━━━━━━━━━━━━━━━━━━━━━━━━━━━╯</b>"
+    )
+
+    await q.message.edit_text(
+        text=text,
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("↩ ʙᴀᴄᴋ ᴛᴏ ʟɪsᴛ", callback_data="bj#list")],
+        ]),
+    )
 
 
 @Client.on_callback_query(filters.regex(r'^bj#del#'))
