@@ -1314,8 +1314,11 @@ async def _create_job_flow(bot, uid: int):
     await _save_job(job)
     _start_job_task(job_id, uid, _bot=bot)
 
+    # Safe escape for HTML parse mode
+    def _esc(t): return str(t).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
     th1_lbl  = f" [ᴛʜʀᴇᴀᴅ {th1}]" if th1 else ""
-    d2_lbl   = f"\n┣⊸ ◈ 𝐃𝐞𝐬𝐭 𝟐  : {ttl2}" + (f" [ᴛʜʀᴇᴀᴅ {th2}]" if th2 else "") if to2 else ""
+    d2_lbl   = f"\n┣⊸ ◈ 𝐃𝐞𝐬𝐭 𝟐  : {_esc(ttl2)}" + (f" [ᴛʜʀᴇᴀᴅ {th2}]" if th2 else "") if to2 else ""
     bt_lbl   = (f"\n┣⊸ ◈ 𝐁𝐚𝐭𝐜𝐡   : ✅ ᴏɴ — ɪᴅ {bstart}" +
                 (f" → {bend}" if bend else " → ʟᴀᴛᴇsᴛ")) if batch_mode else "\n┣⊸ ◈ 𝐁𝐚𝐭𝐜𝐡   : ❌ ᴏFF"
     sz_lbl   = (f"\n┣⊸ ◈ 𝐌𝐚𝐱 𝐒𝐳   : {max_mb} ᴍʙ") if max_mb else ""
@@ -1324,11 +1327,11 @@ async def _create_job_flow(bot, uid: int):
     await bot.send_message(uid,
         f"<b>╭──────❰ ✅ ʟɪᴠᴇ ᴊᴏʙ ᴄʀᴇᴀᴛᴇᴅ ❱──────╮\n"
         f"┃\n"
-        f"┣⊸ ◈ 𝐒𝐨𝐮𝐫𝐜𝐞  : {ftitle}\n"
-        f"┣⊸ ◈ 𝐃𝐞𝐬𝐭 𝟏  : {ttl1}{th1_lbl}"
+        f"┣⊸ ◈ 𝐒𝐨𝐮𝐫𝐜𝐞  : {_esc(ftitle)}\n"
+        f"┣⊸ ◈ 𝐃𝐞𝐬𝐭 𝟏  : {_esc(ttl1)}{th1_lbl}"
         f"{d2_lbl}{bt_lbl}{sz_lbl}{dur_lbl}\n"
-        f"┣⊸ ◈ 𝐀𝐜𝐜𝐨𝐮𝐧𝐭 : {'🤖 ʙᴏᴛ' if ibot else '👤 ᴜsᴇʀʙᴏᴛ'} {sel.get('name','?')}\n"
-        f"┣⊸ ◈ 𝐉𝐨𝐛 𝐈𝐃  : <code>{job_id[-6:]}</code>" + (f" (<b>{cname}</b>)\n" if cname else "\n") +
+        f"┣⊸ ◈ 𝐀𝐜𝐜𝐨𝐮𝐧𝐭 : {'🤖 ʙᴏᴛ' if ibot else '👤 ᴜsᴇʀʙᴏᴛ'} {_esc(sel.get('name','?'))}\n"
+        f"┣⊸ ◈ 𝐉𝐨𝐛 𝐈𝐃  : <code>{job_id[-6:]}</code>" + (f" (<b>{_esc(cname)}</b>)\n" if cname else "\n") +
         f"┃\n"
         f"╰────────────────────────────────╯</b>",
         reply_markup=ReplyKeyboardRemove())

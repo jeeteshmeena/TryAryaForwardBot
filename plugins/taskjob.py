@@ -947,15 +947,19 @@ async def _create_taskjob_flow(bot, user_id: int):
         _start_task(job_id, user_id, _bot=bot)
 
     end_lbl = f"<code>{end_id}</code>" if end_id else "∞ (ᴀʟʟ ᴍsɢs)"
+    
+    # Safe escape for HTML parse mode so `<name>` doesn't crash Pyrogram and leave keyboard stuck
+    def _esc(t): return str(t).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
     await bot.send_message(user_id,
         f"<b>╭──────❰ ✅ ᴛᴀsᴋ ᴊᴏʙ ᴄʀᴇᴀᴛᴇᴅ ❱──────╮\n"
         f"┃\n"
-        f"┣⊸ ◈ 𝐒𝐨𝐮𝐫𝐜𝐞  : {ftitle}\n"
-        f"┣⊸ ◈ 𝐓𝐚𝐫𝐠𝐞𝐭  : {to_title}\n"
-        f"┣⊸ ◈ 𝐀𝐜𝐜𝐨𝐮𝐧𝐭 : {'🤖 ʙᴏᴛ' if ibot else '👤 ᴜsᴇʀʙᴏᴛ'} {sel.get('name','?')}\n"
+        f"┣⊸ ◈ 𝐒𝐨𝐮𝐫𝐜𝐞  : {_esc(ftitle)}\n"
+        f"┣⊸ ◈ 𝐓𝐚𝐫𝐠𝐞𝐭  : {_esc(to_title)}\n"
+        f"┣⊸ ◈ 𝐀𝐜𝐜𝐨𝐮𝐧𝐭 : {'🤖 ʙᴏᴛ' if ibot else '👤 ᴜsᴇʀʙᴏᴛ'} {_esc(sel.get('name','?'))}\n"
         f"┣⊸ ◈ 𝐑𝐚𝐧𝐠𝐞   : <code>{start_id}</code> → {end_lbl}\n"
         f"┣⊸ ◈ sᴛᴀᴛᴜs  : {initial_status.upper()}\n"
-        f"┣⊸ ◈ 𝐉𝐨𝐛 𝐈𝐃  : <code>{job_id[-6:]}</code>" + (f" (<b>{cname}</b>)\n" if cname else "\n") +
+        f"┣⊸ ◈ 𝐉𝐨𝐛 𝐈𝐃  : <code>{job_id[-6:]}</code>" + (f" (<b>{_esc(cname)}</b>)\n" if cname else "\n") +
         f"┃\n"
         f"╰────────────────────────────────╯</b>",
         reply_markup=ReplyKeyboardRemove())
