@@ -10,6 +10,7 @@ import time
 import asyncio
 import logging
 from database import db
+from config import Config
 from .test import CLIENT, start_clone_bot
 from plugins.jobs import _has_links
 from pyrogram import Client, filters
