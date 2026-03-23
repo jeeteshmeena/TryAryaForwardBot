@@ -10,7 +10,6 @@ import time
 import asyncio
 import logging
 from database import db
-from config import Config
 from .test import CLIENT, start_clone_bot
 from plugins.jobs import _has_links
 from pyrogram import Client, filters
@@ -77,15 +76,6 @@ async def _tj_notify(bot, job: dict, phase: str = ""):
     rng_p  = f"<code>{job.get('start_id',1)}</code> → <code>{end}</code>" if end else f"<code>{job.get('start_id',1)}</code> → ∞"
     err_p  = f"\n┣⊸ ⚠️ <code>{job['error']}</code>" if job.get("error") else ""
     phase_p = f"\n  • <b>Phase:</b> <code>{phase}</code>" if phase else ""
-    
-    # Live data from progress tracking
-    progress_p = ""
-    if job.get("dl_size"):
-        sz_mb = job['dl_size'] / (1024*1024)
-        progress_p = f"\n  • <b>Current File:</b> <code>{sz_mb:.1f} MB</code>"
-        if job.get("dl_progress"):
-            progress_p += f"\n  • <b>Progress:</b> <code>{job['dl_progress']}%</code>"
-
     text = (
         f"<b>Task Job Progress</b>\n\n"
         f"  • <b>ID:</b> <code>{job_id[-6:]}</code>{name_p}\n"
@@ -95,7 +85,7 @@ async def _tj_notify(bot, job: dict, phase: str = ""):
         f"  • <b>Range:</b> {rng_p}\n"
         f"  • <b>Current:</b> <code>{cur}</code>\n"
         f"  • <b>Forwarded:</b> <code>{fwd}</code>"
-        f"{phase_p}{progress_p}{err_p}"
+        f"{phase_p}{err_p}"
     )
     key = (uid, job_id)
     try:
@@ -104,9 +94,7 @@ async def _tj_notify(bot, job: dict, phase: str = ""):
             try:
                 await bot.edit_message_text(uid, existing_mid, text)
                 return
-            except Exception as e:
-                if "MESSAGE_NOT_MODIFIED" in str(e):
-                    return
+            except Exception:
                 pass
         sent = await bot.send_message(uid, text)
         _tj_status_msgs[key] = sent.id
@@ -119,9 +107,8 @@ async def _tj_notify(bot, job: dict, phase: str = ""):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _passes_filters(msg, dis: list) -> bool:
-    """Content-type check. If ALL filters are ON (none in dis), return True."""
+    """Content-type check only. `dis` must be pure content types (no rm_caption, no links)."""
     if msg.empty or msg.service: return False
-    if not dis: return True # ALL filters are ON -> no content filtering
     for typ, chk in [
         ('text',      lambda m: m.text and not m.media),
         ('audio',     lambda m: m.audio), ('voice',     lambda m: m.voice),
@@ -142,8 +129,6 @@ async def _send_one(client, msg, to_chat: int, remove_caption: bool, caption_tpl
     caption = None
     is_modified = False
 
-    # FIX: Preserve ORIGINAL formatting unless explicitly asked to modify
-    # Filter behavior: if rm_caption is OFF and caption_tpl is NONE, keep raw.
     if caption_tpl and msg.media:
         caption = caption_tpl
         is_modified = True
@@ -153,7 +138,6 @@ async def _send_one(client, msg, to_chat: int, remove_caption: bool, caption_tpl
     elif block_links and _has_links(msg):
         content = getattr(msg, 'caption' if msg.media else 'text', None)
         if content:
-            # Use html to preserve bold/italic/etc
             raw = getattr(content, 'html', str(content))
             import re as _lre
             _LRE = _lre.compile(
@@ -201,9 +185,7 @@ async def _send_one(client, msg, to_chat: int, remove_caption: bool, caption_tpl
             await client.send_message(chat_id=to_chat, text=caption or "", **kw_msg)
             return True
 
-        # IF NOT MODIFIED: copy_message preserves formatting natively.
-        # IF MODIFIED: we pass the modified text.
-        if is_modified:
+        if caption is not None and msg.media:
             await client.copy_message(chat_id=to_chat, from_chat_id=from_id,
                                       message_id=msg.id, caption=caption, **kw_msg)
         else:
@@ -223,29 +205,14 @@ async def _send_one(client, msg, to_chat: int, remove_caption: bool, caption_tpl
                     import re as _re4
                     display_name = _re4.sub(r'[\\/*?:"<>|]', '', display_name).strip() or None
                 import shutil as _shu2
-                import main
                 safe_dir = f"downloads/{msg.id}"
                 os.makedirs(safe_dir, exist_ok=True)
                 df_name = f"{safe_dir}/{display_name}" if display_name else f"{safe_dir}/"
-                
-                f_size = getattr(mo, "file_size", 0)
-                main.TOTAL_DOWNLOADS += 1
-                main.TOTAL_BYTES_TRANSFERRED += f_size
-                
-                async def progress(current, total):
-                    pc = int(current * 100 / total) if total > 0 else 0
-                    # Note: updating job dict directly here might not be thread-safe for notification 
-                    # but since only 1 worker handles 1 job, we just update local state if needed.
-                    # This update is just for the local task runner to pass to _tj_notify
-                    pass
-
                 # Semaphore: only 2 heavy downloads can run simultaneously. Others wait, not blocked.
                 # This prevents a 1GB file from delaying ALL other task jobs completely.
                 async with _DOWNLOAD_SEM:
-                    fp = await client.download_media(msg, file_name=df_name, progress=progress)
+                    fp = await client.download_media(msg, file_name=df_name)
                 if not fp: raise Exception("DownloadFailed")
-                
-                main.TOTAL_UPLOADS += 1
                 kw = {"chat_id": to_chat, "caption": caption if caption is not None else (str(msg.caption) if msg.caption else "")}
                 if to_topic: kw["message_thread_id"] = kw["reply_to_message_id"] = to_topic
                 try:
@@ -293,9 +260,9 @@ async def _run_task_job(job_id: str, user_id: int, _bot=None):
             await _tj_update(job_id, status="error", error="Account not found"); return
 
         from plugins.jobs import _get_shared_client
-        from config import Config
-        is_main = acc.get("is_bot") and acc.get("token") == Config.BOT_TOKEN
-        if is_main and getattr(_bot, "is_connected", False):
+        from config import Config as _Cfg
+        _is_main = acc.get("is_bot") and acc.get("token") == _Cfg.BOT_TOKEN
+        if _is_main and getattr(_bot, "is_connected", False):
             client = _bot
         else:
             client  = await _get_shared_client(acc)
@@ -364,9 +331,6 @@ async def _run_task_job(job_id: str, user_id: int, _bot=None):
                     try:
                         msgs = await client.get_messages(fc, batch_ids)
                         if not isinstance(msgs, list): msgs = [msgs]
-                        # Ordering fix: msgs from get_messages(IDs) might not be ordered.
-                        msgs = [m for m in msgs if m and not m.empty]
-                        msgs.sort(key=lambda x: x.id)
                         fetch_ok = True
                     except FloodWait as fw:
                         await asyncio.sleep(fw.value + 2); continue
@@ -381,29 +345,14 @@ async def _run_task_job(job_id: str, user_id: int, _bot=None):
                         async for hmsg in client.get_chat_history(fc, offset_id=chunk_end + 1, limit=BATCH_SIZE):
                             if hmsg.id < current: break
                             col.append(hmsg)
-                        msgs = list(reversed(col)) # History is newest-first, flip it
+                        msgs = list(reversed(col))
                         fetch_ok = True
                     except FloodWait as fw:
                         await asyncio.sleep(fw.value + 2); continue
                     except Exception as he:
                         logger.warning(f"[TaskJob {job_id}] history fallback failed @ {current}: {he}")
-                
-                if not fetch_ok or not msgs:
-                    # FIX Auto-Stop: Instead of skipping large gaps, we probe history for the NEXT valid ID 
-                    # before jumping ahead blindly.
-                    try:
-                        async for nm in client.get_chat_history(fc, offset_id=current, limit=1, reverse=True):
-                            if nm.id > current:
-                                current = nm.id
-                                await _tj_update(job_id, current_id=current)
-                                break
-                        else:
-                            # if no message after 'current', we are done
-                            await _tj_update(job_id, status="done")
-                            break
-                    except:
-                        current += BATCH_SIZE; await _tj_update(job_id, current_id=current)
-                    continue
+                if not fetch_ok:
+                    current += BATCH_SIZE; await _tj_update(job_id, current_id=current); continue
             except asyncio.CancelledError: raise
             except Exception as e:
                 logger.warning(f"[TaskJob {job_id}] Fetch outer exception {current}: {e}")
@@ -432,8 +381,7 @@ async def _run_task_job(job_id: str, user_id: int, _bot=None):
                     await _tj_notify(_bot, _fresh_j, "ʀᴜɴɴɪɴɢ")
                 last_notify = _now
 
-            # Parallel Batch Processing: launch concurrent forward tasks
-            tasks = []
+            fwd = 0
             for msg in valid:
                 if from_topic:
                     if getattr(msg, 'message_thread_id', getattr(msg, 'reply_to_top_message_id', getattr(msg, 'reply_to_message_id', None))) != from_topic:
@@ -444,45 +392,14 @@ async def _run_task_job(job_id: str, user_id: int, _bot=None):
                 f2 = await _tj_get(job_id)
                 if not f2 or f2.get("status") in ("stopped",): return
                 if not _passes_filters(msg, dis): continue
-                
-                from plugins.jobs import _fwd_safe
-                tasks.append(_fwd_safe(_send_one, client, msg, to_chat, rm_cap, cap_tpl, 
-                                       forward_tag=forward_tag, from_chat=fc, 
-                                       block_links=block_links, to_topic=to_topic))
-            
-            if tasks:
-                results = await asyncio.gather(*tasks, return_exceptions=True)
-                for r in results:
-                    if isinstance(r, Exception):
-                        logger.error(f"[TaskJob {job_id}] Parallel error: {r}")
-                        continue
-                    if r is True:
-                        import main
-                        fwd += 1
-                        main.TOTAL_FILES_FWD += 1
-                        await _tj_inc(job_id)
+                # we pass block_links to strip links rather than skipping the file entirely
+                ok = await _send_one(client, msg, to_chat, rm_cap, cap_tpl, forward_tag=forward_tag, from_chat=fc, block_links=block_links, to_topic=to_topic)
+                if ok: fwd += 1; await _tj_inc(job_id)
+                if slp: await asyncio.sleep(slp)
+                else:   await asyncio.sleep(0)
 
-            current = (msgs[-1].id + 1) if msgs else (current + BATCH_SIZE)
+            current = (valid[-1].id + 1) if valid else (current + BATCH_SIZE)
             await _tj_update(job_id, current_id=current)
-
-        # ── Scheduling logic ──────────────────────────────────────────────────
-        job_f = await _tj_get(job_id)
-        if job_f and job_f.get("status") == "done" and job_f.get("scheduled"):
-            # Look for NEXT job in queue for same destination
-            q = {"to_chat": job_f["to_chat"], "status": "scheduled", "user_id": user_id}
-            next_j = await db.db[COLL].find_one(q, sort=[("created", 1)])
-            if next_j:
-                if _bot:
-                    await _bot.send_message(user_id, 
-                        "<b>╭──────❰ ⏳ Tᴀsᴋ Sᴄʜᴇᴅᴜʟᴇʀ ❱──────╮\n"
-                        "┃\n"
-                        "┣⊸ Pʀᴇᴠɪᴏᴜs ᴛᴀsᴋ ᴄᴏᴍᴘʟᴇᴛᴇᴅ ✅\n"
-                        "┣⊸ Gᴀᴘ: 1 ᴍɪɴᴜᴛᴇ sᴛᴀʀᴛɪɴɢ ɴᴏᴡ.\n"
-                        "┣⊸ <i>Yᴏᴜ ᴄᴀɴ sᴇɴᴅ ʏᴏᴜʀ ᴍᴇssᴀɢᴇs ɴᴏᴡ.</i>\n"
-                        f"┣⊸ Nᴇxᴛ ᴛᴀsᴋ: <b>{next_j.get('from_title')}</b>\n"
-                        "┃\n╰────────────────────────────────╯</b>")
-                await asyncio.sleep(60)
-                _start_task(next_j["job_id"], user_id, _bot)
 
     except asyncio.CancelledError:
         logger.info(f"[TaskJob {job_id}] Cancelled")
@@ -494,9 +411,9 @@ async def _run_task_job(job_id: str, user_id: int, _bot=None):
         _task_jobs.pop(job_id, None); _pause_events.pop(job_id, None)
         if acc:
             from plugins.jobs import _release_shared_client
-            from config import Config
-            is_main = acc.get("is_bot") and acc.get("token") == Config.BOT_TOKEN
-            if not (is_main and getattr(_bot, "is_connected", False)):
+            from config import Config as _Cfg
+            _is_main = acc.get("is_bot") and acc.get("token") == _Cfg.BOT_TOKEN
+            if not (_is_main and getattr(_bot, "is_connected", False)):
                 await _release_shared_client(acc)
 
 
@@ -518,42 +435,6 @@ async def resume_task_jobs(user_id: int = None, _bot=None):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Storage Cleanup Command
-# ══════════════════════════════════════════════════════════════════════════════
-
-@Client.on_message(filters.command("cleanup") & filters.user(Config.BOT_OWNER_ID))
-async def cleanup_storage(bot, message):
-    import shutil
-    from config import Config
-    
-    msg = await message.reply_text("<b>🧹 ᴄʟᴇᴀɴɪɴɢ ᴜᴘ sᴛᴏʀᴀɢᴇ...</b>")
-    
-    freed = 0
-    dirs = ["downloads", "tmp"]
-    
-    for d in dirs:
-        if os.path.exists(d):
-            # Calculate size before cleanup
-            for root, _, files in os.walk(d):
-                for f in files:
-                    freed += os.path.getsize(os.path.join(root, f))
-            shutil.rmtree(d, ignore_errors=True)
-            os.makedirs(d, exist_ok=True)
-
-    freed_mb = freed / (1024*1024)
-    
-    await msg.edit(
-        "<b>╭──────❰ 🧹 ᴄʟᴇᴀɴᴜᴘ ᴅᴏɴᴇ ❱──────╮\n"
-        "┃\n"
-        f"┣⊸ ᴅɪʀs ᴘᴜʀɢᴇᴅ: <code>downloads, tmp</code>\n"
-        f"┣⊸ sᴘᴀᴄᴇ ғʀᴇᴇᴅ: <code>{freed_mb:.2f} MB</code>\n"
-        "┣⊸ sʏsᴛᴇᴍ ɪs ɴᴏᴡ ᴏᴘᴛɪᴍɪᴢᴇᴅ ✅\n"
-        "┃\n"
-        "╰────────────────────────────────╯</b>"
-    )
-
-
-# ══════════════════════════════════════════════════════════════════════════════
 # UI — render list
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -563,34 +444,13 @@ async def _render_taskjob_list(bot, user_id: int, mq):
 
     if not jobs:
         text = (
-            "<b>╭──────❰ 📦 ᴛᴀsᴋ ᴊᴏʙs ❱──────╮\n"
-            "┃\n"
-            "┣⊸ ɴᴏ ᴛᴀsᴋ ᴊᴏʙs ʏᴇᴛ.\n"
-            "┣⊸ ᴄᴏᴘɪᴇs ᴀʟʟ ᴇxɪsᴛɪɴɢ ᴍᴇssᴀɢᴇs.\n"
-            "┃\n"
-            "╰────────────────────────────────╯</b>"
+            "<b>Task Jobs</b>\n\n  • No task jobs yet.\n\nCopies all existing messages from a source to a target in the background."
         )
         btns = InlineKeyboardMarkup([[
-            InlineKeyboardButton("➕ ɴᴇᴡ ᴊᴏʙ", callback_data="tj#new")
+            InlineKeyboardButton("➕ Create Task Job", callback_data="tj#new")
         ]])
     else:
-        lines = ["<b>╭──────❰ 📦 ᴛᴀsᴋ ᴊᴏʙs ❱──────╮</b>\n┃"]
-        for j in jobs:
-            st  = _st(j.get("status", "stopped"))
-            fwd = j.get("forwarded", 0)
-            err = f"\n┃  ⚠️ <code>{j.get('error','')}</code>" if j.get("status") == "error" else ""
-            c_name = j.get("custom_name")
-            name_disp = f" <b>{c_name}</b>" if c_name else ""
-            cur = j.get("current_id", "?")
-            end = j.get("end_id", 0)
-            rng_lbl = f"<code>{j.get('start_id',1)}</code> → <code>{end}</code>" if end else f"<code>{j.get('start_id',1)}</code> → ∞"
-            
-            lines.append(
-                f"┣⊸ {st} <b>{j.get('from_title','?')} → {j.get('to_title','?')}</b>"
-                f"  <code>[{j['job_id'][-6:]}]</code>{name_disp}"
-                f"\n┃   ◈ 𝐅𝐨𝐫𝐰𝐚𝐫𝐝𝐞𝐝: <code>{fwd}</code>  |  𝐂𝐮𝐫𝐫𝐞𝐧𝐭: <code>{cur}</code>"
-                f"\n┃   ◈ 𝐑𝐚𝐧𝐠𝐞: {rng_lbl}{err}"
-            )
+        lines = ["<b>Task Jobs</b>\n"]
         text = "\n".join(lines)
 
         rows = []
@@ -611,7 +471,7 @@ async def _render_taskjob_list(bot, user_id: int, mq):
             row.append(InlineKeyboardButton(f"🗑 [{s}]",  callback_data=f"tj#del#{jid}"))
             rows.append(row)
 
-        rows.append([InlineKeyboardButton("➕ ɴᴇᴡ ᴊᴏʙ", callback_data="tj#new")])
+        rows.append([InlineKeyboardButton("➕ Create Task Job", callback_data="tj#new")])
         rows.append([InlineKeyboardButton("🔄 ʀᴇғʀᴇsʜ",          callback_data="tj#list")])
         btns = InlineKeyboardMarkup(rows)
 
@@ -633,7 +493,7 @@ async def taskjobs_cmd(bot, msg):
     await _render_taskjob_list(bot, msg.from_user.id, msg)
 
 
-@Client.on_message(filters.private & filters.command(["newtaskjob", "newtask"]))
+@Client.on_message(filters.private & filters.command("newtaskjob"))
 async def newtaskjob_cmd(bot, msg):
     await _create_taskjob_flow(bot, msg.from_user.id)
 
@@ -952,51 +812,28 @@ async def _create_taskjob_flow(bot, user_id: int):
     if "sᴋɪᴘ" not in name_r.text.lower() and "skip" not in name_r.text.lower():
         cname = name_r.text.strip()[:30]
 
-    # Step 6 — Scheduler
-    sched_r = await bot.ask(user_id,
-        "<b>╭──────❰ ⏳ sᴛᴇᴘ 6/6 — sᴄʜᴇᴅᴜʟɪɴɢ ❱──────╮\n"
-        "┃\n"
-        "┣⊸ ᴡᴏᴜʟᴅ ʏᴏᴜ ʟɪᴋᴇ ᴛᴏ sᴄʜᴇᴅᴜʟᴇ ᴛʜɪs ᴊᴏʙ?\n"
-        "┣⊸ ɪғ YES, ɪᴛ ᴡɪʟʟ ᴡᴀɪᴛ ɪғ ᴀɴᴏᴛʜᴇʀ ᴊᴏʙ ɪs\n"
-        "┃  ʀᴜɴɴɪɴɢ ᴛᴏ ᴛʜᴇ sᴀᴍᴇ ᴅᴇsᴛɪɴᴀᴛɪᴏɴ.\n"
-        "┃\n╰────────────────────────────────╯</b>",
-        reply_markup=ReplyKeyboardMarkup([["ʏᴇs", "ɴᴏ"]], resize_keyboard=True))
-    
-    is_scheduled = "ʏᴇs" in sched_r.text.lower()
-
     # Save & Start
     job_id = f"tj-{user_id}-{int(time.time())}"
-    
-    # Check if we should start immediately or queue it
-    initial_status = "running"
-    if is_scheduled:
-        active_to = await db.db[COLL].find_one({"to_chat": to_chat, "status": "running", "user_id": user_id})
-        if active_to:
-            initial_status = "scheduled"
-
     job = {
         "job_id": job_id, "user_id": user_id, "account_id": sel["id"],
         "from_chat": fc, "from_title": ftitle, "from_topic_id": from_topic_id,
         "to_chat": to_chat, "to_title": to_title, "to_topic_id": to_topic_id,
         "start_id": start_id, "end_id": end_id, "current_id": start_id,
-        "status": initial_status, "created": int(time.time()),
+        "status": "running", "created": int(time.time()),
         "forwarded": 0, "consecutive_empty": 0, "error": "",
         "custom_name": cname,
-        "scheduled": is_scheduled
     }
     await _tj_save(job)
-    if initial_status == "running":
-        _start_task(job_id, user_id, _bot=bot)
+    _start_task(job_id, user_id)
 
     end_lbl = f"<code>{end_id}</code>" if end_id else "∞ (ᴀʟʟ ᴍsɢs)"
     await bot.send_message(user_id,
-        f"<b>╭──────❰ ✅ ᴛᴀsᴋ ᴊᴏʙ {'ǫᴜᴇᴜᴇᴅ' if initial_status=='scheduled' else 'ᴄʀᴇᴀᴛᴇᴅ'} ❱──────╮\n"
+        f"<b>╭──────❰ ✅ ᴛᴀsᴋ ᴊᴏʙ ᴄʀᴇᴀᴛᴇᴅ ❱──────╮\n"
         f"┃\n"
         f"┣⊸ ◈ 𝐒𝐨𝐮𝐫𝐜𝐞  : {ftitle}\n"
         f"┣⊸ ◈ 𝐓𝐚𝐫𝐠𝐞𝐭  : {to_title}\n"
         f"┣⊸ ◈ 𝐀𝐜𝐜𝐨𝐮𝐧𝐭 : {'🤖 ʙᴏᴛ' if ibot else '👤 ᴜsᴇʀʙᴏᴛ'} {sel.get('name','?')}\n"
         f"┣⊸ ◈ 𝐑𝐚𝐧𝐠𝐞   : <code>{start_id}</code> → {end_lbl}\n"
-        f"┣⊸ ◈ sᴛᴀᴛᴜs  : {initial_status.upper()}\n"
         f"┣⊸ ◈ 𝐉𝐨𝐛 𝐈𝐃  : <code>{job_id[-6:]}</code>" + (f" (<b>{cname}</b>)\n" if cname else "\n") +
         f"┃\n"
         f"╰────────────────────────────────╯</b>",
