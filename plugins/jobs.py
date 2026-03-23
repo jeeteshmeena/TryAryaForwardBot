@@ -1016,12 +1016,27 @@ async def newjob_cmd(bot, msg):
     await _create_job_flow(bot, msg.from_user.id)
 
 
+def _clear_listeners_jobs(bot, user_id: int):
+    try:
+        import pyrogram.enums as _pe
+        _lst = bot.listeners.get(_pe.ListenerTypes.MESSAGE, [])
+        to_remove = [l for l in list(_lst) if (
+            l.identifier.chat_id == user_id or
+            l.identifier.from_user_id == user_id
+        )]
+        for l in to_remove:
+            _lst.remove(l)
+            if not l.future.done(): l.future.cancel()
+    except Exception:
+        pass
+
 async def _pick_channel(bot, uid: int, channels: list, prompt: str, optional=False):
     """Ask user to pick a target channel. Returns (chat_id, title, cancelled)."""
     btns = [[KeyboardButton(ch['title'])] for ch in channels]
     if optional:
         btns.append([KeyboardButton("⏭ sᴋɪᴘ (ɴᴏ sᴇᴄᴏɴᴅ ᴅᴇsᴛ)")])
     btns.append([KeyboardButton("/cancel")])
+    _clear_listeners_jobs(bot, uid)
     r = await bot.ask(uid, prompt, reply_markup=ReplyKeyboardMarkup(btns, resize_keyboard=True, one_time_keyboard=True))
     txt = r.text.strip()
     if "/cancel" in txt:
@@ -1038,6 +1053,7 @@ async def _pick_channel(bot, uid: int, channels: list, prompt: str, optional=Fal
 
 async def _pick_topic(bot, uid: int, label: str):
     """Ask for an optional topic thread ID."""
+    _clear_listeners_jobs(bot, uid)
     r = await bot.ask(uid,
         f"<b>╭──────❰ 💬 ᴛᴏᴘɪᴄ ᴛʜʀᴇᴀᴅ — {label} ❱──────╮\n"
         f"┃\n"
@@ -1069,6 +1085,8 @@ async def _create_job_flow(bot, uid: int):
     )] for a in accounts]
     acc_btns.append([KeyboardButton("/cancel")])
 
+
+    _clear_listeners_jobs(bot, uid)
     acc_r = await bot.ask(uid,
         "<b>╭──────❰ 📋 ᴄʀᴇᴀᴛᴇ ʟɪᴠᴇ ᴊᴏʙ — sᴛᴇᴘ 1/6 ❱──────╮\n"
         "┃\n┣⊸ ᴄʜᴏᴏsᴇ ᴡʜɪᴄʜ ᴀᴄᴄᴏᴜɴᴛ ᴛᴏ ᴜsᴇ\n"
@@ -1089,6 +1107,7 @@ async def _create_job_flow(bot, uid: int):
     ibot = sel.get("is_bot", True)
 
     # Step 2 — Source
+    _clear_listeners_jobs(bot, uid)
     src_r = await bot.ask(uid,
         "<b>╭──────❰ 📋 sᴛᴇᴘ 2/6 — sᴏᴜʀᴄᴇ ᴄʜᴀᴛ ❱──────╮\n"
         "┃\n"
@@ -1117,11 +1136,9 @@ async def _create_job_flow(bot, uid: int):
         try:
             co     = await bot.get_chat(fc)
             ftitle = getattr(co, "title", None) or getattr(co, "first_name", str(fc))
-            source_is_forum = getattr(co, "is_forum", False)
         except Exception:
             co = None
             ftitle = str(fc)
-            source_is_forum = False
 
         if await db.is_protected(raw, co):
             return await bot.send_message(uid,
@@ -1133,22 +1150,22 @@ async def _create_job_flow(bot, uid: int):
 
     # Step 2b — Source Topic (optional, only for forum groups)
     from_topic_id = None
-    if source_is_forum:
-        src_topic_r = await bot.ask(uid,
-            "<b>╭──────❰ 📋 sᴛᴇᴘ 2b — sᴏᴜʀᴄᴇ ᴛᴏᴘɪᴄ ❱──────╮\n"
-            "┃\n"
-            "┣⊸ ɪғ sᴏᴜʀᴄᴇ ɪs ᴀ ɢʀᴏᴜᴘ ᴡɪᴛʜ ᴛᴏᴘɪᴄs, ᴇɴᴛᴇʀ ᴛʜᴇ ᴛᴏᴘɪᴄ ɪᴅ\n"
-            "┣⊸ sᴇɴᴅ 0 ᴛᴏ ғᴏʀᴡᴀʀᴅ ᴀʟʟ ᴍᴇssᴀɢᴇs (ɴᴏ ᴛᴏᴘɪᴄ ғɪʟᴛᴇʀ)\n"
-            "┃\n╰────────────────────────────────╯</b>",
-            reply_markup=ReplyKeyboardMarkup(
-                [[KeyboardButton("0 (ɴᴏ ᴛᴏᴘɪᴄ ғɪʟᴛᴇʀ)")], [KeyboardButton("/cancel")]],
-                resize_keyboard=True, one_time_keyboard=True))
-        if "/cancel" in src_topic_r.text:
-            return await src_topic_r.reply(
-                "<b>╭──────❰ ❌ Cancelʟᴇᴅ ❱──────╮\n┃\n╰────────────────────────────────╯</b>",
-                reply_markup=ReplyKeyboardRemove())
-        _st_raw = src_topic_r.text.strip()
-        from_topic_id = int(_st_raw) if _st_raw.isdigit() and int(_st_raw) > 0 else None
+    _clear_listeners_jobs(bot, uid)
+    src_topic_r = await bot.ask(uid,
+        "<b>╭──────❰ 📋 sᴛᴇᴘ 2b — sᴏᴜʀᴄᴇ ᴛᴏᴘɪᴄ ❱──────╮\n"
+        "┃\n"
+        "┣⊸ ɪғ sᴏᴜʀᴄᴇ ɪs ᴀ ɢʀᴏᴜᴘ ᴡɪᴛʜ ᴛᴏᴘɪᴄs, ᴇɴᴛᴇʀ ᴛʜᴇ ᴛᴏᴘɪᴄ ɪᴅ\n"
+        "┣⊸ sᴇɴᴅ 0 ᴛᴏ ғᴏʀᴡᴀʀᴅ ᴀʟʟ ᴍᴇssᴀɢᴇs (ɴᴏ ᴛᴏᴘɪᴄ ғɪʟᴛᴇʀ)\n"
+        "┃\n╰────────────────────────────────╯</b>",
+        reply_markup=ReplyKeyboardMarkup(
+            [[KeyboardButton("0 (ɴᴏ ᴛᴏᴘɪᴄ ғɪʟᴛᴇʀ)")], [KeyboardButton("/cancel")]],
+            resize_keyboard=True, one_time_keyboard=True))
+    if "/cancel" in src_topic_r.text:
+        return await src_topic_r.reply(
+            "<b>╭──────❰ ❌ Cancelʟᴇᴅ ❱──────╮\n┃\n╰────────────────────────────────╯</b>",
+            reply_markup=ReplyKeyboardRemove())
+    _st_raw = src_topic_r.text.strip()
+    from_topic_id = int(_st_raw) if _st_raw.isdigit() and int(_st_raw) > 0 else None
 
     # Step 3 — Dest 1
     channels = await db.get_user_channels(uid)
@@ -1164,18 +1181,7 @@ async def _create_job_flow(bot, uid: int):
     if cancelled or not to1: return
 
     th1 = None
-    to1_is_forum = False
-    if to1 and str(to1).startswith('-100'):
-        try:
-            co1 = await bot.get_chat(to1)
-            # Only supergroups can have forum topics, never channels or private chats
-            from pyrogram.enums import ChatType
-            if getattr(co1, 'type', None) == ChatType.SUPERGROUP:
-                to1_is_forum = getattr(co1, "is_forum", False)
-        except Exception:
-            to1_is_forum = False  # Safe default: don't ask for topics if we can't confirm
-
-    if to1_is_forum:
+    if to1:
         th1 = await _pick_topic(bot, uid, "ᴅᴇsᴛ 1")
 
     # Step 4 — Dest 2
@@ -1189,21 +1195,10 @@ async def _create_job_flow(bot, uid: int):
 
     th2 = None
     if to2:
-        to2_is_forum = False
-        if str(to2).startswith('-100'):
-            try:
-                co2 = await bot.get_chat(to2)
-                # Only supergroups can have forum topics, never channels
-                from pyrogram.enums import ChatType
-                if getattr(co2, 'type', None) == ChatType.SUPERGROUP:
-                    to2_is_forum = getattr(co2, "is_forum", False)
-            except Exception:
-                to2_is_forum = False  # Safe default
-        
-        if to2_is_forum:
-            th2 = await _pick_topic(bot, uid, "ᴅᴇsᴛ 2")
+        th2 = await _pick_topic(bot, uid, "ᴅᴇsᴛ 2")
 
     # Step 5 — Batch mode
+    _clear_listeners_jobs(bot, uid)
     batch_r = await bot.ask(uid,
         "<b>╭──────❰ 📋 sᴛᴇᴘ 5/6 — ʙᴀᴛᴄʜ ᴍᴏᴅᴇ ❱──────╮\n"
         "┃\n┣⊸ ✅ ᴏɴ  — ᴄᴏᴘʏ ᴏʟᴅ ᴍsɢs ғɪʀsᴛ, ᴛʜᴇɴ ɢᴏ ʟɪᴠᴇ\n"
@@ -1224,6 +1219,7 @@ async def _create_job_flow(bot, uid: int):
     bstart, bend = 1, 0
 
     if batch_mode:
+        _clear_listeners_jobs(bot, uid)
         rng_r = await bot.ask(uid,
             "<b>╭──────❰ 📋 ʙᴀᴛᴄʜ ʀᴀɴɢᴇ ❱──────╮\n"
             "┃\n┣⊸ ALL   — ᴀʟʟ ᴍsɢs ғʀᴏᴍ ᴛʜᴇ ʙᴇɢɪɴɴɪɴɢ\n"
@@ -1247,6 +1243,7 @@ async def _create_job_flow(bot, uid: int):
                 except Exception: pass
 
     # Step 6 — Size limit
+    _clear_listeners_jobs(bot, uid)
     lim_r = await bot.ask(uid,
         "<b>╭──────❰ 📋 sᴛᴇᴘ 6/7 — sɪᴢᴇ ʟɪᴍɪᴛ ❱──────╮\n"
         "┃\n┣⊸ 0         — ɴᴏ ʟɪᴍɪᴛ\n"
@@ -1278,6 +1275,7 @@ async def _create_job_flow(bot, uid: int):
             except Exception: pass
 
     # Step 7 — Custom Name
+    _clear_listeners_jobs(bot, uid)
     name_r = await bot.ask(uid,
         "<b>╭──────❰ 📋 sᴛᴇᴘ 7/7 — ᴊᴏʙ ɴᴀᴍᴇ (ᴏᴘᴛɪᴏɴᴀʟ) ❱──────╮\n"
         "┃\n┣⊸ sᴇɴᴅ ᴀ sʜᴏʀᴛ ɴᴀᴍᴇ ғᴏʀ ᴛʜɪs ᴊᴏʙ ᴛᴏ ɪᴅᴇɴᴛɪғʏ ɪᴛ ᴇᴀsɪʟʏ.\n"

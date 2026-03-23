@@ -763,7 +763,22 @@ async def tj_del_cb(bot, q):
 # Create Task Job — Interactive flow
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _clear_listeners(bot, user_id: int):
+    try:
+        import pyrogram.enums as _pe
+        _lst = bot.listeners.get(_pe.ListenerTypes.MESSAGE, [])
+        to_remove = [l for l in list(_lst) if (
+            l.identifier.chat_id == user_id or
+            l.identifier.from_user_id == user_id
+        )]
+        for l in to_remove:
+            _lst.remove(l)
+            if not l.future.done(): l.future.cancel()
+    except Exception:
+        pass
+
 async def _create_taskjob_flow(bot, user_id: int):
+    _clear_listeners(bot, user_id)
     # Step 1 — Account
     accounts = await db.get_bots(user_id)
     if not accounts:
@@ -820,12 +835,10 @@ async def _create_taskjob_flow(bot, user_id: int):
 
     try:
         co     = await bot.get_chat(fc)
-        ftitle = getattr(co, "title", None) or str(fc)
-        source_is_forum = getattr(co, "is_forum", False) and getattr(co, 'type', None) is not None and str(getattr(co, 'type', '')).endswith('SUPERGROUP')
+        ftitle = getattr(co, "title", None) or getattr(co, "first_name", str(fc))
     except Exception:
         co = None
         ftitle = str(fc)
-        source_is_forum = False  # Never default to asking topic if we can't check
 
     if await db.is_protected(raw, co):
         return await bot.send_message(user_id,
@@ -836,20 +849,21 @@ async def _create_taskjob_flow(bot, user_id: int):
             reply_markup=ReplyKeyboardRemove())
 
     from_topic_id = None
-    if source_is_forum:
-        src_topic_r = await bot.ask(user_id,
-            "<b>╭──────❰ 📋 sᴛᴇᴘ 2b — sᴏᴜʀᴄᴇ ᴛᴏᴘɪᴄ ❱──────╮\n"
-            "┃\n"
-            "┣⊸ ɪғ sᴏᴜʀᴄᴇ ɪs ᴀ ɢʀᴏᴜᴘ ᴡɪᴛʜ ᴛᴏᴘɪᴄs, ᴇɴᴛᴇʀ ᴛʜᴇ ᴛᴏᴘɪᴄ ɪᴅ\n"
-            "┣⊸ sᴇɴᴅ 0 ᴛᴏ ғᴏʀᴡᴀʀᴅ ᴀʟʟ ᴍᴇssᴀɢᴇs (ɴᴏ ᴛᴏᴘɪᴄ ғɪʟᴛᴇʀ)\n"
-            "┃\n╰────────────────────────────────╯</b>",
-            reply_markup=ReplyKeyboardMarkup([["0 (ɴᴏ ᴛᴏᴘɪᴄ ғɪʟᴛᴇʀ)"], ["/cancel"]], resize_keyboard=True, one_time_keyboard=True))
-        if "/cancel" in src_topic_r.text:
-            return await src_topic_r.reply(_CANCEL_BOX, reply_markup=ReplyKeyboardRemove())
-        _st_raw = src_topic_r.text.strip()
-        from_topic_id = int(_st_raw) if _st_raw.isdigit() and int(_st_raw) > 0 else None
+    _clear_listeners(bot, user_id)
+    src_topic_r = await bot.ask(user_id,
+        "<b>╭──────❰ 📋 sᴛᴇᴘ 2b — sᴏᴜʀᴄᴇ ᴛᴏᴘɪᴄ ❱──────╮\n"
+        "┃\n"
+        "┣⊸ ɪғ sᴏᴜʀᴄᴇ ɪs ᴀ ɢʀᴏᴜᴘ ᴡɪᴛʜ ᴛᴏᴘɪᴄs, ᴇɴᴛᴇʀ ᴛʜᴇ ᴛᴏᴘɪᴄ ɪᴅ\n"
+        "┣⊸ sᴇɴᴅ 0 ᴛᴏ ғᴏʀᴡᴀʀᴅ ᴀʟʟ ᴍᴇssᴀɢᴇs (ɴᴏ ᴛᴏᴘɪᴄ ғɪʟᴛᴇʀ)\n"
+        "┃\n╰────────────────────────────────╯</b>",
+        reply_markup=ReplyKeyboardMarkup([["0 (ɴᴏ ᴛᴏᴘɪᴄ ғɪʟᴛᴇʀ)"], ["/cancel"]], resize_keyboard=True, one_time_keyboard=True))
+    if "/cancel" in src_topic_r.text:
+        return await src_topic_r.reply(_CANCEL_BOX, reply_markup=ReplyKeyboardRemove())
+    _st_raw = src_topic_r.text.strip()
+    from_topic_id = int(_st_raw) if _st_raw.isdigit() and int(_st_raw) > 0 else None
 
     # Step 3 — Range
+    _clear_listeners(bot, user_id)
     rng_r = await bot.ask(user_id,
         "<b>╭──────❰ 📦 sᴛᴇᴘ 3/4 — ᴍᴇssᴀɢᴇ ʀᴀɴɢᴇ ❱──────╮\n"
         "┃\n┣⊸ ALL      — ᴀʟʟ ᴍsɢs ғʀᴏᴍ ᴛʜᴇ ʙᴇɢɪɴɴɪɴɢ\n"
@@ -883,6 +897,7 @@ async def _create_taskjob_flow(bot, user_id: int):
     ch_btns = [[KeyboardButton(ch['title'])] for ch in channels]
     ch_btns.append([KeyboardButton("/cancel")])
 
+    _clear_listeners(bot, user_id)
     ch_r = await bot.ask(user_id,
         "<b>╭──────❰ 📦 sᴛᴇᴘ 4/5 — ᴛᴀʀɢᴇᴛ ᴄʜᴀɴɴᴇʟ ❱──────╮\n"
         "┃\n┣⊸ ᴄʜᴏᴏsᴇ ᴡʜᴇʀᴇ ᴛᴏ ᴄᴏᴘʏ ᴍᴇssᴀɢᴇs\n"
@@ -904,32 +919,22 @@ async def _create_taskjob_flow(bot, user_id: int):
             "<b>❌ ɪɴᴠᴀʟɪᴅ sᴇʟᴇᴄᴛɪᴏɴ.</b>", reply_markup=ReplyKeyboardRemove())
 
     to_topic_id = None
-    to_is_forum = False
-    if to_chat and str(to_chat).startswith('-100'):
-        try:
-            co_to = await bot.get_chat(to_chat)
-            from pyrogram.enums import ChatType
-            # Only SUPERGROUP can have Topics (CHANNEL cannot)
-            if getattr(co_to, 'type', None) == ChatType.SUPERGROUP:
-                to_is_forum = getattr(co_to, "is_forum", False)
-        except Exception:
-            to_is_forum = False  # Safe default: don't prompt if we can't confirm
-
-    if to_is_forum:
-        to_topic_r = await bot.ask(user_id,
-            "<b>╭──────❰ 💬 ᴛᴏᴘɪᴄ ᴛʜʀᴇᴀᴅ — ᴅᴇsᴛɪɴᴀᴛɪᴏɴ ❱──────╮\n"
-            "┃\n"
-            "┣⊸ sᴇɴᴅ ᴛʜʀᴇᴀᴅ ɪᴅ ᴛᴏ ᴘᴏsᴛ ɪɴᴛᴏ ᴀ ᴛᴏᴘɪᴄ\n"
-            "┣⊸ sᴇɴᴅ 0 ᴛᴏ ᴘᴏsᴛ ɪɴ ᴍᴀɪɴ ᴄʜᴀᴛ\n"
-            "┃\n╰────────────────────────────────╯</b>",
-            reply_markup=ReplyKeyboardMarkup([["0 (ɴᴏ ᴛᴏᴘɪᴄ)"], ["/cancel"]], resize_keyboard=True, one_time_keyboard=True))
-        if "/cancel" in to_topic_r.text: return await to_topic_r.reply(_CANCEL_BOX, reply_markup=ReplyKeyboardRemove())
-        _t = to_topic_r.text.strip()
-        to_topic_id = int(_t) if _t.isdigit() and int(_t) > 0 else None
+    _clear_listeners(bot, user_id)
+    to_topic_r = await bot.ask(user_id,
+        "<b>╭──────❰ 💬 ᴛᴏᴘɪᴄ ᴛʜʀᴇᴀᴅ — ᴅᴇsᴛɪɴᴀᴛɪᴏɴ ❱──────╮\n"
+        "┃\n"
+        "┣⊸ sᴇɴᴅ ᴛʜʀᴇᴀᴅ ɪᴅ ᴛᴏ ᴘᴏsᴛ ɪɴᴛᴏ ᴀ ᴛᴏᴘɪᴄ\n"
+        "┣⊸ sᴇɴᴅ 0 ᴛᴏ ᴘᴏsᴛ ɪɴ ᴍᴀɪɴ ᴄʜᴀᴛ\n"
+        "┃\n╰────────────────────────────────╯</b>",
+        reply_markup=ReplyKeyboardMarkup([["0 (ɴᴏ ᴛᴏᴘɪᴄ)"], ["/cancel"]], resize_keyboard=True, one_time_keyboard=True))
+    if "/cancel" in to_topic_r.text: return await to_topic_r.reply(_CANCEL_BOX, reply_markup=ReplyKeyboardRemove())
+    _t = to_topic_r.text.strip()
+    to_topic_id = int(_t) if _t.isdigit() and int(_t) > 0 else None
 
     # Step 5 — Custom Name
+    _clear_listeners(bot, user_id)
     name_r = await bot.ask(user_id,
-        "<b>╭──────❰ 📋 sᴛᴇᴘ 5/5 — ᴊᴏʙ ɴᴀᴍᴇ (ᴏᴘᴛɪᴏɴᴀʟ) ❱──────╮\n"
+        "<b>╭──────❰ 📋 sᴛᴇᴘ 5/6 — ᴊᴏʙ ɴᴀᴍᴇ (ᴏᴘᴛɪᴏɴᴀʟ) ❱──────╮\n"
         "┃\n┣⊸ sᴇɴᴅ ᴀ sʜᴏʀᴛ ɴᴀᴍᴇ ғᴏʀ ᴛʜɪs ᴊᴏʙ ᴛᴏ ɪᴅᴇɴᴛɪғʏ ɪᴛ ᴇᴀsɪʟʏ.\n"
         "┣⊸ ᴏʀ ᴄʟɪᴄᴋ sᴋɪᴘ ᴛᴏ ᴜsᴇ ᴅᴇғᴀᴜʟᴛ.\n"
         "┃\n╰────────────────────────────────╯</b>",
@@ -945,6 +950,7 @@ async def _create_taskjob_flow(bot, user_id: int):
         cname = name_r.text.strip()[:30]
 
     # Step 6 — Scheduler
+    _clear_listeners(bot, user_id)
     sched_r = await bot.ask(user_id,
         "<b>╭──────❰ ⏳ sᴛᴇᴘ 6/6 — sᴄʜᴇᴅᴜʟɪɴɢ ❱──────╮\n"
         "┃\n"
