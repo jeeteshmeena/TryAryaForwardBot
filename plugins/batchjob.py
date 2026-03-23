@@ -27,7 +27,7 @@ _pause_events: dict[str, asyncio.Event] = {}
 COLL = "batchjobs"
 
 # Global semaphore: limit concurrent heavy downloads to 2 so large files
-# (500MB-1GB) don't starve other running task jobs. Copy/forward ops skip it.
+# (500MB-1GB) don't starve other running batch jobs. Copy/forward ops skip it.
 _DOWNLOAD_SEM = asyncio.Semaphore(2)
 
 # ── Unicode helpers ────────────────────────────────────────────────────────────
@@ -61,7 +61,7 @@ async def _tj_inc(job_id: str, n: int = 1):
 _tj_status_msgs: dict = {}
 
 async def _tj_notify(bot, job: dict, phase: str = ""):
-    """Send/edit a live task job status message to the user."""
+    """Send/edit a live batch job status message to the user."""
     if not bot:
         return
     uid    = job["user_id"]
@@ -208,7 +208,7 @@ async def _send_one(client, msg, to_chat: int, remove_caption: bool, caption_tpl
                 os.makedirs(safe_dir, exist_ok=True)
                 df_name = f"{safe_dir}/{display_name}" if display_name else f"{safe_dir}/"
                 # Semaphore: only 2 heavy downloads can run simultaneously. Others wait, not blocked.
-                # This prevents a 1GB file from delaying ALL other task jobs completely.
+                # This prevents a 1GB file from delaying ALL other batch jobs completely.
                 async with _DOWNLOAD_SEM:
                     fp = await client.download_media(msg, file_name=df_name)
                 if not fp: raise Exception("DownloadFailed")
@@ -441,7 +441,7 @@ async def _render_batchjob_list(bot, user_id: int, mq):
 
     if not jobs:
         text = (
-            "<b>Batch Jobs</b>\n\n  • No task jobs yet.\n\nCopies all existing messages from a source to a target in the background."
+            "<b>Batch Jobs</b>\n\n  • No batch jobs yet.\n\nCopies all existing messages from a source to a target in the background."
         )
         btns = InlineKeyboardMarkup([[
             InlineKeyboardButton("➕ Create Batch Job", callback_data="bj#new")
