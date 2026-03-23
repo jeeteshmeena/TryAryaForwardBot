@@ -239,10 +239,10 @@ async def status(bot, query):
         in_memory_tasks = "0"
 
     try:
-        from .taskjob import _pause_events
-        in_memory_taskjobs = len(_pause_events)
+        from .batchjob import _pause_events
+        in_memory_batchjobs = len(_pause_events)
     except Exception:
-        in_memory_taskjobs = "0"
+        in_memory_batchjobs = "0"
 
     # Transfer stats - read from DB (persistent) + add in-memory delta since last sync
     try:
@@ -271,7 +271,7 @@ async def status(bot, query):
         "<b>┃</b>\n"
         f"<b>┣⊸ ⏱ ᴜᴘᴛɪᴍᴇ :</b> <code>{uptime}</code>\n"
         f"<b>┣⊸ 🟢 ᴀᴄᴛɪᴠᴇ ʟɪᴠᴇ ᴊᴏʙs :</b> <code>{active_jobs}</code> <i>({in_memory_tasks})</i>\n"
-        f"<b>┣⊸ 🚀 ᴀᴄᴛɪᴠᴇ ᴛᴀsᴋ ᴊᴏʙs :</b> <code>{in_memory_taskjobs}</code>\n"
+        f"<b>┣⊸ 🚀 ᴀᴄᴛɪᴠᴇ ᴛᴀsᴋ ᴊᴏʙs :</b> <code>{in_memory_batchjobs}</code>\n"
         f"<b>┣⊸ 📡 ɴᴏʀᴍᴀʟ ғᴏʀᴡᴀʀᴅs :</b> <code>{active_forwarding}</code>\n"
         "<b>┃</b>\n"
         f"<b>┣⊸ 📂 ғɪʟᴇs ғᴏʀᴡᴀʀᴅᴇᴅ :</b> <code>{total_fwd}</code>\n"

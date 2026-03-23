@@ -175,11 +175,11 @@ async def main():
     # Start self-ping & sync task
     asyncio.create_task(ping_server())
 
-    from plugins.taskjob import resume_task_jobs
-    from plugins.tmp_taskjob import resume_tmp_task_jobs
+    from plugins.batchjob import resume_batch_jobs
+    from plugins.old_taskjob import resume_old_task_jobs
     from plugins.jobs import resume_live_jobs
-    asyncio.create_task(resume_task_jobs(_bot=bot))
-    asyncio.create_task(resume_tmp_task_jobs(_bot=bot))
+    asyncio.create_task(resume_batch_jobs(_bot=bot))
+    asyncio.create_task(resume_old_task_jobs(_bot=bot))
     asyncio.create_task(resume_live_jobs(_bot=bot))
 
     await idle()
