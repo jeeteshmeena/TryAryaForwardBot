@@ -530,7 +530,13 @@ async def _run_job(job_id: str, user_id: int, _bot=None):
         if not acc:
             await _update_job(job_id, status="error", error="Account not found"); return
 
-        client        = await _get_shared_client(acc)
+        from config import Config
+        is_main_bot = acc.get("is_bot") and acc.get("token") == Config.BOT_TOKEN
+        if is_main_bot and getattr(_bot, 'is_connected', False):
+            client = _bot
+        else:
+            client = await _get_shared_client(acc)
+            
         is_bot        = acc.get("is_bot", True)
         fc            = job["from_chat"]
 
@@ -804,7 +810,10 @@ async def _run_job(job_id: str, user_id: int, _bot=None):
     finally:
         _job_tasks.pop(job_id, None)
         if acc:
-            await _release_shared_client(acc)
+            from config import Config
+            is_main_bot = acc.get("is_bot") and acc.get("token") == Config.BOT_TOKEN
+            if not (is_main_bot and getattr(_bot, 'is_connected', False)):
+                await _release_shared_client(acc)
 
 
 

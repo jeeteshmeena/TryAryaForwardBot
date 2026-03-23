@@ -292,8 +292,15 @@ async def _run_task_job(job_id: str, user_id: int, _bot=None):
         if not acc:
             await _tj_update(job_id, status="error", error="Account not found"); return
 
-        from plugins.jobs import _get_shared_client
-        client  = await _get_shared_client(acc)
+        from config import Config
+        is_main_bot = acc.get("is_bot") and acc.get("token") == Config.BOT_TOKEN
+        if is_main_bot and getattr(_bot, 'is_connected', False):
+            client = _bot
+        else:
+            from plugins.jobs import _get_shared_client
+            client = await _get_shared_client(acc)
+            if not client: raise Exception(f"Failed to start client for acc {acc.get('name')}")
+
         is_bot  = acc.get("is_bot", True)
         fc      = job["from_chat"]
 
@@ -475,8 +482,11 @@ async def _run_task_job(job_id: str, user_id: int, _bot=None):
     finally:
         _task_jobs.pop(job_id, None); _pause_events.pop(job_id, None)
         if acc:
-            from plugins.jobs import _release_shared_client
-            await _release_shared_client(acc)
+            from config import Config
+            is_main_bot = acc.get("is_bot") and acc.get("token") == Config.BOT_TOKEN
+            if not (is_main_bot and getattr(_bot, 'is_connected', False)):
+                from plugins.jobs import _release_shared_client
+                await _release_shared_client(acc)
 
 
 def _start_task(job_id: str, user_id: int, _bot=None):
