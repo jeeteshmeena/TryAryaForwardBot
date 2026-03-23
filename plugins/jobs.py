@@ -1077,8 +1077,10 @@ async def _pick_topic(bot, uid: int, label: str):
 
 async def _create_job_flow(bot, uid: int):
     # Clear any stale pyrofork listener from a previous unfinished flow.
+    # stop_listening is ASYNC — must be awaited, otherwise the coroutine is discarded
+    # and the stale listener remains, causing the second flow to hang indefinitely.
     try:
-        bot.stop_listening(uid)
+        await bot.stop_listening(user_id=uid)
     except Exception:
         pass
 

@@ -755,9 +755,10 @@ async def tj_del_cb(bot, q):
 
 async def _create_taskjob_flow(bot, user_id: int):
     # Clear any stale pyrofork/pyromod listener from a previous unfinished flow.
-    # Without this, a second invocation hangs because the old listener intercepts input.
+    # stop_listening is ASYNC — must be awaited, otherwise the coroutine is discarded
+    # and the stale listener remains, causing the second flow to hang indefinitely.
     try:
-        bot.stop_listening(user_id)
+        await bot.stop_listening(user_id=user_id)
     except Exception:
         pass
 
