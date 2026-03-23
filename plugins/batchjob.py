@@ -107,7 +107,7 @@ async def _tj_notify(bot, job: dict, phase: str = ""):
         f"<b>╭━━━━━━❰ 🚀 𝗕𝗔𝗧𝗖𝗛  𝗝𝗢𝗕 ❱━━━━━━╮</b>\n"
         f"<b>┃</b>\n"
         f"<b>┣⊸ 🆔 ᴊᴏʙ :</b>  <code>{job_id[-6:]}</code>{name_p}\n"
-        f"<b>┣⊸</b>  {st}  <b>{job.get('status','running').upper()}</b>\n"
+        f"<b>┣⊸ {st} sᴛᴀᴛᴜs :</b>  <b>{job.get('status','running').upper()}</b>\n"
         f"<b>┃</b>\n"
         f"<b>┣⊸ 📤 sᴏᴜʀᴄᴇ  :</b>  {job.get('from_title','?')}\n"
         f"<b>┣⊸ 📥 ᴛᴀʀɢᴇᴛ  :</b>  {job.get('to_title','?')}\n"
@@ -608,14 +608,14 @@ def _job_overview_block(j: dict) -> str:
     name_str = f" ({cname})" if cname else ""
 
     lines = (
-        f"🆔 ID: {jid[-6:]}{name_str}\n"
-        f"{st} Status: {status_str}\n"
-        f"📤 Source: {j.get('from_title', '?')}\n"
-        f"📥 Target: {j.get('to_title', '?')}\n"
-        f"📊 Range: {rng}\n"
-        f"📍 Current: {cur}\n"
-        f"✅ Forwarded: {fwd}\n"
-        f"🕐 Created: {created_str}"
+        f"<b>┣⊸ 🆔 ᴊᴏʙ :</b>  <code>{jid[-6:]}</code>{name_str}\n"
+        f"<b>┣⊸ {st} sᴛᴀᴛᴜs :</b>  <code>{status_str.upper()}</code>\n"
+        f"<b>┣⊸ 📤 sᴏᴜʀᴄᴇ :</b>  {j.get('from_title', '?')}\n"
+        f"<b>┣⊸ 📥 ᴛᴀʀɢᴇᴛ :</b>  {j.get('to_title', '?')}\n"
+        f"<b>┣⊸ 📊 ʀᴀɴɢᴇ :</b>  <code>{rng}</code>\n"
+        f"<b>┣⊸ 📍 ᴄᴜʀʀᴇɴᴛ :</b>  <code>{cur}</code>\n"
+        f"<b>┣⊸ ✅ sᴇɴᴛ :</b>  <code>{fwd:,}</code>\n"
+        f"<b>┣⊸ 🕐 ᴄʀᴇᴀᴛᴇᴅ :</b>  <code>{created_str}</code>"
         f"{err}"
     )
     return f"<blockquote expandable>{lines}</blockquote>"
@@ -638,7 +638,7 @@ async def _render_batchjob_list(bot, user_id: int, mq):
         ]])
     else:
         # Build overview header with all jobs as collapsible blockquotes
-        overview_parts = ["<b>📋 Batch Jobs Overview</b>\n"]
+        overview_parts = ["<b>📋 ʙᴀᴛᴄʜ ᴊᴏʙs ᴏᴠᴇʀᴠɪᴇᴡ</b>\n"]
         for j in jobs:
             overview_parts.append(_job_overview_block(j))
         text = "\n".join(overview_parts)
@@ -650,24 +650,24 @@ async def _render_batchjob_list(bot, user_id: int, mq):
             s   = jid[-6:]
             row = []
             if st == "running":
-                row.append(InlineKeyboardButton(f"⏸ Pause [{s}]",  callback_data=f"bj#pause#{jid}"))
-                row.append(InlineKeyboardButton(f"⏹ Stop [{s}]",   callback_data=f"bj#stop#{jid}"))
+                row.append(InlineKeyboardButton(f"⏸️ [{s}]",  callback_data=f"bj#pause#{jid}"))
+                row.append(InlineKeyboardButton(f"⏹️ [{s}]",   callback_data=f"bj#stop#{jid}"))
             elif st == "paused":
-                row.append(InlineKeyboardButton(f"▶️ Resume [{s}]", callback_data=f"bj#resume#{jid}"))
-                row.append(InlineKeyboardButton(f"⏹ Stop [{s}]",   callback_data=f"bj#stop#{jid}"))
+                row.append(InlineKeyboardButton(f"▶️ [{s}]", callback_data=f"bj#resume#{jid}"))
+                row.append(InlineKeyboardButton(f"⏹️ [{s}]",   callback_data=f"bj#stop#{jid}"))
             elif st == "queued":
-                row.append(InlineKeyboardButton(f"▶️ Force Start [{s}]", callback_data=f"bj#forcestart#{jid}"))
-                row.append(InlineKeyboardButton(f"❌ Remove Queue [{s}]", callback_data=f"bj#dequeue#{jid}"))
+                row.append(InlineKeyboardButton(f"🚀! [{s}]", callback_data=f"bj#forcestart#{jid}"))
+                row.append(InlineKeyboardButton(f"❌ [{s}]", callback_data=f"bj#dequeue#{jid}"))
             else:
-                row.append(InlineKeyboardButton(f"▶️ Start [{s}]",  callback_data=f"bj#start#{jid}"))
+                row.append(InlineKeyboardButton(f"▶️ [{s}]",  callback_data=f"bj#start#{jid}"))
             rows.append(row)
             rows.append([
-                InlineKeyboardButton(f"ℹ️ Info [{s}]", callback_data=f"bj#info#{jid}"),
-                InlineKeyboardButton(f"✏️ Edit [{s}]", callback_data=f"bj#edit#{jid}"),
-                InlineKeyboardButton(f"🗑 [{s}]",  callback_data=f"bj#del#{jid}"),
+                InlineKeyboardButton(f"ℹ️ [{s}]", callback_data=f"bj#info#{jid}"),
+                InlineKeyboardButton(f"✏️ [{s}]", callback_data=f"bj#edit#{jid}"),
+                InlineKeyboardButton(f"🗑️ [{s}]",  callback_data=f"bj#del#{jid}"),
             ])
 
-        rows.append([InlineKeyboardButton("➕ Create Batch Job", callback_data="bj#new")])
+        rows.append([InlineKeyboardButton("➕ ᴄʀᴇᴀᴛᴇ ʙᴀᴛᴄʜ ᴊᴏʙ", callback_data="bj#new")])
         rows.append([InlineKeyboardButton("🔄 ʀᴇғʀᴇsʜ",          callback_data="bj#list")])
         btns = InlineKeyboardMarkup(rows)
 
@@ -705,7 +705,9 @@ _CANCEL_BOX = (
 
 
 @Client.on_callback_query(filters.regex(r'^bj#list$'))
-async def tj_list_cb(bot, q): await _render_batchjob_list(bot, q.from_user.id, q)
+async def tj_list_cb(bot, q):
+    await q.answer("🔄 ʀᴇғʀᴇsʜɪɴɢ...")
+    await _render_batchjob_list(bot, q.from_user.id, q)
 
 
 @Client.on_callback_query(filters.regex(r'^bj#new$'))
@@ -915,10 +917,10 @@ async def tj_info_cb(bot, q):
     err_line = f"<b>┣⊸ ⚠️  ᴇʀʀᴏʀ      :</b>  <code>{err[:100]}</code>\n" if err else ""
 
     text = (
-        f"<b>╭━━━━━━❰ ℹ️ 𝗕𝗔𝗧𝗖𝗛  𝗝𝗢𝗕  𝗜𝗡𝗙𝗢 ❱━━━━━━╮</b>\n"
+        f"<b>╭━━━━━━❰ ℹ️ 𝗕𝗔𝗧𝗖𝗛  𝗝𝗢𝗕  𝗜𝗡𝐅𝗢 ❱━━━━━━╮</b>\n"
         f"<b>┃</b>\n"
         f"<b>┣⊸ 🆔 ᴊᴏʙ ɪᴅ      :</b>  <code>{job_id[-6:]}</code>{name_p}\n"
-        f"<b>┣⊸</b>  {st}  <b>{status}</b>\n"
+        f"<b>┣⊸ {st} sᴛᴀᴛᴜs      :</b>  <b>{status}</b>\n"
         f"<b>┣⊸ {acc_lbl}</b>\n"
         f"<b>┃</b>\n"
         f"<b>┣⊸ 📤 sᴏᴜʀᴄᴇ      :</b>  {job.get('from_title', '?')}\n"
@@ -927,7 +929,7 @@ async def tj_info_cb(bot, q):
         f"<b>┃</b>\n"
         f"<b>┣⊸ 📊 ʀᴀɴɢᴇ       :</b>  <code>{start}</code> → <code>{end or '∞'}</code>\n"
         f"<b>┣⊸ 📍 ᴄᴜʀʀᴇɴᴛ     :</b>  <code>{cur}</code>\n"
-        f"<b>┣⊸ ✅ ғᴏʀᴡᴀʀᴅᴇᴅ   :</b>  <code>{fwd:,}</code>\n"
+        f"<b>┣⊸ ✅ sᴇɴᴛ        :</b>  <code>{fwd:,}</code>\n"
         f"<b>┃</b>\n"
         f"<b>┣⊸</b>  <code>{bar}</code>  <b>{pct_str}</b>\n"
         f"<b>┃</b>\n"
