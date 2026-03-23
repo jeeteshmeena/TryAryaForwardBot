@@ -386,20 +386,18 @@ async def _fwd(client, msg, chat, thread, cap_empty: bool, forward_tag: bool, fr
 
 
 # ── Parallelism & Rate Limiting ───────────────────────────────────────────────
-_FWD_SEM = asyncio.Semaphore(25) # Up to 25 concurrent forwarding tasks (~2x speed)
+_FWD_SEM = asyncio.Semaphore(15) # Up to 15 concurrent forwarding tasks
 _flood_state = {"count": 0}       # Use dict for mutability in async scope
 _fwd_lock = asyncio.Lock()
 
 async def _fwd_safe(f_func, *args, **kwargs):
-    """Execution wrapper with parallelism and global rate limiting.
-    Flood control: after 50 sends, sleep 30s to respect Telegram limits.
-    """
+    """Execution wrapper with parallelism and global rate limiting."""
     async with _FWD_SEM:
         res = await f_func(*args, **kwargs)
         async with _fwd_lock:
             _flood_state["count"] += 1
-            if _flood_state["count"] >= 50:  # 50 msgs then 30s pause
-                logger.info("[Flood Control] 50 msgs sent — cooling down 30s...")
+            if _flood_state["count"] >= 30:
+                logger.info("[Flood Control] Cooling down for 30s...")
                 _flood_state["count"] = 0
                 await asyncio.sleep(30)
         return res
@@ -478,18 +476,9 @@ async def _get_latest_id(client, chat_id, is_bot: bool) -> int:
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Core runner
-
-async def resume_live_jobs(user_id: int = None):
-    from database import db
-    q = {"status": "running"}
-    if user_id: q["user_id"] = user_id
-    async for job in db.db["jobs"].find(q):
-        jid, uid = job["job_id"], job["user_id"]
-        if jid not in _job_tasks:
-            _start_job_task(jid, uid)
 # ══════════════════════════════════════════════════════════════════════════════
 
-BATCH_CHUNK = 20
+BATCH_CHUNK = 200
 
 _active_clients = {}
 _client_locks = {}
@@ -643,11 +632,11 @@ async def _run_job(job_id: str, user_id: int, _bot=None):
                             await asyncio.sleep(fw.value + 2); continue
                         except Exception as he:
                             logger.warning(f"[Job {job_id}] history fallback also failed @ {cur}: {he}")
+                    if not fetch_ok:
+                        cur += BATCH_CHUNK
                         await _update_job(job_id, batch_cursor=cur)
                         continue
-                except asyncio.CancelledError:
-                    await _update_job(job_id, batch_cursor=cur)
-                    raise
+                except asyncio.CancelledError: raise
                 except Exception as e:
                     logger.warning(f"[Job {job_id}] Batch fetch outer exception @ {cur}: {e}")
                     cur += BATCH_CHUNK; await _update_job(job_id, batch_cursor=cur); continue
@@ -669,12 +658,8 @@ async def _run_job(job_id: str, user_id: int, _bot=None):
                     ))
                 
                 if tasks:
-                    try:
-                        results = await asyncio.gather(*tasks, return_exceptions=True)
-                    except asyncio.CancelledError:
-                        await _update_job(job_id, batch_cursor=cur)
-                        raise
-                    for i, r in enumerate(results):
+                    results = await asyncio.gather(*tasks, return_exceptions=True)
+                    for r in results:
                         if isinstance(r, Exception):
                             logger.error(f"[Job {job_id}] Parallel error: {r}")
                             continue
@@ -682,9 +667,6 @@ async def _run_job(job_id: str, user_id: int, _bot=None):
                             import main
                             main.TOTAL_FILES_FWD += 1
                             fwd_n += 1
-                            # granular step
-                            if i < len(msgs):
-                                cur = msgs[i].id
                 
                 # Advance seen after processing block
                 if msgs: seen = max(seen, msgs[-1].id)
@@ -919,13 +901,11 @@ async def jobs_cmd(bot, msg):
 
 @Client.on_callback_query(filters.regex(r'^job#list$'))
 async def job_list_cb(bot, q):
-    await q.answer()
     await _render_jobs_list(bot, q.from_user.id, q)
 
 
 @Client.on_callback_query(filters.regex(r'^job#info#'))
 async def job_info_cb(bot, query):
-    await query.answer()
     job_id = query.data.split("#", 2)[2]
     job = await _get_job(job_id)
     if not job:
@@ -1027,7 +1007,6 @@ async def job_del_cb(bot, q):
 
 @Client.on_callback_query(filters.regex(r'^job#new$'))
 async def job_new_cb(bot, q):
-    await q.answer()
     await q.message.delete()
     await _create_job_flow(bot, q.from_user.id)
 
@@ -1075,35 +1054,7 @@ async def _pick_topic(bot, uid: int, label: str):
     return int(t) if t.isdigit() and int(t) > 0 else None
 
 
-def _clear_listeners_jobs(bot, uid: int):
-    """Directly wipe ALL pending listeners for this user.
-    bot.ask(chat_id, ...) registers listeners with chat_id=uid, from_user_id=None.
-    stop_listening(user_id=...) searches from_user_id — NEVER matches. Direct wipe needed.
-    """
-    try:
-        import pyrogram.enums as _pe
-        _lst = bot.listeners.get(_pe.ListenerTypes.MESSAGE, [])
-        to_remove = [l for l in list(_lst) if (
-            l.identifier.chat_id == uid or
-            l.identifier.from_user_id == uid
-        )]
-        for l in to_remove:
-            try:
-                _lst.remove(l)
-                if not l.future.done():
-                    l.future.cancel()
-            except Exception:
-                pass
-    except Exception:
-        pass
-
-
 async def _create_job_flow(bot, uid: int):
-    # FIX: Clear ALL stale listeners for this user before starting a new flow.
-    # bot.ask(chat_id) registers with chat_id=uid, NOT from_user_id.
-    # stop_listening(user_id=...) matches from_user_id — always misses. Direct wipe needed.
-    _clear_listeners_jobs(bot, uid)
-
     # Step 1 — Account
     accounts = await db.get_bots(uid)
     if not accounts:
@@ -1164,11 +1115,13 @@ async def _create_job_flow(bot, uid: int):
     else:
         fc = int(raw) if raw.lstrip('-').isdigit() else raw
         try:
-            co = await bot.get_chat(fc)
+            co     = await bot.get_chat(fc)
             ftitle = getattr(co, "title", None) or getattr(co, "first_name", str(fc))
+            source_is_forum = getattr(co, "is_forum", False)
         except Exception:
             co = None
             ftitle = str(fc)
+            source_is_forum = False
 
         if await db.is_protected(raw, co):
             return await bot.send_message(uid,
@@ -1180,7 +1133,7 @@ async def _create_job_flow(bot, uid: int):
 
     # Step 2b — Source Topic (optional, only for forum groups)
     from_topic_id = None
-    if str(fc) != "me":
+    if source_is_forum:
         src_topic_r = await bot.ask(uid,
             "<b>╭──────❰ 📋 sᴛᴇᴘ 2b — sᴏᴜʀᴄᴇ ᴛᴏᴘɪᴄ ❱──────╮\n"
             "┃\n"
@@ -1211,7 +1164,18 @@ async def _create_job_flow(bot, uid: int):
     if cancelled or not to1: return
 
     th1 = None
-    if to1:
+    to1_is_forum = False
+    if to1 and str(to1).startswith('-100'):
+        try:
+            co1 = await bot.get_chat(to1)
+            # Only supergroups can have forum topics, never channels or private chats
+            from pyrogram.enums import ChatType
+            if getattr(co1, 'type', None) == ChatType.SUPERGROUP:
+                to1_is_forum = getattr(co1, "is_forum", False)
+        except Exception:
+            to1_is_forum = False  # Safe default: don't ask for topics if we can't confirm
+
+    if to1_is_forum:
         th1 = await _pick_topic(bot, uid, "ᴅᴇsᴛ 1")
 
     # Step 4 — Dest 2
@@ -1225,7 +1189,19 @@ async def _create_job_flow(bot, uid: int):
 
     th2 = None
     if to2:
-        th2 = await _pick_topic(bot, uid, "ᴅᴇsᴛ 2")
+        to2_is_forum = False
+        if str(to2).startswith('-100'):
+            try:
+                co2 = await bot.get_chat(to2)
+                # Only supergroups can have forum topics, never channels
+                from pyrogram.enums import ChatType
+                if getattr(co2, 'type', None) == ChatType.SUPERGROUP:
+                    to2_is_forum = getattr(co2, "is_forum", False)
+            except Exception:
+                to2_is_forum = False  # Safe default
+        
+        if to2_is_forum:
+            th2 = await _pick_topic(bot, uid, "ᴅᴇsᴛ 2")
 
     # Step 5 — Batch mode
     batch_r = await bot.ask(uid,
@@ -1302,10 +1278,6 @@ async def _create_job_flow(bot, uid: int):
             except Exception: pass
 
     # Step 7 — Custom Name
-    # Extra safety: clear any leftover listener before the final ask.
-    # This prevents the name-step listener from a prior complete flow from
-    # consuming this step's input on the NEXT invocation.
-    _clear_listeners_jobs(bot, uid)
     name_r = await bot.ask(uid,
         "<b>╭──────❰ 📋 sᴛᴇᴘ 7/7 — ᴊᴏʙ ɴᴀᴍᴇ (ᴏᴘᴛɪᴏɴᴀʟ) ❱──────╮\n"
         "┃\n┣⊸ sᴇɴᴅ ᴀ sʜᴏʀᴛ ɴᴀᴍᴇ ғᴏʀ ᴛʜɪs ᴊᴏʙ ᴛᴏ ɪᴅᴇɴᴛɪғʏ ɪᴛ ᴇᴀsɪʟʏ.\n"
@@ -1340,11 +1312,8 @@ async def _create_job_flow(bot, uid: int):
     await _save_job(job)
     _start_job_task(job_id, uid, _bot=bot)
 
-    # Safe escape for HTML parse mode
-    def _esc(t): return str(t).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
     th1_lbl  = f" [ᴛʜʀᴇᴀᴅ {th1}]" if th1 else ""
-    d2_lbl   = f"\n┣⊸ ◈ 𝐃𝐞𝐬𝐭 𝟐  : {_esc(ttl2)}" + (f" [ᴛʜʀᴇᴀᴅ {th2}]" if th2 else "") if to2 else ""
+    d2_lbl   = f"\n┣⊸ ◈ 𝐃𝐞𝐬𝐭 𝟐  : {ttl2}" + (f" [ᴛʜʀᴇᴀᴅ {th2}]" if th2 else "") if to2 else ""
     bt_lbl   = (f"\n┣⊸ ◈ 𝐁𝐚𝐭𝐜𝐡   : ✅ ᴏɴ — ɪᴅ {bstart}" +
                 (f" → {bend}" if bend else " → ʟᴀᴛᴇsᴛ")) if batch_mode else "\n┣⊸ ◈ 𝐁𝐚𝐭𝐜𝐡   : ❌ ᴏFF"
     sz_lbl   = (f"\n┣⊸ ◈ 𝐌𝐚𝐱 𝐒𝐳   : {max_mb} ᴍʙ") if max_mb else ""
@@ -1353,11 +1322,11 @@ async def _create_job_flow(bot, uid: int):
     await bot.send_message(uid,
         f"<b>╭──────❰ ✅ ʟɪᴠᴇ ᴊᴏʙ ᴄʀᴇᴀᴛᴇᴅ ❱──────╮\n"
         f"┃\n"
-        f"┣⊸ ◈ 𝐒𝐨𝐮𝐫𝐜𝐞  : {_esc(ftitle)}\n"
-        f"┣⊸ ◈ 𝐃𝐞𝐬𝐭 𝟏  : {_esc(ttl1)}{th1_lbl}"
+        f"┣⊸ ◈ 𝐒𝐨𝐮𝐫𝐜𝐞  : {ftitle}\n"
+        f"┣⊸ ◈ 𝐃𝐞𝐬𝐭 𝟏  : {ttl1}{th1_lbl}"
         f"{d2_lbl}{bt_lbl}{sz_lbl}{dur_lbl}\n"
-        f"┣⊸ ◈ 𝐀𝐜𝐜𝐨𝐮𝐧𝐭 : {'🤖 ʙᴏᴛ' if ibot else '👤 ᴜsᴇʀʙᴏᴛ'} {_esc(sel.get('name','?'))}\n"
-        f"┣⊸ ◈ 𝐉𝐨𝐛 𝐈𝐃  : <code>{job_id[-6:]}</code>" + (f" (<b>{_esc(cname)}</b>)\n" if cname else "\n") +
+        f"┣⊸ ◈ 𝐀𝐜𝐜𝐨𝐮𝐧𝐭 : {'🤖 ʙᴏᴛ' if ibot else '👤 ᴜsᴇʀʙᴏᴛ'} {sel.get('name','?')}\n"
+        f"┣⊸ ◈ 𝐉𝐨𝐛 𝐈𝐃  : <code>{job_id[-6:]}</code>" + (f" (<b>{cname}</b>)\n" if cname else "\n") +
         f"┃\n"
         f"╰────────────────────────────────╯</b>",
         reply_markup=ReplyKeyboardRemove())

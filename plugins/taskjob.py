@@ -10,7 +10,6 @@ import time
 import asyncio
 import logging
 from database import db
-from config import Config
 from .test import CLIENT, start_clone_bot
 from plugins.jobs import _has_links
 from pyrogram import Client, filters
@@ -28,9 +27,9 @@ _pause_events: dict[str, asyncio.Event] = {}
 
 COLL = "taskjobs"
 
-# Global semaphore: limit concurrent heavy downloads to 3 so large files
+# Global semaphore: limit concurrent heavy downloads to 2 so large files
 # (500MB-1GB) don't starve other running task jobs. Copy/forward ops skip it.
-_DOWNLOAD_SEM = asyncio.Semaphore(3)
+_DOWNLOAD_SEM = asyncio.Semaphore(2)
 
 # ── Unicode helpers ────────────────────────────────────────────────────────────
 def _st(status: str) -> str:
@@ -285,7 +284,6 @@ async def _run_task_job(job_id: str, user_id: int, _bot=None):
         _pause_events[job_id] = ev
     pause_ev = _pause_events[job_id]
     last_notify = 0  # for auto status notifications
-    fwd = 0  # session forward count
 
     acc = client = None
     try:
@@ -397,12 +395,10 @@ async def _run_task_job(job_id: str, user_id: int, _bot=None):
                             # if no message after 'current', we are done
                             await _tj_update(job_id, status="done")
                             break
-                    except Exception:
+                    except:
                         current += BATCH_SIZE; await _tj_update(job_id, current_id=current)
                     continue
-            except asyncio.CancelledError:
-                await _tj_update(job_id, current_id=current)
-                raise
+            except asyncio.CancelledError: raise
             except Exception as e:
                 logger.warning(f"[TaskJob {job_id}] Fetch outer exception {current}: {e}")
                 current += BATCH_SIZE; await _tj_update(job_id, current_id=current); continue
@@ -430,45 +426,57 @@ async def _run_task_job(job_id: str, user_id: int, _bot=None):
                     await _tj_notify(_bot, _fresh_j, "ʀᴜɴɴɪɴɢ")
                 last_notify = _now
 
-            # Sequential processing — guarantees ORDER and no skipped files
+            # Parallel Batch Processing: launch concurrent forward tasks
+            tasks = []
             for msg in valid:
-                # Topic filter
                 if from_topic:
-                    msg_thread = getattr(msg, 'message_thread_id',
-                                   getattr(msg, 'reply_to_top_message_id',
-                                     getattr(msg, 'reply_to_message_id', None)))
-                    if msg_thread != from_topic and msg.id != from_topic:
-                        continue
-
+                    if getattr(msg, 'message_thread_id', getattr(msg, 'reply_to_top_message_id', getattr(msg, 'reply_to_message_id', None))) != from_topic:
+                        if msg.id != from_topic: # Allow the top message of topics through
+                            continue
+                            
                 await pause_ev.wait()
                 f2 = await _tj_get(job_id)
-                if not f2 or f2.get("status") in ("stopped",):
-                    return
-                if not _passes_filters(msg, dis):
-                    continue
-
-                try:
-                    ok = await _send_one(
-                        client, msg, to_chat, rm_cap, cap_tpl,
-                        forward_tag=forward_tag, from_chat=fc,
-                        block_links=block_links, to_topic=to_topic
-                    )
-                    if ok:
+                if not f2 or f2.get("status") in ("stopped",): return
+                if not _passes_filters(msg, dis): continue
+                
+                from plugins.jobs import _fwd_safe
+                tasks.append(_fwd_safe(_send_one, client, msg, to_chat, rm_cap, cap_tpl, 
+                                       forward_tag=forward_tag, from_chat=fc, 
+                                       block_links=block_links, to_topic=to_topic))
+            
+            if tasks:
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                for r in results:
+                    if isinstance(r, Exception):
+                        logger.error(f"[TaskJob {job_id}] Parallel error: {r}")
+                        continue
+                    if r is True:
                         import main
                         fwd += 1
                         main.TOTAL_FILES_FWD += 1
                         await _tj_inc(job_id)
-                except asyncio.CancelledError:
-                    await _tj_update(job_id, current_id=msg.id)
-                    raise
-                except Exception as se:
-                    logger.warning(f"[TaskJob {job_id}] send error msg {msg.id}: {se}")
 
-                if slp:
-                    await asyncio.sleep(slp)
-
-            current = (valid[-1].id + 1) if valid else (current + BATCH_SIZE)
+            current = (msgs[-1].id + 1) if msgs else (current + BATCH_SIZE)
             await _tj_update(job_id, current_id=current)
+
+        # ── Scheduling logic ──────────────────────────────────────────────────
+        job_f = await _tj_get(job_id)
+        if job_f and job_f.get("status") == "done" and job_f.get("scheduled"):
+            # Look for NEXT job in queue for same destination
+            q = {"to_chat": job_f["to_chat"], "status": "scheduled", "user_id": user_id}
+            next_j = await db.db[COLL].find_one(q, sort=[("created", 1)])
+            if next_j:
+                if _bot:
+                    await _bot.send_message(user_id, 
+                        "<b>╭──────❰ ⏳ Tᴀsᴋ Sᴄʜᴇᴅᴜʟᴇʀ ❱──────╮\n"
+                        "┃\n"
+                        "┣⊸ Pʀᴇᴠɪᴏᴜs ᴛᴀsᴋ ᴄᴏᴍᴘʟᴇᴛᴇᴅ ✅\n"
+                        "┣⊸ Gᴀᴘ: 1 ᴍɪɴᴜᴛᴇ sᴛᴀʀᴛɪɴɢ ɴᴏᴡ.\n"
+                        "┣⊸ <i>Yᴏᴜ ᴄᴀɴ sᴇɴᴅ ʏᴏᴜʀ ᴍᴇssᴀɢᴇs ɴᴏᴡ.</i>\n"
+                        f"┣⊸ Nᴇxᴛ ᴛᴀsᴋ: <b>{next_j.get('from_title')}</b>\n"
+                        "┃\n╰────────────────────────────────╯</b>")
+                await asyncio.sleep(60)
+                _start_task(next_j["job_id"], user_id, _bot)
 
     except asyncio.CancelledError:
         logger.info(f"[TaskJob {job_id}] Cancelled")
@@ -507,6 +515,7 @@ async def resume_task_jobs(user_id: int = None):
 @Client.on_message(filters.command("cleanup") & filters.user(Config.BOT_OWNER_ID))
 async def cleanup_storage(bot, message):
     import shutil
+    from config import Config
     
     msg = await message.reply_text("<b>🧹 ᴄʟᴇᴀɴɪɴɢ ᴜᴘ sᴛᴏʀᴀɢᴇ...</b>")
     
@@ -753,37 +762,7 @@ async def tj_del_cb(bot, q):
 # Create Task Job — Interactive flow
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _clear_listeners(bot, user_id: int):
-    """Directly wipe ALL pending listeners for this user from pyrofork's internal list.
-    bot.ask(chat_id, ...) registers listeners with chat_id=user_id, from_user_id=None.
-    stop_listening(user_id=...) searches by from_user_id — which NEVER matches.
-    We must clear by chat_id to actually hit the right listeners.
-    """
-    try:
-        import pyrogram.enums as _pe
-        from pyrogram.types import Identifier as _Ident
-        _lst = bot.listeners.get(_pe.ListenerTypes.MESSAGE, [])
-        to_remove = [l for l in list(_lst) if (
-            l.identifier.chat_id == user_id or
-            l.identifier.from_user_id == user_id
-        )]
-        for l in to_remove:
-            try:
-                _lst.remove(l)
-                if not l.future.done():
-                    l.future.cancel()
-            except Exception:
-                pass
-    except Exception:
-        pass
-
-
 async def _create_taskjob_flow(bot, user_id: int):
-    # FIX: Clear ALL stale listeners for this user before starting a new flow.
-    # bot.ask(chat_id) registers with chat_id=user_id, NOT from_user_id.
-    # stop_listening(user_id=...) matches from_user_id — always misses. Use direct wipe.
-    _clear_listeners(bot, user_id)
-
     # Step 1 — Account
     accounts = await db.get_bots(user_id)
     if not accounts:
@@ -839,11 +818,13 @@ async def _create_taskjob_flow(bot, user_id: int):
     else: fc = raw
 
     try:
-        co = await bot.get_chat(fc)
+        co     = await bot.get_chat(fc)
         ftitle = getattr(co, "title", None) or str(fc)
+        source_is_forum = getattr(co, "is_forum", False) and getattr(co, 'type', None) is not None and str(getattr(co, 'type', '')).endswith('SUPERGROUP')
     except Exception:
         co = None
         ftitle = str(fc)
+        source_is_forum = False  # Never default to asking topic if we can't check
 
     if await db.is_protected(raw, co):
         return await bot.send_message(user_id,
@@ -854,7 +835,7 @@ async def _create_taskjob_flow(bot, user_id: int):
             reply_markup=ReplyKeyboardRemove())
 
     from_topic_id = None
-    if str(fc) != "me":
+    if source_is_forum:
         src_topic_r = await bot.ask(user_id,
             "<b>╭──────❰ 📋 sᴛᴇᴘ 2b — sᴏᴜʀᴄᴇ ᴛᴏᴘɪᴄ ❱──────╮\n"
             "┃\n"
@@ -922,7 +903,18 @@ async def _create_taskjob_flow(bot, user_id: int):
             "<b>❌ ɪɴᴠᴀʟɪᴅ sᴇʟᴇᴄᴛɪᴏɴ.</b>", reply_markup=ReplyKeyboardRemove())
 
     to_topic_id = None
-    if to_chat:
+    to_is_forum = False
+    if to_chat and str(to_chat).startswith('-100'):
+        try:
+            co_to = await bot.get_chat(to_chat)
+            from pyrogram.enums import ChatType
+            # Only SUPERGROUP can have Topics (CHANNEL cannot)
+            if getattr(co_to, 'type', None) == ChatType.SUPERGROUP:
+                to_is_forum = getattr(co_to, "is_forum", False)
+        except Exception:
+            to_is_forum = False  # Safe default: don't prompt if we can't confirm
+
+    if to_is_forum:
         to_topic_r = await bot.ask(user_id,
             "<b>╭──────❰ 💬 ᴛᴏᴘɪᴄ ᴛʜʀᴇᴀᴅ — ᴅᴇsᴛɪɴᴀᴛɪᴏɴ ❱──────╮\n"
             "┃\n"
@@ -935,10 +927,6 @@ async def _create_taskjob_flow(bot, user_id: int):
         to_topic_id = int(_t) if _t.isdigit() and int(_t) > 0 else None
 
     # Step 5 — Custom Name
-    # Extra safety: clear any leftover listener before the final ask.
-    # This prevents the name-step listener from a prior complete flow from
-    # consuming this step's input on the NEXT invocation.
-    _clear_listeners(bot, user_id)
     name_r = await bot.ask(user_id,
         "<b>╭──────❰ 📋 sᴛᴇᴘ 5/5 — ᴊᴏʙ ɴᴀᴍᴇ (ᴏᴘᴛɪᴏɴᴀʟ) ❱──────╮\n"
         "┃\n┣⊸ sᴇɴᴅ ᴀ sʜᴏʀᴛ ɴᴀᴍᴇ ғᴏʀ ᴛʜɪs ᴊᴏʙ ᴛᴏ ɪᴅᴇɴᴛɪғʏ ɪᴛ ᴇᴀsɪʟʏ.\n"
@@ -955,9 +943,27 @@ async def _create_taskjob_flow(bot, user_id: int):
     if "sᴋɪᴘ" not in name_r.text.lower() and "skip" not in name_r.text.lower():
         cname = name_r.text.strip()[:30]
 
+    # Step 6 — Scheduler
+    sched_r = await bot.ask(user_id,
+        "<b>╭──────❰ ⏳ sᴛᴇᴘ 6/6 — sᴄʜᴇᴅᴜʟɪɴɢ ❱──────╮\n"
+        "┃\n"
+        "┣⊸ ᴡᴏᴜʟᴅ ʏᴏᴜ ʟɪᴋᴇ ᴛᴏ sᴄʜᴇᴅᴜʟᴇ ᴛʜɪs ᴊᴏʙ?\n"
+        "┣⊸ ɪғ YES, ɪᴛ ᴡɪʟʟ ᴡᴀɪᴛ ɪғ ᴀɴᴏᴛʜᴇʀ ᴊᴏʙ ɪs\n"
+        "┃  ʀᴜɴɴɪɴɢ ᴛᴏ ᴛʜᴇ sᴀᴍᴇ ᴅᴇsᴛɪɴᴀᴛɪᴏɴ.\n"
+        "┃\n╰────────────────────────────────╯</b>",
+        reply_markup=ReplyKeyboardMarkup([["ʏᴇs", "ɴᴏ"]], resize_keyboard=True))
+    
+    is_scheduled = "ʏᴇs" in sched_r.text.lower()
+
     # Save & Start
     job_id = f"tj-{user_id}-{int(time.time())}"
+    
+    # Check if we should start immediately or queue it
     initial_status = "running"
+    if is_scheduled:
+        active_to = await db.db[COLL].find_one({"to_chat": to_chat, "status": "running", "user_id": user_id})
+        if active_to:
+            initial_status = "scheduled"
 
     job = {
         "job_id": job_id, "user_id": user_id, "account_id": sel["id"],
@@ -967,26 +973,22 @@ async def _create_taskjob_flow(bot, user_id: int):
         "status": initial_status, "created": int(time.time()),
         "forwarded": 0, "consecutive_empty": 0, "error": "",
         "custom_name": cname,
-        "scheduled": False
+        "scheduled": is_scheduled
     }
     await _tj_save(job)
     if initial_status == "running":
         _start_task(job_id, user_id, _bot=bot)
 
     end_lbl = f"<code>{end_id}</code>" if end_id else "∞ (ᴀʟʟ ᴍsɢs)"
-    
-    # Safe escape for HTML parse mode so `<name>` doesn't crash Pyrogram and leave keyboard stuck
-    def _esc(t): return str(t).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
     await bot.send_message(user_id,
-        f"<b>╭──────❰ ✅ ᴛᴀsᴋ ᴊᴏʙ ᴄʀᴇᴀᴛᴇᴅ ❱──────╮\n"
+        f"<b>╭──────❰ ✅ ᴛᴀsᴋ ᴊᴏʙ {'ǫᴜᴇᴜᴇᴅ' if initial_status=='scheduled' else 'ᴄʀᴇᴀᴛᴇᴅ'} ❱──────╮\n"
         f"┃\n"
-        f"┣⊸ ◈ 𝐒𝐨𝐮𝐫𝐜𝐞  : {_esc(ftitle)}\n"
-        f"┣⊸ ◈ 𝐓𝐚𝐫𝐠𝐞𝐭  : {_esc(to_title)}\n"
-        f"┣⊸ ◈ 𝐀𝐜𝐜𝐨𝐮𝐧𝐭 : {'🤖 ʙᴏᴛ' if ibot else '👤 ᴜsᴇʀʙᴏᴛ'} {_esc(sel.get('name','?'))}\n"
+        f"┣⊸ ◈ 𝐒𝐨𝐮𝐫𝐜𝐞  : {ftitle}\n"
+        f"┣⊸ ◈ 𝐓𝐚𝐫𝐠𝐞𝐭  : {to_title}\n"
+        f"┣⊸ ◈ 𝐀𝐜𝐜𝐨𝐮𝐧𝐭 : {'🤖 ʙᴏᴛ' if ibot else '👤 ᴜsᴇʀʙᴏᴛ'} {sel.get('name','?')}\n"
         f"┣⊸ ◈ 𝐑𝐚𝐧𝐠𝐞   : <code>{start_id}</code> → {end_lbl}\n"
         f"┣⊸ ◈ sᴛᴀᴛᴜs  : {initial_status.upper()}\n"
-        f"┣⊸ ◈ 𝐉𝐨𝐛 𝐈𝐃  : <code>{job_id[-6:]}</code>" + (f" (<b>{_esc(cname)}</b>)\n" if cname else "\n") +
+        f"┣⊸ ◈ 𝐉𝐨𝐛 𝐈𝐃  : <code>{job_id[-6:]}</code>" + (f" (<b>{cname}</b>)\n" if cname else "\n") +
         f"┃\n"
         f"╰────────────────────────────────╯</b>",
         reply_markup=ReplyKeyboardRemove())
