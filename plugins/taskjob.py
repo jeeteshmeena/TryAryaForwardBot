@@ -753,14 +753,36 @@ async def tj_del_cb(bot, q):
 # Create Task Job — Interactive flow
 # ══════════════════════════════════════════════════════════════════════════════
 
-async def _create_taskjob_flow(bot, user_id: int):
-    # Clear any stale pyrofork/pyromod listener from a previous unfinished flow.
-    # stop_listening is ASYNC — must be awaited, otherwise the coroutine is discarded
-    # and the stale listener remains, causing the second flow to hang indefinitely.
+def _clear_listeners(bot, user_id: int):
+    """Directly wipe ALL pending listeners for this user from pyrofork's internal list.
+    bot.ask(chat_id, ...) registers listeners with chat_id=user_id, from_user_id=None.
+    stop_listening(user_id=...) searches by from_user_id — which NEVER matches.
+    We must clear by chat_id to actually hit the right listeners.
+    """
     try:
-        await bot.stop_listening(user_id=user_id)
+        import pyrogram.enums as _pe
+        from pyrogram.types import Identifier as _Ident
+        _lst = bot.listeners.get(_pe.ListenerTypes.MESSAGE, [])
+        to_remove = [l for l in list(_lst) if (
+            l.identifier.chat_id == user_id or
+            l.identifier.from_user_id == user_id
+        )]
+        for l in to_remove:
+            try:
+                _lst.remove(l)
+                if not l.future.done():
+                    l.future.cancel()
+            except Exception:
+                pass
     except Exception:
         pass
+
+
+async def _create_taskjob_flow(bot, user_id: int):
+    # FIX: Clear ALL stale listeners for this user before starting a new flow.
+    # bot.ask(chat_id) registers with chat_id=user_id, NOT from_user_id.
+    # stop_listening(user_id=...) matches from_user_id — always misses. Use direct wipe.
+    _clear_listeners(bot, user_id)
 
     # Step 1 — Account
     accounts = await db.get_bots(user_id)
@@ -913,6 +935,10 @@ async def _create_taskjob_flow(bot, user_id: int):
         to_topic_id = int(_t) if _t.isdigit() and int(_t) > 0 else None
 
     # Step 5 — Custom Name
+    # Extra safety: clear any leftover listener before the final ask.
+    # This prevents the name-step listener from a prior complete flow from
+    # consuming this step's input on the NEXT invocation.
+    _clear_listeners(bot, user_id)
     name_r = await bot.ask(user_id,
         "<b>╭──────❰ 📋 sᴛᴇᴘ 5/5 — ᴊᴏʙ ɴᴀᴍᴇ (ᴏᴘᴛɪᴏɴᴀʟ) ❱──────╮\n"
         "┃\n┣⊸ sᴇɴᴅ ᴀ sʜᴏʀᴛ ɴᴀᴍᴇ ғᴏʀ ᴛʜɪs ᴊᴏʙ ᴛᴏ ɪᴅᴇɴᴛɪғʏ ɪᴛ ᴇᴀsɪʟʏ.\n"

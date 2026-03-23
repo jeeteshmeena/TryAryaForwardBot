@@ -1075,14 +1075,34 @@ async def _pick_topic(bot, uid: int, label: str):
     return int(t) if t.isdigit() and int(t) > 0 else None
 
 
-async def _create_job_flow(bot, uid: int):
-    # Clear any stale pyrofork listener from a previous unfinished flow.
-    # stop_listening is ASYNC — must be awaited, otherwise the coroutine is discarded
-    # and the stale listener remains, causing the second flow to hang indefinitely.
+def _clear_listeners_jobs(bot, uid: int):
+    """Directly wipe ALL pending listeners for this user.
+    bot.ask(chat_id, ...) registers listeners with chat_id=uid, from_user_id=None.
+    stop_listening(user_id=...) searches from_user_id — NEVER matches. Direct wipe needed.
+    """
     try:
-        await bot.stop_listening(user_id=uid)
+        import pyrogram.enums as _pe
+        _lst = bot.listeners.get(_pe.ListenerTypes.MESSAGE, [])
+        to_remove = [l for l in list(_lst) if (
+            l.identifier.chat_id == uid or
+            l.identifier.from_user_id == uid
+        )]
+        for l in to_remove:
+            try:
+                _lst.remove(l)
+                if not l.future.done():
+                    l.future.cancel()
+            except Exception:
+                pass
     except Exception:
         pass
+
+
+async def _create_job_flow(bot, uid: int):
+    # FIX: Clear ALL stale listeners for this user before starting a new flow.
+    # bot.ask(chat_id) registers with chat_id=uid, NOT from_user_id.
+    # stop_listening(user_id=...) matches from_user_id — always misses. Direct wipe needed.
+    _clear_listeners_jobs(bot, uid)
 
     # Step 1 — Account
     accounts = await db.get_bots(uid)
@@ -1282,6 +1302,10 @@ async def _create_job_flow(bot, uid: int):
             except Exception: pass
 
     # Step 7 — Custom Name
+    # Extra safety: clear any leftover listener before the final ask.
+    # This prevents the name-step listener from a prior complete flow from
+    # consuming this step's input on the NEXT invocation.
+    _clear_listeners_jobs(bot, uid)
     name_r = await bot.ask(uid,
         "<b>╭──────❰ 📋 sᴛᴇᴘ 7/7 — ᴊᴏʙ ɴᴀᴍᴇ (ᴏᴘᴛɪᴏɴᴀʟ) ❱──────╮\n"
         "┃\n┣⊸ sᴇɴᴅ ᴀ sʜᴏʀᴛ ɴᴀᴍᴇ ғᴏʀ ᴛʜɪs ᴊᴏʙ ᴛᴏ ɪᴅᴇɴᴛɪғʏ ɪᴛ ᴇᴀsɪʟʏ.\n"
