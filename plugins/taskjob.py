@@ -445,6 +445,7 @@ async def _run_task_job(job_id: str, user_id: int, _bot=None):
                                        forward_tag=forward_tag, from_chat=fc, 
                                        block_links=block_links, to_topic=to_topic))
             
+            fwd = job.get("forwarded", 0)
             if tasks:
                 results = await asyncio.gather(*tasks, return_exceptions=True)
                 for r in results:
@@ -981,15 +982,20 @@ async def _create_taskjob_flow(bot, user_id: int):
 
     end_lbl = f"<code>{end_id}</code>" if end_id else "∞ (ᴀʟʟ ᴍsɢs)"
     
+    import html as html_lib
+    ftitle_safe = html_lib.escape(str(ftitle)) if ftitle else "?"
+    to_title_safe = html_lib.escape(str(to_title)) if to_title else "?"
+    cname_safe = html_lib.escape(str(cname)) if cname else None
+    
     status_msg = (
         f"<b>╭──────❰ ✅ ᴛᴀsᴋ ᴊᴏʙ {'ǫᴜᴇᴜᴇᴅ (ᴀᴜᴛᴏ-sᴄʜᴇᴅᴜʟᴇᴅ)' if initial_status=='scheduled' else 'ᴄʀᴇᴀᴛᴇᴅ'} ❱──────╮\n"
         f"┃\n"
-        f"┣⊸ ◈ 𝐒𝐨𝐮𝐫𝐜𝐞  : {ftitle}\n"
-        f"┣⊸ ◈ 𝐓𝐚𝐫𝐠𝐞𝐭  : {to_title}\n"
+        f"┣⊸ ◈ 𝐒𝐨𝐮𝐫𝐜𝐞  : {ftitle_safe}\n"
+        f"┣⊸ ◈ 𝐓𝐚𝐫𝐠𝐞𝐭  : {to_title_safe}\n"
         f"┣⊸ ◈ 𝐀𝐜𝐜𝐨𝐮𝐧𝐭 : {'🤖 ʙᴏᴛ' if ibot else '👤 ᴜsᴇʀʙᴏᴛ'} {sel.get('name','?')}\n"
         f"┣⊸ ◈ 𝐑𝐚𝐧𝐠𝐞   : <code>{start_id}</code> → {end_lbl}\n"
         f"┣⊸ ◈ sᴛᴀᴛᴜs  : {initial_status.upper()}\n"
-        f"┣⊸ ◈ 𝐉𝐨𝐛 𝐈𝐃  : <code>{job_id[-6:]}</code>" + (f" (<b>{cname}</b>)\n" if cname else "\n")
+        f"┣⊸ ◈ 𝐉𝐨𝐛 𝐈𝐃  : <code>{job_id[-6:]}</code>" + (f" (<b>{cname_safe}</b>)\n" if cname_safe else "\n")
     )
     
     if initial_status == "scheduled":
@@ -997,4 +1003,8 @@ async def _create_taskjob_flow(bot, user_id: int):
         
     status_msg += f"┃\n╰────────────────────────────────╯</b>"
 
-    await bot.send_message(user_id, status_msg, reply_markup=ReplyKeyboardRemove())
+    try:
+        await bot.send_message(user_id, status_msg, reply_markup=ReplyKeyboardRemove())
+    except Exception as _e:
+        await bot.send_message(user_id, f"✅ ᴛᴀsᴋ ᴊᴏʙ {'ǫᴜᴇᴜᴇᴅ' if initial_status=='scheduled' else 'ᴄʀᴇᴀᴛᴇᴅ'}\nJob ID: <code>{job_id}</code>\n<i>(HTML syntax error saved)</i>", reply_markup=ReplyKeyboardRemove())
+
