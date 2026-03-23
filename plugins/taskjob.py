@@ -11,6 +11,7 @@ import asyncio
 import logging
 from database import db
 from .test import CLIENT, start_clone_bot
+from config import Config
 from plugins.jobs import _has_links
 from pyrogram import Client, filters
 from pyrogram.errors import FloodWait
