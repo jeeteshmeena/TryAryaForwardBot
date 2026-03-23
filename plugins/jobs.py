@@ -1076,6 +1076,12 @@ async def _pick_topic(bot, uid: int, label: str):
 
 
 async def _create_job_flow(bot, uid: int):
+    # Clear any stale pyrofork listener from a previous unfinished flow.
+    try:
+        bot.stop_listening(uid)
+    except Exception:
+        pass
+
     # Step 1 — Account
     accounts = await db.get_bots(uid)
     if not accounts:

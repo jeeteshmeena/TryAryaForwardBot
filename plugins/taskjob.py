@@ -754,6 +754,13 @@ async def tj_del_cb(bot, q):
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def _create_taskjob_flow(bot, user_id: int):
+    # Clear any stale pyrofork/pyromod listener from a previous unfinished flow.
+    # Without this, a second invocation hangs because the old listener intercepts input.
+    try:
+        bot.stop_listening(user_id)
+    except Exception:
+        pass
+
     # Step 1 — Account
     accounts = await db.get_bots(user_id)
     if not accounts:
