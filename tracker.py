@@ -19,6 +19,8 @@ class _Tracker:
         self.total_download_bytes: int = 0
         self.total_upload_bytes: int = 0
         self.total_files_forwarded: int = 0
+        self.total_downloads_count: int = 0
+        self.total_uploads_count: int = 0
 
         # ── Speed tracking ────────────────────────────────────────────────
         # Rolling window: list of (timestamp, bytes) for last N seconds
@@ -31,8 +33,8 @@ class _Tracker:
         self.active_uploads: int = 0
 
         # ── Delta tracking for progress callbacks ─────────────────────────
-        self._dl_last_bytes: int = 0
-        self._ul_last_bytes: int = 0
+        self._dl_last_bytes: dict[str, int] = {}
+        self._ul_last_bytes: dict[str, int] = {}
 
     # ── Speed helpers ─────────────────────────────────────────────────────
 
@@ -56,28 +58,27 @@ class _Tracker:
 
     # ── Public API ────────────────────────────────────────────────────────
 
-    def record_download_progress(self, current: int, total: int):
+    def record_download_progress(self, current: int, total: int, task_id: str = "default"):
         """Called from Pyrogram progress callback during download."""
         now = time.time()
         with self._lock:
-            # Compute delta from last callback
-            last = self._dl_last_bytes
+            last = self._dl_last_bytes.get(task_id, 0)
             delta = current - last if current > last else current
-            self._dl_last_bytes = current
+            self._dl_last_bytes[task_id] = current
             if delta > 0:
                 self._dl_window.append((now, delta))
-                self._dl_window = self._prune(self._dl_window, now)[-50:]
+                self._dl_window = self._prune(self._dl_window, now)[-100:]
 
-    def record_upload_progress(self, current: int, total: int):
+    def record_upload_progress(self, current: int, total: int, task_id: str = "default"):
         """Called from Pyrogram progress callback during upload."""
         now = time.time()
         with self._lock:
-            last = self._ul_last_bytes
+            last = self._ul_last_bytes.get(task_id, 0)
             delta = current - last if current > last else current
-            self._ul_last_bytes = current
+            self._ul_last_bytes[task_id] = current
             if delta > 0:
                 self._ul_window.append((now, delta))
-                self._ul_window = self._prune(self._ul_window, now)[-50:]
+                self._ul_window = self._prune(self._ul_window, now)[-100:]
 
     def add_download_bytes(self, nbytes: int):
         """Call once after a complete download."""
@@ -97,22 +98,22 @@ class _Tracker:
     def start_download(self):
         with self._lock:
             self.active_downloads += 1
+            self.total_downloads_count += 1
 
-    def end_download(self):
+    def end_download(self, task_id: str = "default"):
         with self._lock:
             self.active_downloads = max(0, self.active_downloads - 1)
-            self._dl_last_bytes = 0
-            self._dl_window.clear()
+            self._dl_last_bytes.pop(task_id, None)
 
     def start_upload(self):
         with self._lock:
             self.active_uploads += 1
+            self.total_uploads_count += 1
 
-    def end_upload(self):
+    def end_upload(self, task_id: str = "default"):
         with self._lock:
             self.active_uploads = max(0, self.active_uploads - 1)
-            self._ul_last_bytes = 0
-            self._ul_window.clear()
+            self._ul_last_bytes.pop(task_id, None)
 
     # ── Read API ──────────────────────────────────────────────────────────
 
@@ -137,6 +138,8 @@ class _Tracker:
                 "total_files_fwd": self.total_files_forwarded,
                 "active_downloads": self.active_downloads,
                 "active_uploads": self.active_uploads,
+                "total_downloads_count": self.total_downloads_count,
+                "total_uploads_count": self.total_uploads_count,
             }
 
 

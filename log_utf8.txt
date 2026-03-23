@@ -1,0 +1,105 @@
+25474de fix: resolve syntax error missing plus sign in status string concatenation
+476b3c3 feat: completely remove scheduler queue; start task jobs instantly
+9bd65ef fix: escape HTML strings in status message to prevent UI freezing on Job Name completion
+9d90a27 feat: smart auto-scheduling system to avoid 'yes/no' UI hangs entirely
+4292e0b fix: resolve bot.ask hang with _clear_listeners and restore manual topic ID prompts
+5bb47c6 fix: add missing Config import to taskjob.py
+4cdf234 revert: restore jobs.py and taskjob.py to last stable state (239c02d1, Mar 21)
+047e34f fix: directly wipe stale pyrofork listeners by chat_id before each flow
+6ade741 fix: await stop_listening to actually clear stale pyrofork listeners
+aacec73 fix: Pyrogram HTML parse errors crashing job summary safely escaping channel titles/names
+6676727 fix: clear stale pyrofork listener before job creation flow to fix 2nd job hanging
+4723d60 fix: NameError in task jobs (fwd undeclared), status reads from DB, sequential ordering
+a20a1dd remove: experimental task job scheduling system back to stable
+771a974 fix: force clear lingering custom keyboard from step 5 before showing step 6 inline buttons
+5a3539c fix: rewrite task scheduling confirmation to use inline callbacks preventing UI freezes
+c6f55d3 fix: automatic queue progression and task menu UI freeze
+28f1cff fix: unconditionally prompt for topic IDs and disable buggy supergroup detection
+6bb31e7 fix: Persist global counters to DB and resolve job progression resets
+0762d14 fix: chat resolution for private channels and supergroups
+891f22a fix: eliminate button lag by answering callbacks immediately
+4b424ee feat: 2x speed + fix topic detection for private supergroups
+aeae1c4 fix: move Config import to top level in taskjob.py — NameError at startup
+12a9498 revert: undo all audit implementation (Phase 1-4 + fixups) — back to pre-audit state (239c02d1)
+a57862e Fix topic detection for private supergroups + prevent single file failure from stopping task job
+a43472c Fix syntax error in test.py
+9f7ec5d Fix robust job resume and global stats persistence
+7313162 fix: robust supergroup+topic detection via shared _chat_is_forum helper across all job types
+7d06341 feat: phase 4 - restart job, settings overview, custom caption preview, manual forward persistence
+8fb86b7 Phase 3: Core logic refinements
+501cc8e Audit Fix (Phase 1+2): Bug fixes, improvements & cleanup
+acabe41 fix: enforce sequential message order for destination and fix imports
+d127da6 fix: resolve NameErrors, uninitialized vars, and imports in job plugins
+239c02d Update code including speed optimizations and UI fixes
+7b29600 Implement owner-only Protection system against restricted sources
+3cb0a8b Fix topic detection (supergroup-only), add download semaphore for task isolation
+61f870e Implement smart detection for topics and add topic support in Task Jobs
+57ee77b Add DL semaphore isolation, smart group/topic detection, caption HTML fix, to_topic in taskjob
+65c1918 Fix forwarding gaps, formats, restricted channels, audio, task menu, stats
+b01af38 Fix: fwd-ON never sending messages, early job stop on gaps, improve speed
+61d9c03 Enhance block_links to strip urls from captions instead of skipping files completely
+a4795ae Fix file name preserving, UI display, and Live Job fetching exceptions
+bbd1725 Fix critical Pyrogram get_messages bug resolving wrong files for private bot chats. Force get_chat_history usage for DMs and bot chats across all jobs and test frameworks.
+1f04965 Add real-time auto-refresh status notifications for Live Jobs and Task Jobs every 60s
+734c4da Fix 6 root bugs: link filter drops files, filename naming, service msg count, taskjob instant-done, fetch failures on public channels
+7e072cc Fix batch instant-complete 0fwd bug and audio display_name preservation
+8e76b5c Fix ChatAdminRequired error causing bots to skip live loops entirely on arbitrary public chats
+8921c57 Fix fwd_filtered exception in jobs.py and file download names altering
+8ce59d0 Fix Live Job silent failures, multi-job overlapping, slow fetch gaps, and regix UI progress
+415570a Fix filter system: separate content types from modifier flags, add Links filter toggle
+d26a003 feat link filter and source topic for live job
+636a993 Fix _CLIENT import crash and optimize task job latency limitations
+b957dd8 Fix is_private_src and _CLIENT import errors
+834aef3 Fix regix.py syntax error from previous patch
+f02be13 Fix forwarding restrictions, fallback modes, and active_client caches
+c437add feat: proper smart order extraction, private chat batch forwarding, and custom job names
+1d99e59 fix(jobs): add bot private chat live support — detect is_private_src, use get_chat_history for DMs/saved msgs regardless of bot/userbot account type
+2b12283 style: apply consistent Unicode boxing (╭┣⊸╰), small-caps, bold-math fields across jobs, taskjobs, translation — /taskjobs added to HELP + HOW_USE
+a2f6587 feat(jobs): batch mode + dual destinations + per-job size/duration limits
+5b518ef feat(jobs): add Group Topic (message_thread_id) support — forward to specific topic in a supergroup, shown in info panel
+1db33bd feat(TaskJobs): new /taskjobs system — bulk background forwarding with pause/resume/multi-job/status support for private channels
+9005974 fix(ordering): bypass concurrent pipeline for copy_message — send 100% sequentially inline, no workers no queues no race conditions
+2538de8 fix(iter_messages): sort batch by msg.id before yielding — get_messages does NOT guarantee ID order, this was the true root cause of out-of-order forwarding
+71e1b6d feat(SmartOrder): added ON/OFF toggle UI in forward setup, fixed sort buffer to use 10-item window correctly, flag propagated through STS and data dict
+56099c1 feat(CleanMSG): restored chat array multi-select, added Commands filter, integrated link-range selection directly into type flow
+bc4eb07 feat(Public_FRWD): implemented a 5-item sequential sort buffer to automatically fix out-of-order source channel files
+e5f2013 refactor(CleanMSG): completely rebuilt flow to use Start Link and End Link direct deletion
+77bde14 fix(Public_FRWD): removed concurrent execution bug causing out-of-order sends for public channels, added graceful uploader fallback
+4c783ee fix(CleanMSG): updated step 2 prompt text to explicitly mention sending custom id/link
+04ab0bf feat: added pause/resume functionality to forwarding, and auto-delete for bot tokens/auth details after 12h
+c55caef Major bugfixes and pipeline sequencer: Order preserved with max concurrent download speeds, Clean MSG custom URLs, Strict filter types, and exact real-time Progress ETA
+92d8ac2 Speed optimization: implemented async worker pool for parallel downloading and uploading
+d5b695a fix: MongoDB SSL TLS error on Ubuntu 22.04 (TLSV1_ALERT_INTERNAL_ERROR)
+61f80f1 Initial VPS setup
+0638a56 Merge pull request #8 from MxxnKnight/render-deployment-support-10873738130571589228
+5237510 Add web server status page and self-ping module
+afbd812 Add Continuous Forwarding and Forward All features
+1cb9197 Enforce Userbot for Saved Messages and safety checks
+e22487a Add support for forwarding from Saved Messages
+030911e Enhance startup robustness and error handling
+815be61 Add web server for Render port binding
+5b20a10 Fix deployment issues on Render
+bff08c2 Add Render deployment support
+3b8d59c Update app.json
+a46a069 Update start.sh
+7b9588a Update README.md
+77ad8c6 Delete __init__.py.
+47549cc Update README.md
+0edf196 Update README.md
+e4ac499 Update README.md
+d5c800b Delete src/devgagan directory
+dc44f2a Update README.md
+3e122d7 Create LICENSE
+0c6fa8d Update README.md
+67d2de2 Update README.md
+554aed8 Update README.md
+2693703 Update README.md
+a2c6dff Update README.md
+c95f63e Update README.md
+ceb0914 Update README.md
+d554222 Update README.md
+a7e3a9c Update README.md
+d12951f Update README.md
+33abcfd Update README.md
+09f50f5 Create README.md
+f74706a Add files via upload

@@ -233,12 +233,12 @@ class CLIENT:
     
   def client(self, data, user=None):
      if user == None and data.get('is_bot') == False:
-        return Client("USERBOT", self.api_id, self.api_hash, session_string=data.get('session'))
+        return Client("USERBOT", self.api_id, self.api_hash, session_string=data.get('session'), max_concurrent_transmissions=5)
      elif user == True:
-        return Client("USERBOT", self.api_id, self.api_hash, session_string=data)
+        return Client("USERBOT", self.api_id, self.api_hash, session_string=data, max_concurrent_transmissions=5)
      elif user != False:
         data = data.get('token')
-     return Client("BOT", self.api_id, self.api_hash, bot_token=data, in_memory=True)
+     return Client("BOT", self.api_id, self.api_hash, bot_token=data, in_memory=True, max_concurrent_transmissions=5)
   
   async def add_bot(self, bot, message):
      user_id = int(message.from_user.id)

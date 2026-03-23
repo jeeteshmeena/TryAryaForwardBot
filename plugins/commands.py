@@ -247,30 +247,28 @@ async def status(bot, query):
     except Exception:
         mem_batch = 0
 
-    # ── Stats: DB persistent + in-memory new activity ──
+    # ── Stats: DB persistent + tracker in-memory ──
     try:
-        db_s = await db.get_bot_stats()
+        if hasattr(main, "INITIAL_DB_STATS") and main.INITIAL_DB_STATS:
+            db_s = main.INITIAL_DB_STATS
+        else:
+            db_s = await db.get_bot_stats()
+            main.INITIAL_DB_STATS = db_s
     except Exception:
         db_s = {}
+        
     db_fwd = db_s.get("TOTAL_FILES_FWD", 0)
     db_dl  = db_s.get("TOTAL_DOWNLOADS", 0)
     db_ul  = db_s.get("TOTAL_UPLOADS", 0)
     db_bt  = db_s.get("TOTAL_BYTES_TRANSFERRED", 0)
 
-    # New activity since last DB sync
-    ls = main.LAST_SYNCED_STATS
-    new_fwd = max(0, main.TOTAL_FILES_FWD - ls.get("fwd", main.TOTAL_FILES_FWD))
-    new_dl  = max(0, main.TOTAL_DOWNLOADS  - ls.get("dn",  main.TOTAL_DOWNLOADS))
-    new_ul  = max(0, main.TOTAL_UPLOADS    - ls.get("up",  main.TOTAL_UPLOADS))
-    new_bt  = max(0, main.TOTAL_BYTES_TRANSFERRED - ls.get("bt", main.TOTAL_BYTES_TRANSFERRED))
-
-    total_fwd     = db_fwd + new_fwd
-    total_dl      = db_dl  + new_dl
-    total_ul      = db_ul  + new_ul
-    total_data_gb = (db_bt + new_bt) / (1024 * 1024 * 1024)
+    snap = _trk.snapshot()
+    total_fwd     = db_fwd + snap["total_files_fwd"]
+    total_dl      = db_dl  + snap["total_downloads_count"]
+    total_ul      = db_ul  + snap["total_uploads_count"]
+    total_data_gb = (db_bt + snap["total_dl_bytes"] + snap["total_ul_bytes"]) / (1024 * 1024 * 1024)
 
     # ── Real-time speed ──
-    snap = _trk.snapshot()
     dl_spd = snap["dl_speed"]
     ul_spd = snap["ul_speed"]
 

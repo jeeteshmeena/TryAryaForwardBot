@@ -1,0 +1,49 @@
+d8cf005ab6ec471d0c59e2687f1c360b240cc443 2026-03-23 Fix background job resume bug that bypassed Long Polling fix on server startup
+4036cbfc03f615d5f358bb406363ed8a8bd880ef 2026-03-23 Fix Pyrogram Long Polling Update Stealing Bug causing random freezes for Main Bot
+25474de893ccf74fcf8b965f3e0807010d87f31f 2026-03-23 fix: resolve syntax error missing plus sign in status string concatenation
+476b3c380438ae740f633ed095c19f2857d8209a 2026-03-23 feat: completely remove scheduler queue; start task jobs instantly
+9bd65ef58408e8e52f88ead9f3f23ca7cbc73295 2026-03-23 fix: escape HTML strings in status message to prevent UI freezing on Job Name completion
+9d90a27c7774c752cfbf91beb5229e9cf89ceb3e 2026-03-23 feat: smart auto-scheduling system to avoid 'yes/no' UI hangs entirely
+4292e0b23d1055c1ef92f92c963beceac763e0d6 2026-03-23 fix: resolve bot.ask hang with _clear_listeners and restore manual topic ID prompts
+5bb47c6ad00787c73151cba40befa230eedda27b 2026-03-23 fix: add missing Config import to taskjob.py
+4cdf2341f5b35279ec53bd9385dc2afee45162f2 2026-03-23 revert: restore jobs.py and taskjob.py to last stable state (239c02d1, Mar 21)
+047e34fabcbd6c14087ab69eec79ea86c089b2df 2026-03-23 fix: directly wipe stale pyrofork listeners by chat_id before each flow
+6ade7412bb4719dadde1b3cf394989e1bdb6d615 2026-03-23 fix: await stop_listening to actually clear stale pyrofork listeners
+aacec733efde6ef831959d5692217ad4dcef0bc5 2026-03-23 fix: Pyrogram HTML parse errors crashing job summary safely escaping channel titles/names
+667672782551a496c5ef518b8ac92c71a5fa62e1 2026-03-23 fix: clear stale pyrofork listener before job creation flow to fix 2nd job hanging
+4723d60a485209806d278c8f114046c07e967da8 2026-03-23 fix: NameError in task jobs (fwd undeclared), status reads from DB, sequential ordering
+a20a1ddf2baa6d3ed9adc7d00e7159c74bce37a8 2026-03-23 remove: experimental task job scheduling system back to stable
+771a9749812b7affd7ebbde4432d5cd77ea09bfb 2026-03-23 fix: force clear lingering custom keyboard from step 5 before showing step 6 inline buttons
+5a3539c5222655d1df566cae6643c7d23634b640 2026-03-23 fix: rewrite task scheduling confirmation to use inline callbacks preventing UI freezes
+c6f55d3c259223987272f1044a5661f73c46d55b 2026-03-23 fix: automatic queue progression and task menu UI freeze
+28f1cff11f1e8548d8e603830e0f4fe2f1a4d651 2026-03-23 fix: unconditionally prompt for topic IDs and disable buggy supergroup detection
+6bb31e7f0fd80a2124d3cee0dad34c01fa3b86f3 2026-03-23 fix: Persist global counters to DB and resolve job progression resets
+0762d1442df6cd2cbbc79ae979746fd98ce5bed0 2026-03-23 fix: chat resolution for private channels and supergroups
+4b424eebf38de2bb1ccd00e369bc1c34fd5c879d 2026-03-23 feat: 2x speed + fix topic detection for private supergroups
+aeae1c47011070fc1ca58b9523930d50cab1123b 2026-03-23 fix: move Config import to top level in taskjob.py — NameError at startup
+12a94984b09619b7689c73205a89834eb60135ca 2026-03-23 revert: undo all audit implementation (Phase 1-4 + fixups) — back to pre-audit state (239c02d1)
+a57862eb8f6c61bb9d8a6bac58735ca9cec9b222 2026-03-22 Fix topic detection for private supergroups + prevent single file failure from stopping task job
+9f7ec5dd54a87deaeb9d46e46ce753ffd2391951 2026-03-22 Fix robust job resume and global stats persistence
+731316209923b67d0e33aed5c30d0862d0b94bbc 2026-03-22 fix: robust supergroup+topic detection via shared _chat_is_forum helper across all job types
+acabe41acc1a2368b6cbe2e84bd85a989b5aed65 2026-03-22 fix: enforce sequential message order for destination and fix imports
+d127da6822599adb384180818b64a878f616fb08 2026-03-22 fix: resolve NameErrors, uninitialized vars, and imports in job plugins
+239c02d1aeb7a1f830180972ac8c9c3548c5ca1b 2026-03-22 Update code including speed optimizations and UI fixes
+7b296005185a1f3caac967cf4c6d0176b9d4ce2c 2026-03-20 Implement owner-only Protection system against restricted sources
+3cb0a8b88f3457fa89b87585e92655504832a63c 2026-03-20 Fix topic detection (supergroup-only), add download semaphore for task isolation
+61f870e3d02aa5b493462a87caf1dbca52e84e12 2026-03-20 Implement smart detection for topics and add topic support in Task Jobs
+57ee77b944c4bbf03d3e40a8361c9e071ce84a47 2026-03-20 Add DL semaphore isolation, smart group/topic detection, caption HTML fix, to_topic in taskjob
+65c1918b8953f27f342b73632792a644bb875ded 2026-03-20 Fix forwarding gaps, formats, restricted channels, audio, task menu, stats
+61d9c03626030c7351cfd5a836126b36eff2b63a 2026-03-20 Enhance block_links to strip urls from captions instead of skipping files completely
+a4795ae483f08504ba3f05373fa8806226efc247 2026-03-19 Fix file name preserving, UI display, and Live Job fetching exceptions
+bbd17255b41f22f0db95a2f4a704f22bab30ff0f 2026-03-19 Fix critical Pyrogram get_messages bug resolving wrong files for private bot chats. Force get_chat_history usage for DMs and bot chats across all jobs and test frameworks.
+1f049654d4519a11a6facdd0cbb1bd8e81527e07 2026-03-19 Add real-time auto-refresh status notifications for Live Jobs and Task Jobs every 60s
+734c4da9e728614b7f33800d6d687ececa16db7c 2026-03-19 Fix 6 root bugs: link filter drops files, filename naming, service msg count, taskjob instant-done, fetch failures on public channels
+8ce59d08b7f495bd0b0c388d2c50afba54b9f242 2026-03-18 Fix Live Job silent failures, multi-job overlapping, slow fetch gaps, and regix UI progress
+415570a7d73ad34005998145741dac0489e2f942 2026-03-18 Fix filter system: separate content types from modifier flags, add Links filter toggle
+d26a0035bb0967779cee8dc640ad81e7c1d4b58e 2026-03-18 feat link filter and source topic for live job
+636a993db5c97f7503f1377db53c97ed51962eab 2026-03-18 Fix _CLIENT import crash and optimize task job latency limitations
+b957dd8066c78bdf2b3388a8216d6c44f293c715 2026-03-18 Fix is_private_src and _CLIENT import errors
+f02be133ba902e962572e4f1c6b04dc72dbead6a 2026-03-18 Fix forwarding restrictions, fallback modes, and active_client caches
+c437add1f7ff7f8ff5fc44c83a402366b1ae9a7c 2026-03-18 feat: proper smart order extraction, private chat batch forwarding, and custom job names
+2b122835e1fc1577ff9f4f8f4916737089fe39d4 2026-03-18 style: apply consistent Unicode boxing (╭┣⊸╰), small-caps, bold-math fields across jobs, taskjobs, translation — /taskjobs added to HELP + HOW_USE
+1db33bdb6006c3194ff63eff1b1073ed7057b7d7 2026-03-17 feat(TaskJobs): new /taskjobs system — bulk background forwarding with pause/resume/multi-job/status support for private channels

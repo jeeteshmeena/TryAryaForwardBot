@@ -349,19 +349,28 @@ async def _fwd(client, msg, chat, thread, cap_empty: bool, forward_tag: bool, fr
                 main.TOTAL_DOWNLOADS += 1
                 main.TOTAL_BYTES_TRANSFERRED += f_size
                 
+                tid = f"{msg.id}_{time.time()}"
+                
                 async def progress(current, total):
-                    pc = int(current * 100 / total) if total > 0 else 0
-                    # Note: updating job dict directly here might not be thread-safe for notification 
-                    # but since only 1 worker handles 1 job, we just update local state if needed.
-                    pass
+                    _tracker.record_download_progress(current, total, tid)
 
-                fp = await client.download_media(msg, file_name=df_name, progress=progress)
+                _tracker.start_download()
+                try:
+                    fp = await client.download_media(msg, file_name=df_name, progress=progress)
+                finally:
+                    _tracker.end_download(tid)
                 if not fp:
                     raise Exception("DownloadFailed")
                 
+                file_size = os.path.getsize(fp) if fp and os.path.exists(fp) else 0
+                _tracker.add_download_bytes(file_size)
+                
                 main.TOTAL_UPLOADS += 1
                 cap = modified_text if is_modified else (str(msg.caption) if msg.caption else "")
-                d_kw = {"chat_id": chat, **_thread_kw()}
+                
+                _tracker.start_upload()
+                up_prog = lambda c, t: _tracker.record_upload_progress(c, t, tid)
+                d_kw = {"chat_id": chat, "progress": up_prog, **_thread_kw()}
                 # display_name is passed as file_name= so Telegram shows the right name
                 async def _send_with_fallback(kwargs):
                     try:
@@ -390,6 +399,7 @@ async def _fwd(client, msg, chat, thread, cap_empty: bool, forward_tag: bool, fr
                     await asyncio.sleep(fw.value + 2)
                     await _send_with_fallback(d_kw)
                 finally:
+                    _tracker.end_upload(tid)
                     try:
                         shutil.rmtree(safe_dir, ignore_errors=True)
                     except Exception: pass

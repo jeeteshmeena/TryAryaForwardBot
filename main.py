@@ -95,9 +95,15 @@ async def web_server():
     await site.start()
     logging.info(f"Web server started on port {port}")
 
+# ── Accurate DB Synchronization ──
+PREV_TRACKER_SNAP = {
+    "fwd": 0, "dn": 0, "up": 0, "bt": 0
+}
+INITIAL_DB_STATS = {}
+
 async def ping_server():
     from database import db
-    global TOTAL_FILES_FWD, TOTAL_DOWNLOADS, TOTAL_UPLOADS, TOTAL_BYTES_TRANSFERRED, LAST_SYNCED_STATS
+    global PREV_TRACKER_SNAP
     while True:
         await asyncio.sleep(60) # Ping & DB Sync every 1 min
         try:
@@ -109,18 +115,13 @@ async def ping_server():
         except Exception:
             pass
         
-        # Merge tracker totals into main counters before sync
         snap = _tracker.snapshot()
-        TOTAL_FILES_FWD = max(TOTAL_FILES_FWD, LAST_SYNCED_STATS.get("fwd", 0) + snap["total_files_fwd"])
-        TOTAL_BYTES_TRANSFERRED = max(TOTAL_BYTES_TRANSFERRED,
-            LAST_SYNCED_STATS.get("bt", 0) + snap["total_dl_bytes"] + snap["total_ul_bytes"])
-
-        # Sync stats to DB
         try:
-            diff_fwd = TOTAL_FILES_FWD - LAST_SYNCED_STATS.get("fwd", 0)
-            diff_dn  = TOTAL_DOWNLOADS - LAST_SYNCED_STATS.get("dn", 0)
-            diff_up  = TOTAL_UPLOADS - LAST_SYNCED_STATS.get("up", 0)
-            diff_bt  = TOTAL_BYTES_TRANSFERRED - LAST_SYNCED_STATS.get("bt", 0)
+            diff_fwd = snap["total_files_fwd"] - PREV_TRACKER_SNAP.get("fwd", 0)
+            diff_dn = snap["total_downloads_count"] - PREV_TRACKER_SNAP.get("dn", 0)
+            diff_up = snap["total_uploads_count"] - PREV_TRACKER_SNAP.get("up", 0)
+            snap_bt = snap["total_dl_bytes"] + snap["total_ul_bytes"]
+            diff_bt = snap_bt - PREV_TRACKER_SNAP.get("bt", 0)
             
             inc_dict = {}
             if diff_fwd > 0: inc_dict["TOTAL_FILES_FWD"] = diff_fwd
@@ -130,48 +131,45 @@ async def ping_server():
             
             if inc_dict:
                 await db.update_bot_stats(**inc_dict)
-                LAST_SYNCED_STATS["fwd"] = TOTAL_FILES_FWD
-                LAST_SYNCED_STATS["dn"]  = TOTAL_DOWNLOADS
-                LAST_SYNCED_STATS["up"]  = TOTAL_UPLOADS
-                LAST_SYNCED_STATS["bt"]  = TOTAL_BYTES_TRANSFERRED
+                PREV_TRACKER_SNAP["fwd"] = snap["total_files_fwd"]
+                PREV_TRACKER_SNAP["dn"]  = snap["total_downloads_count"]
+                PREV_TRACKER_SNAP["up"]  = snap["total_uploads_count"]
+                PREV_TRACKER_SNAP["bt"]  = snap_bt
         except Exception as e:
             logging.error(f"Stat sync failed: {e}")
 
 async def sync_stats_now():
     from database import db
-    global TOTAL_FILES_FWD, TOTAL_DOWNLOADS, TOTAL_UPLOADS, TOTAL_BYTES_TRANSFERRED, LAST_SYNCED_STATS
+    global PREV_TRACKER_SNAP
     try:
-        diff_fwd = TOTAL_FILES_FWD - LAST_SYNCED_STATS.get("fwd", 0)
-        diff_dn  = TOTAL_DOWNLOADS - LAST_SYNCED_STATS.get("dn", 0)
-        diff_up  = TOTAL_UPLOADS - LAST_SYNCED_STATS.get("up", 0)
-        diff_bt  = TOTAL_BYTES_TRANSFERRED - LAST_SYNCED_STATS.get("bt", 0)
+        snap = _tracker.snapshot()
+        diff_fwd = snap["total_files_fwd"] - PREV_TRACKER_SNAP.get("fwd", 0)
+        diff_dn = snap["total_downloads_count"] - PREV_TRACKER_SNAP.get("dn", 0)
+        diff_up = snap["total_uploads_count"] - PREV_TRACKER_SNAP.get("up", 0)
+        snap_bt = snap["total_dl_bytes"] + snap["total_ul_bytes"]
+        diff_bt = snap_bt - PREV_TRACKER_SNAP.get("bt", 0)
+        
         inc_dict = {}
         if diff_fwd > 0: inc_dict["TOTAL_FILES_FWD"] = diff_fwd
         if diff_dn > 0:  inc_dict["TOTAL_DOWNLOADS"] = diff_dn
         if diff_up > 0:  inc_dict["TOTAL_UPLOADS"] = diff_up
         if diff_bt > 0:  inc_dict["TOTAL_BYTES_TRANSFERRED"] = diff_bt
+        
         if inc_dict:
             await db.update_bot_stats(**inc_dict)
+            PREV_TRACKER_SNAP["fwd"] = snap["total_files_fwd"]
+            PREV_TRACKER_SNAP["dn"]  = snap["total_downloads_count"]
+            PREV_TRACKER_SNAP["up"]  = snap["total_uploads_count"]
+            PREV_TRACKER_SNAP["bt"]  = snap_bt
     except Exception:
         pass
 
 async def main():
     from database import db
-    global TOTAL_FILES_FWD, TOTAL_DOWNLOADS, TOTAL_UPLOADS, TOTAL_BYTES_TRANSFERRED, LAST_SYNCED_STATS
+    global INITIAL_DB_STATS
     
     # Init stats from DB
-    stats = await db.get_bot_stats()
-    TOTAL_FILES_FWD = stats.get("TOTAL_FILES_FWD", 0)
-    TOTAL_DOWNLOADS = stats.get("TOTAL_DOWNLOADS", 0)
-    TOTAL_UPLOADS   = stats.get("TOTAL_UPLOADS", 0)
-    TOTAL_BYTES_TRANSFERRED = stats.get("TOTAL_BYTES_TRANSFERRED", 0)
-    
-    LAST_SYNCED_STATS = {
-        "fwd": TOTAL_FILES_FWD,
-        "dn": TOTAL_DOWNLOADS,
-        "up": TOTAL_UPLOADS,
-        "bt": TOTAL_BYTES_TRANSFERRED
-    }
+    INITIAL_DB_STATS = await db.get_bot_stats()
     
     bot = Bot()
     await bot.start()

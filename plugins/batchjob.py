@@ -249,20 +249,22 @@ async def _send_one(client, msg, to_chat: int, remove_caption: bool, caption_tpl
                 safe_dir = f"downloads/{msg.id}"
                 os.makedirs(safe_dir, exist_ok=True)
                 df_name = f"{safe_dir}/{display_name}" if display_name else f"{safe_dir}/"
+                tid = f"{msg.id}_{time.time()}"
                 async with _DOWNLOAD_SEM:
                     _tracker.start_download()
                     try:
                         fp = await client.download_media(msg, file_name=df_name,
-                            progress=lambda c, t: _tracker.record_download_progress(c, t))
+                            progress=lambda c, t: _tracker.record_download_progress(c, t, tid))
                     finally:
-                        _tracker.end_download()
+                        _tracker.end_download(tid)
                 if not fp: raise Exception("DownloadFailed")
                 file_size = os.path.getsize(fp) if fp and os.path.exists(fp) else 0
                 _tracker.add_download_bytes(file_size)
                 import main; main.TOTAL_DOWNLOADS += 1; main.TOTAL_BYTES_TRANSFERRED += file_size
                 _tracker.start_upload()
                 kw = {"chat_id": to_chat,
-                      "caption": caption if caption is not None else (str(msg.caption) if msg.caption else "")}
+                      "caption": caption if caption is not None else (str(msg.caption) if msg.caption else ""),
+                      "progress": lambda c, t: _tracker.record_upload_progress(c, t, tid)}
                 if to_topic: kw["message_thread_id"] = kw["reply_to_message_id"] = to_topic
                 try:
                     if msg.photo:       await client.send_photo(photo=fp, **kw)
@@ -275,6 +277,7 @@ async def _send_one(client, msg, to_chat: int, remove_caption: bool, caption_tpl
                     elif msg.animation: await client.send_animation(animation=fp, file_name=display_name, **kw)
                     elif msg.sticker:   await client.send_sticker(sticker=fp, **kw)
                 finally:
+                    _tracker.end_upload(tid)
                     _shu2.rmtree(safe_dir, ignore_errors=True)
                 return True
             else:
