@@ -823,13 +823,13 @@ def _start_job_task(job_id: str, user_id: int, _bot=None) -> asyncio.Task:
     return t
 
 
-async def resume_live_jobs(user_id: int = None):
+async def resume_live_jobs(user_id: int = None, _bot=None):
     q: dict = {"status": "running"}
     if user_id: q["user_id"] = user_id
     async for job in db.db.jobs.find(q):
         jid, uid = job["job_id"], job["user_id"]
         if jid not in _job_tasks:
-            _start_job_task(jid, uid)  # no bot available during resume; user can press refresh
+            _start_job_task(jid, uid, _bot=_bot)
             logger.info(f"[Jobs] Resumed {jid} for {uid}")
 
 

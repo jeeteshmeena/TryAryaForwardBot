@@ -177,8 +177,8 @@ async def main():
 
     from plugins.taskjob import resume_task_jobs
     from plugins.jobs import resume_live_jobs
-    asyncio.create_task(resume_task_jobs())
-    asyncio.create_task(resume_live_jobs())
+    asyncio.create_task(resume_task_jobs(_bot=bot))
+    asyncio.create_task(resume_live_jobs(_bot=bot))
 
     await idle()
     await sync_stats_now()
