@@ -663,7 +663,8 @@ async def _render_batchjob_list(bot, user_id: int, mq):
             rows.append(row)
             rows.append([
                 InlineKeyboardButton(f"ℹ️ Info [{s}]", callback_data=f"bj#info#{jid}"),
-                InlineKeyboardButton(f"🗑 Delete [{s}]",  callback_data=f"bj#del#{jid}"),
+                InlineKeyboardButton(f"✏️ Edit [{s}]", callback_data=f"bj#edit#{jid}"),
+                InlineKeyboardButton(f"🗑 [{s}]",  callback_data=f"bj#del#{jid}"),
             ])
 
         rows.append([InlineKeyboardButton("➕ Create Batch Job", callback_data="bj#new")])
@@ -826,6 +827,50 @@ async def tj_dequeue_cb(bot, q):
     await q.answer("❌ Removed from queue.", show_alert=True)
     await _render_batchjob_list(bot, uid, q)
 
+
+@Client.on_callback_query(filters.regex(r'^bj#edit#'))
+async def tj_edit_cb(bot, q):
+    """Edit batch job name via interactive prompt."""
+    job_id, uid = q.data.split("#", 2)[2], q.from_user.id
+    job = await _tj_get(job_id)
+    if not job or job.get("user_id") != uid:
+        return await q.answer("⛔ ᴜɴᴀᴜᴛʜᴏʀɪᴢᴇᴅ.", show_alert=True)
+    await q.answer()
+    s = job_id[-6:]
+    cur_name = job.get("custom_name", "")
+
+    await q.message.edit_text(
+        f"<b>╭━━━━━━❰ ✏️ 𝗘𝗗𝗜𝗧 𝗕𝗔𝗧𝗖𝗛 𝗝𝗢𝗕 ❱━━━━━━╮</b>\n"
+        f"<b>┃</b>\n"
+        f"<b>┣⊸ 🆔 ᴊᴏʙ      :</b>  <code>{s}</code>\n"
+        f"<b>┣⊸ 📝 ᴄᴜʀʀᴇɴᴛ  :</b>  <code>{cur_name or '(none)'}</code>\n"
+        f"<b>┃</b>\n"
+        f"<b>┣⊸ Sᴇɴᴅ ᴛʜᴇ ɴᴇᴡ ɴᴀᴍᴇ ᴏʀ /cancel</b>\n"
+        f"<b>┃</b>\n"
+        f"<b>╰━━━━━━━━━━━━━━━━━━━━━━━━━━━╯</b>",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("↩ ᴄᴀɴᴄᴇʟ", callback_data="bj#list")]
+        ]),
+    )
+    try:
+        resp = await bot.listen(chat_id=uid, timeout=120)
+        if resp.text and resp.text.strip() == "/cancel":
+            try: await resp.delete()
+            except Exception: pass
+            return await _render_batchjob_list(bot, uid, q)
+        new_name = (resp.text or "").strip()[:64]
+        if new_name:
+            await _tj_update(job_id, custom_name=new_name)
+        try: await resp.delete()
+        except Exception: pass
+        await q.message.edit_text(
+            f"<b>✅ ʙᴀᴛᴄʜ ᴊᴏʙ [{s}] ʀᴇɴᴀᴍᴇᴅ ᴛᴏ: <code>{new_name}</code></b>",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("↩ ʙᴀᴄᴋ ᴛᴏ ʟɪsᴛ", callback_data="bj#list")]
+            ]),
+        )
+    except Exception:
+        await _render_batchjob_list(bot, uid, q)
 
 @Client.on_callback_query(filters.regex(r'^bj#info#'))
 async def tj_info_cb(bot, q):

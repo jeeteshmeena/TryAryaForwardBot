@@ -671,6 +671,7 @@ async def _run_job(job_id: str, user_id: int, _bot=None):
                 msgs.sort(key=lambda m: getattr(m, 'id', 0) if m else 0)
                 
                 # Parallel Batch Processing: launch concurrent forward tasks
+                fwd_n = 0
                 tasks = []
                 for msg in msgs:
                     if not msg or getattr(msg, 'empty', False) or getattr(msg, 'service', False):

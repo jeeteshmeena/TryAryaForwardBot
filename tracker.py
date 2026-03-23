@@ -30,6 +30,10 @@ class _Tracker:
         self.active_downloads: int = 0
         self.active_uploads: int = 0
 
+        # ── Delta tracking for progress callbacks ─────────────────────────
+        self._dl_last_bytes: int = 0
+        self._ul_last_bytes: int = 0
+
     # ── Speed helpers ─────────────────────────────────────────────────────
 
     def _prune(self, window: list, now: float) -> list:
@@ -56,15 +60,24 @@ class _Tracker:
         """Called from Pyrogram progress callback during download."""
         now = time.time()
         with self._lock:
-            self._dl_window.append((now, current))
-            self._dl_window = self._prune(self._dl_window, now)[-50:]
+            # Compute delta from last callback
+            last = self._dl_last_bytes
+            delta = current - last if current > last else current
+            self._dl_last_bytes = current
+            if delta > 0:
+                self._dl_window.append((now, delta))
+                self._dl_window = self._prune(self._dl_window, now)[-50:]
 
     def record_upload_progress(self, current: int, total: int):
         """Called from Pyrogram progress callback during upload."""
         now = time.time()
         with self._lock:
-            self._ul_window.append((now, current))
-            self._ul_window = self._prune(self._ul_window, now)[-50:]
+            last = self._ul_last_bytes
+            delta = current - last if current > last else current
+            self._ul_last_bytes = current
+            if delta > 0:
+                self._ul_window.append((now, delta))
+                self._ul_window = self._prune(self._ul_window, now)[-50:]
 
     def add_download_bytes(self, nbytes: int):
         """Call once after a complete download."""
@@ -88,6 +101,7 @@ class _Tracker:
     def end_download(self):
         with self._lock:
             self.active_downloads = max(0, self.active_downloads - 1)
+            self._dl_last_bytes = 0
             self._dl_window.clear()
 
     def start_upload(self):
@@ -97,6 +111,7 @@ class _Tracker:
     def end_upload(self):
         with self._lock:
             self.active_uploads = max(0, self.active_uploads - 1)
+            self._ul_last_bytes = 0
             self._ul_window.clear()
 
     # ── Read API ──────────────────────────────────────────────────────────

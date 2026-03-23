@@ -28,6 +28,7 @@ async def _main_buttons(user_id: int):
         ],
         [
             InlineKeyboardButton(_tx(lang, 'btn_jobs'),     callback_data='job#list'),
+            InlineKeyboardButton('📦 Batch Jobs',           callback_data='bj#list'),
         ]
     ]
 

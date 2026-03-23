@@ -601,7 +601,7 @@ async def filters_buttons(user_id):
        InlineKeyboardButton('✅' if filter['duplicate'] else '❌',
                     callback_data=f'settings#updatefilter-duplicate-{filter["duplicate"]}')
        ],[
-       InlineKeyboardButton('✂️ Caption Remove',
+       InlineKeyboardButton('✂️ Caption',
                     callback_data=f'settings_#updatefilter-rm_caption-{filters.get("rm_caption", False)}'),
        InlineKeyboardButton('✅' if filters.get('rm_caption', False) else '❌',
                     callback_data=f'settings#updatefilter-rm_caption-{filters.get("rm_caption", False)}')
