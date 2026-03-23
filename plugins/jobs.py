@@ -672,6 +672,8 @@ async def _run_job(job_id: str, user_id: int, _bot=None):
                         if r is True:
                             import main
                             main.TOTAL_FILES_FWD += 1
+                            from tracker import stats as _trk
+                            _trk.inc_files_forwarded()
                             fwd_n += 1
                 
                 # Advance seen after processing block
@@ -767,6 +769,8 @@ async def _run_job(job_id: str, user_id: int, _bot=None):
                         import main
                         fwd_n += 1
                         main.TOTAL_FILES_FWD += 1
+                        from tracker import stats as _trk
+                        _trk.inc_files_forwarded()
                         seen = max(seen, msg.id)
                         consec_fails = 0
                     else:

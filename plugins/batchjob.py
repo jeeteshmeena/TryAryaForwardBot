@@ -13,6 +13,7 @@ import datetime
 from database import db
 from .test import CLIENT, start_clone_bot
 from plugins.jobs import _has_links
+from tracker import stats as _tracker
 from pyrogram import Client, filters
 from pyrogram.errors import FloodWait
 from pyrogram.types import (
@@ -181,6 +182,8 @@ async def _send_one(client, msg, to_chat: int, remove_caption: bool, caption_tpl
                     if caption is not None: kw["caption"] = caption
                     elif msg.caption: kw["caption"] = msg.caption
                     await client.send_cached_media(chat_id=to_chat, file_id=mo.file_id, **kw)
+                    _tracker.inc_files_forwarded()
+                    import main; main.TOTAL_FILES_FWD += 1
                     return True
         except Exception:
             pass
@@ -190,6 +193,8 @@ async def _send_one(client, msg, to_chat: int, remove_caption: bool, caption_tpl
 
         if not msg.media and is_modified:
             await client.send_message(chat_id=to_chat, text=caption or "", **kw_msg)
+            _tracker.inc_files_forwarded()
+            import main; main.TOTAL_FILES_FWD += 1
             return True
 
         if caption is not None and msg.media:
@@ -198,6 +203,8 @@ async def _send_one(client, msg, to_chat: int, remove_caption: bool, caption_tpl
         else:
             await client.copy_message(chat_id=to_chat, from_chat_id=from_id,
                                       message_id=msg.id, **kw_msg)
+        _tracker.inc_files_forwarded()
+        import main; main.TOTAL_FILES_FWD += 1
         return True
     except FloodWait as fw:
         await asyncio.sleep(fw.value + 2)
@@ -216,8 +223,16 @@ async def _send_one(client, msg, to_chat: int, remove_caption: bool, caption_tpl
                 os.makedirs(safe_dir, exist_ok=True)
                 df_name = f"{safe_dir}/{display_name}" if display_name else f"{safe_dir}/"
                 async with _DOWNLOAD_SEM:
-                    fp = await client.download_media(msg, file_name=df_name)
+                    _tracker.start_download()
+                    try:
+                        fp = await client.download_media(msg, file_name=df_name,
+                            progress=lambda c, t: _tracker.record_download_progress(c, t))
+                    finally:
+                        _tracker.end_download()
                 if not fp: raise Exception("DownloadFailed")
+                file_size = os.path.getsize(fp) if fp and os.path.exists(fp) else 0
+                _tracker.add_download_bytes(file_size)
+                import main; main.TOTAL_DOWNLOADS += 1; main.TOTAL_BYTES_TRANSFERRED += file_size
                 kw = {"chat_id": to_chat,
                       "caption": caption if caption is not None else (str(msg.caption) if msg.caption else "")}
                 if to_topic: kw["message_thread_id"] = kw["reply_to_message_id"] = to_topic

@@ -222,6 +222,7 @@ async def status(bot, query):
     await query.answer()  # Answer immediately — status involves 6+ DB calls
     import main
     import time as _time
+    from tracker import stats as _trk
     user_id = query.from_user.id
 
     users_count        = await db.get_total_users_count()
@@ -266,6 +267,17 @@ async def status(bot, query):
         total_ul  = main.TOTAL_UPLOADS
         total_data_gb = main.TOTAL_BYTES_TRANSFERRED / (1024*1024*1024)
 
+    # Real-time speed from centralized tracker
+    snap = _trk.snapshot()
+    dl_spd = snap["dl_speed"]
+    ul_spd = snap["ul_speed"]
+    speed_line = ""
+    if dl_spd > 0.01 or ul_spd > 0.01:
+        speed_line = (
+            f"<b>┣⊸ 📥 ᴅʟ sᴘᴇᴇᴅ :</b> <code>{dl_spd:.2f} MB/s</code>\n"
+            f"<b>┣⊸ 📤 ᴜʟ sᴘᴇᴇᴅ :</b> <code>{ul_spd:.2f} MB/s</code>\n"
+        )
+
     text = (
         "<b>╭─────❰ 📊 sʏsᴛᴇᴍ sᴛᴀᴛᴜs ❱─────╮</b>\n"
         "<b>┃</b>\n"
@@ -274,6 +286,7 @@ async def status(bot, query):
         f"<b>┣⊸ 🚀 ᴀᴄᴛɪᴠᴇ ᴛᴀsᴋ ᴊᴏʙs :</b> <code>{in_memory_batchjobs}</code>\n"
         f"<b>┣⊸ 📡 ɴᴏʀᴍᴀʟ ғᴏʀᴡᴀʀᴅs :</b> <code>{active_forwarding}</code>\n"
         "<b>┃</b>\n"
+        f"{speed_line}"
         f"<b>┣⊸ 📂 ғɪʟᴇs ғᴏʀᴡᴀʀᴅᴇᴅ :</b> <code>{total_fwd}</code>\n"
         f"<b>┣⊸ 📥 ᴛᴏᴛᴀʟ ᴅᴏᴡɴʟᴏᴀᴅs :</b> <code>{total_dl}</code>\n"
         f"<b>┣⊸ 📤 ᴛᴏᴛᴀʟ ᴜᴘʟᴏᴀᴅs :</b> <code>{total_ul}</code>\n"

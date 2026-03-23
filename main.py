@@ -6,6 +6,7 @@ import aiohttp
 from aiohttp import web
 from pyrogram import idle
 from bot import Bot
+from tracker import stats as _tracker
 
 # Global statistics for the session (synced with DB)
 START_TIME = time.time()
@@ -108,6 +109,12 @@ async def ping_server():
         except Exception:
             pass
         
+        # Merge tracker totals into main counters before sync
+        snap = _tracker.snapshot()
+        TOTAL_FILES_FWD = max(TOTAL_FILES_FWD, LAST_SYNCED_STATS.get("fwd", 0) + snap["total_files_fwd"])
+        TOTAL_BYTES_TRANSFERRED = max(TOTAL_BYTES_TRANSFERRED,
+            LAST_SYNCED_STATS.get("bt", 0) + snap["total_dl_bytes"] + snap["total_ul_bytes"])
+
         # Sync stats to DB
         try:
             diff_fwd = TOTAL_FILES_FWD - LAST_SYNCED_STATS.get("fwd", 0)
