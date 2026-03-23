@@ -949,28 +949,21 @@ async def _create_taskjob_flow(bot, user_id: int):
     if "sᴋɪᴘ" not in name_r.text.lower() and "skip" not in name_r.text.lower():
         cname = name_r.text.strip()[:30]
 
-    # Step 6 — Scheduler
-    _clear_listeners(bot, user_id)
-    sched_r = await bot.ask(user_id,
-        "<b>╭──────❰ ⏳ sᴛᴇᴘ 6/6 — sᴄʜᴇᴅᴜʟɪɴɢ ❱──────╮\n"
-        "┃\n"
-        "┣⊸ ᴡᴏᴜʟᴅ ʏᴏᴜ ʟɪᴋᴇ ᴛᴏ sᴄʜᴇᴅᴜʟᴇ ᴛʜɪs ᴊᴏʙ?\n"
-        "┣⊸ ɪғ YES, ɪᴛ ᴡɪʟʟ ᴡᴀɪᴛ ɪғ ᴀɴᴏᴛʜᴇʀ ᴊᴏʙ ɪs\n"
-        "┃  ʀᴜɴɴɪɴɢ ᴛᴏ ᴛʜᴇ sᴀᴍᴇ ᴅᴇsᴛɪɴᴀᴛɪᴏɴ.\n"
-        "┃\n╰────────────────────────────────╯</b>",
-        reply_markup=ReplyKeyboardMarkup([["ʏᴇs", "ɴᴏ"]], resize_keyboard=True))
+    # ---------------------------------------------------------
+    # Auto-Scheduler Logic
+    # ---------------------------------------------------------
+    # Instead of asking, the bot now automatically checks if the destination 
+    # is currently busy with another running task job.
+    initial_status = "running"
+    is_scheduled = False
     
-    is_scheduled = "ʏᴇs" in sched_r.text.lower()
+    active_to = await db.db[COLL].find_one({"to_chat": to_chat, "status": "running", "user_id": user_id})
+    if active_to:
+        initial_status = "scheduled"
+        is_scheduled = True
 
     # Save & Start
     job_id = f"tj-{user_id}-{int(time.time())}"
-    
-    # Check if we should start immediately or queue it
-    initial_status = "running"
-    if is_scheduled:
-        active_to = await db.db[COLL].find_one({"to_chat": to_chat, "status": "running", "user_id": user_id})
-        if active_to:
-            initial_status = "scheduled"
 
     job = {
         "job_id": job_id, "user_id": user_id, "account_id": sel["id"],
@@ -987,15 +980,21 @@ async def _create_taskjob_flow(bot, user_id: int):
         _start_task(job_id, user_id, _bot=bot)
 
     end_lbl = f"<code>{end_id}</code>" if end_id else "∞ (ᴀʟʟ ᴍsɢs)"
-    await bot.send_message(user_id,
-        f"<b>╭──────❰ ✅ ᴛᴀsᴋ ᴊᴏʙ {'ǫᴜᴇᴜᴇᴅ' if initial_status=='scheduled' else 'ᴄʀᴇᴀᴛᴇᴅ'} ❱──────╮\n"
+    
+    status_msg = (
+        f"<b>╭──────❰ ✅ ᴛᴀsᴋ ᴊᴏʙ {'ǫᴜᴇᴜᴇᴅ (ᴀᴜᴛᴏ-sᴄʜᴇᴅᴜʟᴇᴅ)' if initial_status=='scheduled' else 'ᴄʀᴇᴀᴛᴇᴅ'} ❱──────╮\n"
         f"┃\n"
         f"┣⊸ ◈ 𝐒𝐨𝐮𝐫𝐜𝐞  : {ftitle}\n"
         f"┣⊸ ◈ 𝐓𝐚𝐫𝐠𝐞𝐭  : {to_title}\n"
         f"┣⊸ ◈ 𝐀𝐜𝐜𝐨𝐮𝐧𝐭 : {'🤖 ʙᴏᴛ' if ibot else '👤 ᴜsᴇʀʙᴏᴛ'} {sel.get('name','?')}\n"
         f"┣⊸ ◈ 𝐑𝐚𝐧𝐠𝐞   : <code>{start_id}</code> → {end_lbl}\n"
         f"┣⊸ ◈ sᴛᴀᴛᴜs  : {initial_status.upper()}\n"
-        f"┣⊸ ◈ 𝐉𝐨𝐛 𝐈𝐃  : <code>{job_id[-6:]}</code>" + (f" (<b>{cname}</b>)\n" if cname else "\n") +
-        f"┃\n"
-        f"╰────────────────────────────────╯</b>",
-        reply_markup=ReplyKeyboardRemove())
+        f"┣⊸ ◈ 𝐉𝐨𝐛 𝐈𝐃  : <code>{job_id[-6:]}</code>" + (f" (<b>{cname}</b>)\n" if cname else "\n")
+    )
+    
+    if initial_status == "scheduled":
+        status_msg += f"┣⊸ <i>*ᴀᴜᴛᴏ-ǫᴜᴇᴜᴇᴅ: ᴀɴᴏᴛʜᴇʀ ᴊᴏʙ ɪs ᴄᴜʀʀᴇɴᴛʟʏ ғᴏʀᴡᴀʀᴅɪɴɢ ᴛᴏ ᴛʜɪs ᴅᴇsᴛɪɴᴀᴛɪᴏɴ. ɪᴛ ᴡɪʟʟ sᴛᴀʀᴛ ᴀᴜᴛᴏᴍᴀᴛɪᴄᴀʟʟʏ ᴡʜᴇɴ ғʀᴇᴇ.*</i>\n"
+        
+    status_msg += f"┃\n╰────────────────────────────────╯</b>"
+
+    await bot.send_message(user_id, status_msg, reply_markup=ReplyKeyboardRemove())
