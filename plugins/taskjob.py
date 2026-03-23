@@ -285,6 +285,7 @@ async def _run_task_job(job_id: str, user_id: int, _bot=None):
         _pause_events[job_id] = ev
     pause_ev = _pause_events[job_id]
     last_notify = 0  # for auto status notifications
+    fwd = 0  # session forward count
 
     acc = client = None
     try:
@@ -429,41 +430,44 @@ async def _run_task_job(job_id: str, user_id: int, _bot=None):
                     await _tj_notify(_bot, _fresh_j, "ʀᴜɴɴɪɴɢ")
                 last_notify = _now
 
-            # Parallel Batch Processing: launch concurrent forward tasks
-            tasks = []
+            # Sequential processing — guarantees ORDER and no skipped files
             for msg in valid:
+                # Topic filter
                 if from_topic:
-                    if getattr(msg, 'message_thread_id', getattr(msg, 'reply_to_top_message_id', getattr(msg, 'reply_to_message_id', None))) != from_topic:
-                        if msg.id != from_topic: # Allow the top message of topics through
-                            continue
-                            
+                    msg_thread = getattr(msg, 'message_thread_id',
+                                   getattr(msg, 'reply_to_top_message_id',
+                                     getattr(msg, 'reply_to_message_id', None)))
+                    if msg_thread != from_topic and msg.id != from_topic:
+                        continue
+
                 await pause_ev.wait()
                 f2 = await _tj_get(job_id)
-                if not f2 or f2.get("status") in ("stopped",): return
-                if not _passes_filters(msg, dis): continue
-                
-                from plugins.jobs import _fwd_safe
-                tasks.append(_fwd_safe(_send_one, client, msg, to_chat, rm_cap, cap_tpl, 
-                                       forward_tag=forward_tag, from_chat=fc, 
-                                       block_links=block_links, to_topic=to_topic))
-            
-            if tasks:
+                if not f2 or f2.get("status") in ("stopped",):
+                    return
+                if not _passes_filters(msg, dis):
+                    continue
+
                 try:
-                    results = await asyncio.gather(*tasks, return_exceptions=True)
-                except asyncio.CancelledError:
-                    await _tj_update(job_id, current_id=current)
-                    raise
-                for i, r in enumerate(results):
-                    if isinstance(r, Exception):
-                        logger.error(f"[TaskJob {job_id}] Parallel error: {r}")
-                        continue
-                    if r is True:
+                    ok = await _send_one(
+                        client, msg, to_chat, rm_cap, cap_tpl,
+                        forward_tag=forward_tag, from_chat=fc,
+                        block_links=block_links, to_topic=to_topic
+                    )
+                    if ok:
                         import main
                         fwd += 1
                         main.TOTAL_FILES_FWD += 1
                         await _tj_inc(job_id)
+                except asyncio.CancelledError:
+                    await _tj_update(job_id, current_id=msg.id)
+                    raise
+                except Exception as se:
+                    logger.warning(f"[TaskJob {job_id}] send error msg {msg.id}: {se}")
 
-            current = (msgs[-1].id + 1) if msgs else (current + BATCH_SIZE)
+                if slp:
+                    await asyncio.sleep(slp)
+
+            current = (valid[-1].id + 1) if valid else (current + BATCH_SIZE)
             await _tj_update(job_id, current_id=current)
 
     except asyncio.CancelledError:

@@ -253,11 +253,27 @@ async def status(bot, query):
     except Exception:
         in_memory_taskjobs = "0"
 
-    # Transfer stats
-    total_fwd = main.TOTAL_FILES_FWD
-    total_dl  = main.TOTAL_DOWNLOADS
-    total_ul  = main.TOTAL_UPLOADS
-    total_data_gb = main.TOTAL_BYTES_TRANSFERRED / (1024*1024*1024)
+    # Transfer stats - read from DB (persistent) + add in-memory delta since last sync
+    try:
+        db_stats    = await db.get_bot_stats()
+        db_fwd  = db_stats.get("TOTAL_FILES_FWD", 0)
+        db_dl   = db_stats.get("TOTAL_DOWNLOADS", 0)
+        db_ul   = db_stats.get("TOTAL_UPLOADS", 0)
+        db_bt   = db_stats.get("TOTAL_BYTES_TRANSFERRED", 0)
+        # In-memory values may be ahead of last DB sync, compute delta
+        delta_fwd = max(0, main.TOTAL_FILES_FWD - main.LAST_SYNCED_STATS.get("fwd", 0))
+        delta_dl  = max(0, main.TOTAL_DOWNLOADS  - main.LAST_SYNCED_STATS.get("dn", 0))
+        delta_ul  = max(0, main.TOTAL_UPLOADS    - main.LAST_SYNCED_STATS.get("up", 0))
+        delta_bt  = max(0, main.TOTAL_BYTES_TRANSFERRED - main.LAST_SYNCED_STATS.get("bt", 0))
+        total_fwd = db_fwd + delta_fwd
+        total_dl  = db_dl  + delta_dl
+        total_ul  = db_ul  + delta_ul
+        total_data_gb = (db_bt + delta_bt) / (1024*1024*1024)
+    except Exception:
+        total_fwd = main.TOTAL_FILES_FWD
+        total_dl  = main.TOTAL_DOWNLOADS
+        total_ul  = main.TOTAL_UPLOADS
+        total_data_gb = main.TOTAL_BYTES_TRANSFERRED / (1024*1024*1024)
 
     text = (
         "<b>╭─────❰ 📊 sʏsᴛᴇᴍ sᴛᴀᴛᴜs ❱─────╮</b>\n"
