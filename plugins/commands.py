@@ -28,7 +28,6 @@ async def _main_buttons(user_id: int):
         ],
         [
             InlineKeyboardButton(_tx(lang, 'btn_jobs'),     callback_data='job#list'),
-            InlineKeyboardButton('🚀 Task Jobs',            callback_data='tj#list'),
         ]
     ]
 
@@ -46,9 +45,6 @@ _STATIC_BUTTONS = [
     [
         InlineKeyboardButton('⚙️ Settings ⚙️', callback_data='settings#main'),
         InlineKeyboardButton('📋 Live Jobs',    callback_data='job#list'),
-    ],
-    [
-        InlineKeyboardButton('🚀 Task Jobs',    callback_data='tj#list'),
     ]
 ]
 
@@ -62,11 +58,6 @@ async def start(client, message):
     try:
         from .jobs import resume_live_jobs
         await resume_live_jobs(user.id)
-    except Exception:
-        pass
-    try:
-        from .taskjob import resume_task_jobs
-        await resume_task_jobs(user.id)
     except Exception:
         pass
     btns = await _main_buttons(user.id)
