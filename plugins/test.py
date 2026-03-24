@@ -58,49 +58,18 @@ async def start_clone_bot(FwdBot, data=None):
 
         BATCH_SIZE = 200  # Max IDs per get_messages call
 
-        # ── USERBOT PATH ─────────────────────────────────────────────────────────
-        # Userbots can freely use get_chat_history for any chat type.
-        if not is_bot:
-            messages = []
-            fetch_limit = limit if limit > 0 else 0
-            async for msg in self.get_chat_history(chat_id, limit=fetch_limit):
-                if msg and not msg.empty:
-                    messages.append(msg)
-            if not reverse_order:
-                messages.reverse()          # flip New→Old into Old→New
-            if offset > 0:
-                messages = messages[offset:]
-            for message in messages:
-                yield message
-            if continuous:
-                last_id = messages[-1].id if messages else 0
-                while True:
-                    await asyncio.sleep(5)
-                    new_msgs = []
-                    async for msg in self.get_chat_history(chat_id, limit=200):
-                        if msg.id <= last_id:
-                            break
-                        if msg and not msg.empty:
-                            new_msgs.append(msg)
-                    if new_msgs:
-                        if not reverse_order:
-                            new_msgs.reverse()
-                        for msg in new_msgs:
-                            yield msg
-                        last_id = new_msgs[-1].id if not reverse_order else new_msgs[0].id
-            return
+        offset = offset if offset else getattr(self, "offset", 0)
+        limit = limit if limit else getattr(self, "limit", getattr(self, "last_msg_id", 0))
 
-        # ── BOT PATH ──────────────────────────────────────────────────────────────
-        # Normal bots cannot call get_chat_history.
-        # For channels/supergroups: message IDs are sequential and we can fetch by ID list.
-        # For other chat types (groups, DMs): get_messages by ID also works.
+        BATCH_SIZE = 200
 
-        if reverse_order:
-            # ── New to Old: binary-search for the actual top message ID ──────────
-            # Starting from 9999999 and walking down causes ~50,000 API calls for
-            # small channels. Binary search finds top_id in ≤23 calls.
+        # 1. Determine REAL upper bound (top_id)
+        if limit > 0 and limit != 10000000:
+            top_id = limit
+        else:
+            # Binary search to find top message ID
             lo, hi = 1, 9_999_999
-            for _ in range(25):  # log2(9_999_999) ≈ 23
+            for _ in range(25):
                 if hi - lo <= BATCH_SIZE:
                     break
                 mid = (lo + hi) // 2
@@ -108,96 +77,66 @@ async def start_clone_bot(FwdBot, data=None):
                     probe = await self.get_messages(chat_id, [mid])
                     if not isinstance(probe, list): probe = [probe]
                     if any(m and not m.empty for m in probe):
-                        lo = mid   # message exists here → go higher
+                        lo = mid
                     else:
-                        hi = mid   # no message here  → go lower
+                        hi = mid
                 except Exception:
-                    hi = mid       # on error, assume nothing there
-
+                    hi = mid
             top_id = hi
-            current = top_id
-            fetched = 0
 
-            while True:
-                if limit > 0 and fetched >= limit:
-                    return
+        # 2. Determine bounds
+        start_id = max(1, offset if offset > 0 else 1)
+        end_id = top_id
 
-                batch_start = max(1, current - BATCH_SIZE + 1)
-                batch_end   = current
-                if batch_start > batch_end:
-                    return
-
-                batch_ids = list(range(batch_start, batch_end + 1))
-                batch_ids.reverse()  # high → low
-
+        if not reverse_order:
+            # ── Old to New: ascend ──
+            current = start_id
+            while current <= end_id:
+                batch_end_val = min(current + BATCH_SIZE - 1, end_id)
+                batch_ids = list(range(current, batch_end_val + 1))
+                
                 try:
                     msgs = await self.get_messages(chat_id, batch_ids)
                 except FloodWait as e:
-                    await asyncio.sleep(e.value)
+                    await asyncio.sleep(e.value + 1)
                     continue
                 except Exception:
-                    return
-
+                    msgs = []
+                    
                 if not isinstance(msgs, list):
                     msgs = [msgs]
-
                 valid = [m for m in msgs if m and not m.empty]
-                valid.sort(key=lambda m: m.id, reverse=True)  # New → Old
-
+                valid.sort(key=lambda m: m.id)
+                
                 for message in valid:
-                    if limit > 0 and fetched >= limit:
-                        return
                     yield message
-                    fetched += 1
-
-                current = batch_start - 1
-                if current < 1:
-                    return
-
-
+                    
+                current = batch_end_val + 1
         else:
-            # ── Old to New: walk IDs from low to high ──
-            current = max(1, offset if offset > 0 else 1)
-
-            while True:
-                new_diff = BATCH_SIZE
-                if not continuous and limit > 0:
-                    remaining = limit - (current - 1)
-                    new_diff = min(BATCH_SIZE, remaining)
-                    if new_diff <= 0:
-                        return
-
-                batch_ids = list(range(current, current + new_diff))
-
+            # ── New to Old: descend ──
+            current = end_id
+            while current >= start_id:
+                batch_start_val = max(start_id, current - BATCH_SIZE + 1)
+                batch_ids = list(range(batch_start_val, current + 1))
+                batch_ids.reverse()
+                
                 try:
-                    messages = await self.get_messages(chat_id, batch_ids)
+                    msgs = await self.get_messages(chat_id, batch_ids)
                 except FloodWait as e:
-                    await asyncio.sleep(e.value)
+                    await asyncio.sleep(e.value + 1)
                     continue
                 except Exception:
-                    messages = []
-
-                if not isinstance(messages, list):
-                    messages = [messages]
-
-                valid_messages = [m for m in messages if m and not m.empty]
-
-                if not valid_messages:
-                    if continuous:
-                        await asyncio.sleep(5)
-                        continue
-                    else:
-                        return
-
-                # CRITICAL: get_messages does NOT guarantee return order matches
-                # the requested ID order. Telegram may return them differently.
-                # Sort strictly ascending by message ID before yielding.
-                valid_messages.sort(key=lambda m: m.id)
-
-                for message in valid_messages:
+                    msgs = []
+                
+                if not isinstance(msgs, list):
+                    msgs = [msgs]
+                valid = [m for m in msgs if m and not m.empty]
+                valid.sort(key=lambda m: m.id, reverse=True)
+                
+                for message in valid:
                     yield message
-
-                current = batch_ids[-1] + 1
+                    
+                current = batch_start_val - 1
    #
    FwdBot.iter_messages = iter_messages
    return FwdBot

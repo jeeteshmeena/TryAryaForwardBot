@@ -131,7 +131,7 @@ def _passes_filters(msg, disabled_types: list) -> bool:
     if msg.empty or msg.service:
         return False
     checks = [
-        ('text',      lambda m: m.text and (not m.media or getattr(m.media, "value", "") == "web_page")),
+        ('text',      lambda m: m.text and not m.media),
         ('audio',     lambda m: m.audio),
         ('voice',     lambda m: m.voice),
         ('video',     lambda m: m.video),
@@ -166,58 +166,73 @@ async def _send_one(client, msg, to_chat: int, remove_caption: bool, caption_tpl
         kw["caption"] = caption
 
     # ── Attempt 1: copy_message ──────────────────────────────────────────────
-    try:
-        if forward_tag:
-            await client.forward_messages(
-                chat_id=to_chat, from_chat_id=msg.chat.id, message_ids=msg.id, **kw
-            )
-        else:
-            await client.copy_message(
-                chat_id=to_chat, from_chat_id=msg.chat.id, message_id=msg.id, **kw
-            )
-        return True
-    except FloodWait as fw:
-        await asyncio.sleep(fw.value + 2)
-        return await _send_one(client, msg, to_chat, remove_caption, caption_tpl, forward_tag, thread_id)
-    except Exception as e:
-        err = str(e).upper()
-        if "RESTRICTED" not in err and "PROTECTED" not in err:
-            try:
-                if not forward_tag:
-                    await client.forward_messages(chat_id=to_chat, from_chat_id=msg.chat.id, message_ids=msg.id, **kw)
-                else:
-                    await client.copy_message(chat_id=to_chat, from_chat_id=msg.chat.id, message_id=msg.id, **kw)
-                return True
-            except Exception:
-                pass
-        # ── Attempt 2: download + re-upload ─────────────────────────────────
+    for attempt in range(3):
         try:
-            media_obj = getattr(msg, msg.media.value, None) if msg.media else None
-            original_name = getattr(media_obj, 'file_name', None) if media_obj else None
-            if msg.media:
-                safe_name = f"downloads/{msg.id}_{original_name}" if original_name else f"downloads/{msg.id}"
-                fp = await client.download_media(msg, file_name=safe_name)
-                if not fp:
-                    raise Exception("DownloadFailed")
-                kw = {
-                    "chat_id": to_chat,
-                    "caption": caption if caption is not None else (msg.caption or ""),
-                }
-                if msg.photo:      await client.send_photo(photo=fp, **kw)
-                elif msg.video:    await client.send_video(video=fp, file_name=original_name, **kw)
-                elif msg.document: await client.send_document(document=fp, file_name=original_name, **kw)
-                elif msg.audio:    await client.send_audio(audio=fp, file_name=original_name, **kw)
-                elif msg.voice:    await client.send_voice(voice=fp, **kw)
-                elif msg.animation: await client.send_animation(animation=fp, **kw)
-                elif msg.sticker:  await client.send_sticker(sticker=fp, **kw)
-                if os.path.exists(fp): os.remove(fp)
-                return True
+            if forward_tag:
+                await client.forward_messages(
+                    chat_id=to_chat, from_chat_id=msg.chat.id, message_ids=msg.id, **kw
+                )
             else:
-                await client.send_message(chat_id=to_chat, text=msg.text or "")
-                return True
-        except Exception as e2:
-            logger.debug(f"[TaskJob] send_one fallback failed: {e2}")
-            return False
+                await client.copy_message(
+                    chat_id=to_chat, from_chat_id=msg.chat.id, message_id=msg.id, **kw
+                )
+            return True
+        except FloodWait as fw:
+            await asyncio.sleep(fw.value + 2)
+            continue
+        except Exception as e:
+            err = str(e).upper()
+            if "RESTRICTED" not in err and "PROTECTED" not in err:
+                if "TIMEOUT" in err or "CONNECTION" in err:
+                    await asyncio.sleep(5)
+                    continue # Retry on connectivity/timeout
+                try:
+                    if not forward_tag:
+                        await client.forward_messages(chat_id=to_chat, from_chat_id=msg.chat.id, message_ids=msg.id, **kw)
+                    else:
+                        await client.copy_message(chat_id=to_chat, from_chat_id=msg.chat.id, message_id=msg.id, **kw)
+                    return True
+                except Exception:
+                    pass
+                return False
+            # ── Attempt 2: download + re-upload ─────────────────────────────────
+            try:
+                media_obj = getattr(msg, msg.media.value, None) if msg.media else None
+                original_name = getattr(media_obj, 'file_name', None) if media_obj else None
+                if msg.media:
+                    safe_name = f"downloads/{msg.id}_{original_name}" if original_name else f"downloads/{msg.id}"
+                    fp = await client.download_media(msg, file_name=safe_name)
+                    if not fp:
+                        raise Exception("DownloadFailed")
+                    up_kw = {
+                        "chat_id": to_chat,
+                        "caption": caption if caption is not None else (msg.caption or ""),
+                    }
+                    if thread_id: up_kw["message_thread_id"] = thread_id
+                    
+                    if msg.photo:      await client.send_photo(photo=fp, **up_kw)
+                    elif msg.video:    await client.send_video(video=fp, file_name=original_name, **up_kw)
+                    elif msg.document: await client.send_document(document=fp, file_name=original_name, **up_kw)
+                    elif msg.audio:    await client.send_audio(audio=fp, file_name=original_name, **up_kw)
+                    elif msg.voice:    await client.send_voice(voice=fp, **up_kw)
+                    elif msg.animation: await client.send_animation(animation=fp, **up_kw)
+                    elif msg.sticker:  await client.send_sticker(sticker=fp, **up_kw)
+                    if os.path.exists(fp): os.remove(fp)
+                    return True
+                else:
+                    await client.send_message(chat_id=to_chat, text=msg.text or "")
+                    return True
+            except FloodWait as fw:
+                await asyncio.sleep(fw.value + 2)
+                continue
+            except Exception as e2:
+                f_err = str(e2).upper()
+                if "TIMEOUT" in f_err or "CONNECTION" in f_err:
+                    await asyncio.sleep(5)
+                    continue # Retry download
+                logger.debug(f"[TaskJob] send_one fallback failed: {e2}")
+                return False
+    return False
 
 
 # ══════════════════════════════════════════════════════════════════════════════

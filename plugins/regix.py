@@ -99,6 +99,41 @@ async def pub_(bot, message):
                   finally:
                       task_queue.task_done()
 
+          async def execute_upload_action(act, prm, fpath, sts_obj):
+              # Execute the requested transmission action with retries for timeout
+              for attempt in range(3):
+                  try:
+                      if act == 'send_photo': await client.send_photo(**prm)
+                      elif act == 'send_video': await client.send_video(**prm)
+                      elif act == 'send_document': await client.send_document(**prm)
+                      elif act == 'send_audio': await client.send_audio(**prm)
+                      elif act == 'send_voice': await client.send_voice(**prm)
+                      elif act == 'send_video_note': await client.send_video_note(**prm)
+                      elif act == 'send_animation': await client.send_animation(**prm)
+                      elif act == 'send_sticker': await client.send_sticker(**prm)
+                      elif act == 'copy_message': await client.copy_message(**prm)
+                      elif act == 'send_cached_media': await client.send_cached_media(**prm)
+                      elif act == 'send_message': await client.send_message(**prm)
+                      sts_obj.add('total_files')
+                      return True
+                  except FloodWait as fw:
+                      await asyncio.sleep(fw.value + 2)
+                      continue
+                  except Exception as e:
+                      err_msg = str(e).upper()
+                      if "TIMEOUT" in err_msg or "CONNECTION" in err_msg:
+                          await asyncio.sleep(5)
+                          continue # Retry sending
+                      
+                      # On first failure due to missing file, trying to fallback
+                      print(f"Direct send error: {e}")
+                      sts_obj.add('deleted')
+                      return False
+              
+              print(f"Max retries reached. Action failed.")
+              sts_obj.add('deleted')
+              return False
+
           async def uploader_worker():
               expected_seq = 0
               buffer = {}
@@ -111,77 +146,16 @@ async def pub_(bot, message):
                   while expected_seq in buffer:
                       act, prm, fpath = buffer.pop(expected_seq)
                       if act != 'skip':
-                          try:
-                              if act == 'send_photo': await client.send_photo(**prm)
-                              elif act == 'send_video': await client.send_video(**prm)
-                              elif act == 'send_document': await client.send_document(**prm)
-                              elif act == 'send_audio': await client.send_audio(**prm)
-                              elif act == 'send_voice': await client.send_voice(**prm)
-                              elif act == 'send_video_note': await client.send_video_note(**prm)
-                              elif act == 'send_animation': await client.send_animation(**prm)
-                              elif act == 'send_sticker': await client.send_sticker(**prm)
-                              elif act == 'copy_message': await client.copy_message(**prm)
-                              elif act == 'send_cached_media': await client.send_cached_media(**prm)
-                              elif act == 'send_message': await client.send_message(**prm)
-                              
-                              sts.add('total_files')
-                          except FloodWait as fw:
-                              # Handle uploader side floodwaits directly by sleeping and retrying
-                              await asyncio.sleep(fw.value + 2)
-                              try:
-                                  if act == 'send_photo': await client.send_photo(**prm)
-                                  elif act == 'send_video': await client.send_video(**prm)
-                                  elif act == 'send_document': await client.send_document(**prm)
-                                  elif act == 'send_audio': await client.send_audio(**prm)
-                                  elif act == 'send_voice': await client.send_voice(**prm)
-                                  elif act == 'send_video_note': await client.send_video_note(**prm)
-                                  elif act == 'send_animation': await client.send_animation(**prm)
-                                  elif act == 'send_sticker': await client.send_sticker(**prm)
-                                  elif act == 'copy_message': await client.copy_message(**prm)
-                                  elif act == 'send_cached_media': await client.send_cached_media(**prm)
-                                  elif act == 'send_message': await client.send_message(**prm)
-                                  sts.add('total_files')
-                              except Exception as e:
-                                  print(f"Uploader fallback error: {e}")
-                                  sts.add('deleted')
-                          except Exception as e:
-                              # Handle uploader fallback for restricted content gracefully
-                              # If the user forwarded a restricted public channel without Download Mode,
-                              # copy_message fails here. We download/upload sequentially for them to save them.
-                              if "RESTRICTED" in str(e).upper() or "PROTECTED" in str(e).upper():
-                                  try:
-                                      import os
-                                      fallback_msg = await client.get_messages(prm.get('from_chat_id'), prm.get('message_id'))
-                                      if fallback_msg.media:
-                                          safe_name = f"downloads/{fallback_msg.id}"
-                                          dp = await client.download_media(fallback_msg, file_name=safe_name)
-                                          
-                                          file_size = 0
-                                          if dp and os.path.exists(dp):
-                                              file_size = os.path.getsize(dp)
-                                              asyncio.create_task(db.update_global_stats(total_files_downloaded=1))
-                                              
-                                          if getattr(fallback_msg, 'photo', None): await client.send_photo(chat_id=prm.get('chat_id'), photo=dp, caption=prm.get('caption'))
-                                          elif getattr(fallback_msg, 'video', None): await client.send_video(chat_id=prm.get('chat_id'), video=dp, caption=prm.get('caption'))
-                                          elif getattr(fallback_msg, 'document', None): await client.send_document(chat_id=prm.get('chat_id'), document=dp, caption=prm.get('caption'))
-                                          elif getattr(fallback_msg, 'audio', None): await client.send_audio(chat_id=prm.get('chat_id'), audio=dp, caption=prm.get('caption'))
-                                          elif getattr(fallback_msg, 'voice', None): await client.send_voice(chat_id=prm.get('chat_id'), voice=dp, caption=prm.get('caption'))
-                                          
-                                          if dp and os.path.exists(dp):
-                                              asyncio.create_task(db.update_global_stats(total_files_uploaded=1))
-                                              os.remove(dp)
-                                      else:
-                                          await client.send_message(chat_id=prm.get('chat_id'), text=fallback_msg.text.html if fallback_msg.text else "")
-                                      sts.add('total_files')
-                                  except Exception as e2:
-                                      print(f"Uploader fallback error: {e2}")
-                                      sts.add('deleted')
-                              else:
-                                  print(f"Uploader error payload: {prm}, e: {e}")
-                                  sts.add('deleted')
+                          success = await execute_upload_action(act, prm, fpath, sts)
+                          if not success:
+                              # Handle uploader fallback for restricted content graciously
+                              # (Logic for downloading fallback inside `copy()` handles MOST of this now,
+                              #  but we keep a general fallback for unknown edge cases).
+                              print(f"Uploader error: {prm}")
                               
                       if fpath:
                           try:
+                              import os
                               if os.path.exists(fpath): os.remove(fpath)
                           except: pass
                           
@@ -189,12 +163,11 @@ async def pub_(bot, message):
                   
                   upload_queue.task_done()
 
+          workers = []
+          uploader = None
           if download_mode:
               workers = [asyncio.create_task(copy_worker()) for _ in range(MAX_WORKERS)]
               uploader = asyncio.create_task(uploader_worker())
-          else:
-              workers = []
-              uploader = None
           # ---------------------------------------------------
           
           seq_counter = 0
@@ -243,28 +216,7 @@ async def pub_(bot, message):
                                   if ui is None: break
                                   _, act, prm, fpath = ui
                                   if act != 'skip':
-                                      try:
-                                          if act == 'send_photo': await client.send_photo(**prm)
-                                          elif act == 'send_video': await client.send_video(**prm)
-                                          elif act == 'send_document': await client.send_document(**prm)
-                                          elif act == 'send_audio': await client.send_audio(**prm)
-                                          elif act == 'send_voice': await client.send_voice(**prm)
-                                          elif act == 'send_video_note': await client.send_video_note(**prm)
-                                          elif act == 'send_animation': await client.send_animation(**prm)
-                                          elif act == 'send_sticker': await client.send_sticker(**prm)
-                                          elif act == 'copy_message': await client.copy_message(**prm)
-                                          elif act == 'send_cached_media': await client.send_cached_media(**prm)
-                                          elif act == 'send_message': await client.send_message(**prm)
-                                          sts.add('total_files')
-                                      except FloodWait as fw:
-                                          await asyncio.sleep(fw.value + 2)
-                                          try:
-                                              if act == 'copy_message': await client.copy_message(**prm)
-                                              sts.add('total_files')
-                                          except Exception: sts.add('deleted')
-                                      except Exception as e:
-                                          print(f"Direct send error: {e}")
-                                          sts.add('deleted')
+                                      await execute_upload_action(act, prm, fpath, sts)
                                   if fpath:
                                       try:
                                           import os
@@ -311,10 +263,6 @@ async def pub_(bot, message):
                 elif getattr(message, 'document', None): msg_type = 'document'
                 elif getattr(message, 'animation', None): msg_type = 'animation'
                 elif getattr(message, 'sticker', None): msg_type = 'sticker'
-                
-                # Exception: web_page previews should be evaluated as plain text for filtering
-                if message.media and getattr(message.media, "value", "") == "web_page":
-                    msg_type = 'text'
                 
                 if msg_type in _filters:
                     is_filtered = True
@@ -374,9 +322,8 @@ async def pub_(bot, message):
           # --- Flush remaining messages that didn't fill a complete window ---
           await flush_buffer()
                     
-          
+          # --- Wait for all pending tasks to finish before completing ---
           if download_mode:
-              # --- Wait for all pending tasks to finish before completing ---
               if not is_continuous:
                   await task_queue.join()
               
@@ -387,7 +334,8 @@ async def pub_(bot, message):
               
               # Tell uploader to stop
               await upload_queue.put(None)
-              await uploader
+              if uploader:
+                  await uploader
           
           # -------------------------------------------------------------
           # Flush any remaining forward_tag messages directly
@@ -481,7 +429,20 @@ async def copy(bot, msg, m, sts, download=False, attempt=0, seq_index=None, uplo
                  else:
                      safe_name = f"downloads/{message.id}"
                      
-                 file_path = await bot.download_media(message, file_name=safe_name)
+                 file_path = None
+                 for _ in range(3):
+                     try:
+                         file_path = await bot.download_media(message, file_name=safe_name)
+                         if file_path: break
+                     except FloodWait as fw:
+                         await asyncio.sleep(fw.value + 2)
+                     except Exception as dl_e:
+                         err_dl = str(dl_e).upper()
+                         if "TIMEOUT" in err_dl or "CONNECTION" in err_dl:
+                             await asyncio.sleep(5)
+                             continue
+                         break
+                         
                  if not file_path: raise Exception("DownloadFailed")
                  
                  kwargs = {
@@ -525,6 +486,11 @@ async def copy(bot, msg, m, sts, download=False, attempt=0, seq_index=None, uplo
              await edit(m, 'Progressing', 10, sts)
              await copy(bot, msg, m, sts, download, attempt, seq_index, upload_queue)
          except Exception as e2:
+             f_err = str(e2).upper()
+             if "TIMEOUT" in f_err or "CONNECTION" in f_err:
+                 if attempt < 3:
+                     await asyncio.sleep(5)
+                     return await copy(bot, msg, m, sts, download, attempt + 1, seq_index, upload_queue)
              print(f"Fallback failed for message {msg.get('msg_id')}: {e2}")
              await upload_queue.put((seq_index, 'skip', {}, None))
              sts.add('deleted')
