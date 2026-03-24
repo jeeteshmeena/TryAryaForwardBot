@@ -27,6 +27,7 @@ import logging
 from database import db
 from .test import CLIENT, start_clone_bot
 from pyrogram import Client, filters
+from config import Config
 from pyrogram.errors import FloodWait
 from pyrogram.types import (
     InlineKeyboardButton, InlineKeyboardMarkup,
@@ -604,6 +605,12 @@ async def tj_del_cb(bot, query):
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def _create_taskjob_flow(bot, user_id: int):
+    # Clear any stale listeners left from a previous interrupted flow
+    try:
+        bot.stop_listening(user_id)
+    except Exception:
+        pass
+
     # ── Step 1: Account ─────────────────────────────────────────────────────
     accounts = await db.get_bots(user_id)
     if not accounts:
@@ -620,7 +627,8 @@ async def _create_taskjob_flow(bot, user_id: int):
         "<b>📦 Create Task Job — Step 1/4</b>\n\n"
         "Choose the account to use for this task:\n"
         "<i>(Userbot required for private/restricted channels)</i>",
-        reply_markup=ReplyKeyboardMarkup(acc_btns, resize_keyboard=True, one_time_keyboard=True))
+        reply_markup=ReplyKeyboardMarkup(acc_btns, resize_keyboard=True, one_time_keyboard=True),
+        filters=filters.user(user_id))
 
     if "/cancel" in acc_r.text:
         return await acc_r.reply("<b>Cancelled.</b>", reply_markup=ReplyKeyboardRemove())
@@ -640,7 +648,8 @@ async def _create_taskjob_flow(bot, user_id: int):
         "• Channel link (e.g. <code>https://t.me/c/12345/1</code>)\n"
         "• Numeric ID (e.g. <code>-1001234567890</code>)\n\n"
         "<i>This is the private channel you want to copy FROM.</i>",
-        reply_markup=ReplyKeyboardRemove())
+        reply_markup=ReplyKeyboardRemove(),
+        filters=filters.user(user_id))
 
     if src_r.text.strip().startswith("/cancel"):
         return await src_r.reply("<b>Cancelled.</b>")
@@ -669,7 +678,8 @@ async def _create_taskjob_flow(bot, user_id: int):
         "• Send <b>ALL</b> to copy all messages from the beginning\n"
         "• Send a <b>start message ID</b> (e.g. <code>100</code>) to begin from that point\n"
         "• Send <b>start_id:end_id</b> (e.g. <code>100:500</code>) to copy a specific range\n\n"
-        "<i>The job will run continuously until all messages in the range are copied.</i>")
+        "<i>The job will run continuously until all messages in the range are copied.</i>",
+        filters=filters.user(user_id))
 
     if "/cancel" in range_r.text:
         return await range_r.reply("<b>Cancelled.</b>")
@@ -701,7 +711,8 @@ async def _create_taskjob_flow(bot, user_id: int):
 
     ch_r = await bot.ask(user_id,
         "<b>Step 4/4 — Target Channel</b>\n\nChoose where to forward messages:",
-        reply_markup=ReplyKeyboardMarkup(ch_btns, resize_keyboard=True, one_time_keyboard=True))
+        reply_markup=ReplyKeyboardMarkup(ch_btns, resize_keyboard=True, one_time_keyboard=True),
+        filters=filters.user(user_id))
 
     if "/cancel" in ch_r.text:
         return await ch_r.reply("<b>Cancelled.</b>", reply_markup=ReplyKeyboardRemove())
