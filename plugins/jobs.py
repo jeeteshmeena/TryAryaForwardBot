@@ -94,7 +94,7 @@ def _passes_filters(msg, disabled_types: list) -> bool:
     if msg.empty or msg.service:
         return False
     checks = [
-        ('text',      lambda m: m.text and not m.media),
+        ('text',      lambda m: m.text and (not m.media or getattr(m.media, "value", "") == "web_page")),
         ('audio',     lambda m: m.audio),
         ('voice',     lambda m: m.voice),
         ('video',     lambda m: m.video),

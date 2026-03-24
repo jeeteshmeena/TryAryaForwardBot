@@ -189,8 +189,12 @@ async def pub_(bot, message):
                   
                   upload_queue.task_done()
 
-          workers = [asyncio.create_task(copy_worker()) for _ in range(MAX_WORKERS)]
-          uploader = asyncio.create_task(uploader_worker())
+          if download_mode:
+              workers = [asyncio.create_task(copy_worker()) for _ in range(MAX_WORKERS)]
+              uploader = asyncio.create_task(uploader_worker())
+          else:
+              workers = []
+              uploader = None
           # ---------------------------------------------------
           
           seq_counter = 0
@@ -308,6 +312,10 @@ async def pub_(bot, message):
                 elif getattr(message, 'animation', None): msg_type = 'animation'
                 elif getattr(message, 'sticker', None): msg_type = 'sticker'
                 
+                # Exception: web_page previews should be evaluated as plain text for filtering
+                if message.media and getattr(message.media, "value", "") == "web_page":
+                    msg_type = 'text'
+                
                 if msg_type in _filters:
                     is_filtered = True
                 else:
@@ -366,18 +374,20 @@ async def pub_(bot, message):
           # --- Flush remaining messages that didn't fill a complete window ---
           await flush_buffer()
                     
-          # --- Wait for all pending tasks to finish before completing ---
-          if not is_continuous:
-              await task_queue.join()
           
-          # Tell workers to stop
-          for _ in range(MAX_WORKERS):
-              await task_queue.put(None)
-          await asyncio.gather(*workers)
-          
-          # Tell uploader to stop
-          await upload_queue.put(None)
-          await uploader
+          if download_mode:
+              # --- Wait for all pending tasks to finish before completing ---
+              if not is_continuous:
+                  await task_queue.join()
+              
+              # Tell workers to stop
+              for _ in range(MAX_WORKERS):
+                  await task_queue.put(None)
+              await asyncio.gather(*workers)
+              
+              # Tell uploader to stop
+              await upload_queue.put(None)
+              await uploader
           
           # -------------------------------------------------------------
           # Flush any remaining forward_tag messages directly
