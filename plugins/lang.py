@@ -474,7 +474,7 @@ _S["cancelled"] = {
     "hinglish": "✅ Process cancel ho gaya.",
 }
 _S["btn_settings"] = {"en": "⚙️ Settings", "hi": "⚙️ सेटिंग्स", "hinglish": "⚙️ Settings"}
-_S["btn_jobs"] = {"en": "📋 Live Jobs", "hi": "📋 लाइव जॉब्स", "hinglish": "📋 Live Jobs"}
+_S["btn_jobs"] = {"en": "📋 Lɪᴠᴇ Jᴏʙs", "hi": "📋 लाइव जॉब्स", "hinglish": "📋 Lɪᴠᴇ Jᴏʙs"}
 _S["btn_help"] = {"en": "🙋‍♂️ Help", "hi": "🙋‍♂️ संसथान", "hinglish": "🙋‍♂️ Help"}
 _S["btn_about"] = {"en": "💁‍♂️ About", "hi": "💁‍♂️ बारे में", "hinglish": "💁‍♂️ About"}
 _S["btn_close"] = {"en": "❌ Close", "hi": "❌ बंद करें", "hinglish": "❌ Close"}

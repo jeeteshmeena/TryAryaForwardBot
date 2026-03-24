@@ -27,7 +27,7 @@ async def _main_buttons(user_id: int):
             InlineKeyboardButton(_tx(lang, 'btn_jobs'),     callback_data='job#list'),
         ],
         [
-            InlineKeyboardButton('⚡ Multi Job',    callback_data='mj#list'),
+            InlineKeyboardButton('⚡ Mᴜʟᴛɪ Jᴏʙ',    callback_data='mj#list'),
         ],
     ]
 
@@ -43,8 +43,8 @@ _STATIC_BUTTONS = [
         InlineKeyboardButton('💁‍♂️ About', callback_data='about'),
     ],
     [
-        InlineKeyboardButton('⚙️ Settings ⚙️', callback_data='settings#main'),
-        InlineKeyboardButton('📋 Live Jobs',    callback_data='job#list'),
+        InlineKeyboardButton('⚙️ Sᴇᴛᴛɪɴɢs ⚙️', callback_data='settings#main'),
+        InlineKeyboardButton('📋 Lɪᴠᴇ Jᴏʙs',    callback_data='job#list'),
     ],
 ]
 
