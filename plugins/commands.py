@@ -16,7 +16,7 @@ async def _main_buttons(user_id: int):
         [InlineKeyboardButton('📢 Main Channel',   url='https://t.me/MeJeetX')],
         [
             InlineKeyboardButton('💬 Support Group', url='https://t.me/+1p2hcQ4ZaupjNjI1'),
-            InlineKeyboardButton('🔔 Updates',       url='https://t.me/MeJeetX'),
+            InlineKeyboardButton('📜 Sᴛᴀᴛᴜs',       callback_data='status'),
         ],
         [
             InlineKeyboardButton(_tx(lang, 'btn_help'),  callback_data='help'),
@@ -36,7 +36,7 @@ _STATIC_BUTTONS = [
     [InlineKeyboardButton('📢 Main Channel',   url='https://t.me/MeJeetX')],
     [
         InlineKeyboardButton('💬 Support Group', url='https://t.me/+1p2hcQ4ZaupjNjI1'),
-        InlineKeyboardButton('🔔 Updates',       url='https://t.me/MeJeetX'),
+        InlineKeyboardButton('📜 Sᴛᴀᴛᴜs',       callback_data='status'),
     ],
     [
         InlineKeyboardButton('🙋‍♂️ Help',  callback_data='help'),
@@ -96,10 +96,7 @@ async def helpcb(bot, query):
         text=_tx(lang, 'HELP_TXT'),
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton('ʜᴏᴡ ᴛᴏ ᴜsᴇ ᴍᴇ ❓', callback_data='how_to_use')],
-            [
-                InlineKeyboardButton('⚙️ sᴇᴛᴛɪɴɢs', callback_data='settings#main'),
-                InlineKeyboardButton('📜 sᴛᴀᴛᴜs',   callback_data='status'),
-            ],
+            [InlineKeyboardButton('⚙️ sᴇᴛᴛɪɴɢs', callback_data='settings#main')],
             [InlineKeyboardButton('↩ ʙᴀᴄᴋ', callback_data='back')],
         ])
     )
@@ -143,7 +140,7 @@ async def status(bot, query):
     await query.message.edit_text(
         text=_tx(lang, 'STATUS_TXT',
                  users_count, bots_count, temp.forwardings, total_channels, temp.BANNED_USERS),
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('↩ Back', callback_data='help')]]),
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('↩ Back', callback_data='back')]]),
         parse_mode=enums.ParseMode.HTML,
         disable_web_page_preview=True,
     )
