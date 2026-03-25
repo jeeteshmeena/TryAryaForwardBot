@@ -332,13 +332,19 @@ async def _run_job(jid, uid, bot):
                         elapsed = now - dl_start
                         speed = dl_bytes / elapsed if elapsed > 0 else 0
                         left = total_range - dl_count - skipped
-                        eta = left * elapsed / max(dl_count, 1)
+                        dl_eta = left * elapsed / max(dl_count, 1)
+                        mg_eta = dl_bytes / 10485760  # Estimate: 10MB/s merge speed
+                        up_eta = dl_bytes / max(speed * 0.8, 1) if speed else 0
+                        total_eta = dl_eta + mg_eta + up_eta
+                        
+                        await _db_up(jid, dl_eta=dl_eta, mg_eta=mg_eta, up_eta=up_eta, total_eta=total_eta)
+
                         mtype_icon = "🎵" if mtype == "audio" else "🎬"
                         txt = (f"<b>{mtype_icon} {out_name} — Downloading</b>\n\n"
                                f"<code>{_bar(dl_count, total_range - skipped)}</code>\n\n"
                                f"📁 {dl_count}/{total_range - skipped} files\n"
                                f"💾 {_sz(dl_bytes)} • ⚡ {_spd(speed)}\n"
-                               f"⏱ ETA: {_tm(eta)}")
+                               f"⏱ ETA: {_tm(dl_eta)}")
                         try:
                             if status_msg: await status_msg.edit_text(txt)
                             else: status_msg = await bot.send_message(uid, txt)
@@ -378,6 +384,11 @@ async def _run_job(jid, uid, bot):
                 f"<b>🔀 Merging {dl_count} files → <code>{out_name}{out_ext}</code></b>\n"
                 f"<i>Lossless if codecs match, otherwise high-quality re-encode.</i>")
         except: pass
+        
+        avg_dl_speed = dl_bytes / dl_time if dl_time > 0 else 1048576
+        mg_eta_static = dl_bytes / 10485760
+        up_eta_static = dl_bytes / avg_dl_speed
+        await _db_up(jid, dl_eta=0, mg_eta=mg_eta_static, up_eta=up_eta_static, total_eta=(mg_eta_static + up_eta_static))
 
         loop = asyncio.get_event_loop()
         ok, err = await loop.run_in_executor(
@@ -408,16 +419,29 @@ async def _run_job(jid, uid, bot):
         all_dests = [uid] + [d for d in dest_chats if d != uid]
         thumb = cover if cover and os.path.exists(cover) else None
 
+        avg_dl_speed = dl_bytes / dl_time if dl_time > 0 else 1048576
+        up_eta_static = fsize / avg_dl_speed
+        await _db_up(jid, dl_eta=0, mg_eta=0, up_eta=up_eta_static, total_eta=up_eta_static)
+
+        up_state = {"last": 0}
+        async def _up_prog(current, total):
+            now = time.time()
+            if now - up_state["last"] >= 3:
+                up_state["last"] = now
+                ela = now - up_start
+                eta = (total - current) * ela / max(current, 1)
+                await _db_up(jid, dl_eta=0, mg_eta=0, up_eta=eta, total_eta=eta)
+
         for dest in all_dests:
             for att in range(3):
                 try:
                     if mtype == "video":
                         await client.send_video(chat_id=dest, video=out_path,
                             caption=caption, file_name=f"{out_name}{out_ext}",
-                            thumb=thumb, supports_streaming=True)
+                            thumb=thumb, supports_streaming=True, progress=_up_prog)
                     else:
                         kw = {"chat_id":dest,"audio":out_path,"caption":caption,
-                              "file_name":f"{out_name}{out_ext}","thumb":thumb}
+                              "file_name":f"{out_name}{out_ext}","thumb":thumb, "progress":_up_prog}
                         if metadata.get("title"): kw["title"] = metadata["title"]
                         if metadata.get("artist"): kw["performer"] = metadata["artist"]
                         await client.send_audio(**kw)
@@ -619,7 +643,23 @@ async def mg_cb(bot, query):
 
         dl_t = job.get("dl_time",0); mg_t = job.get("merge_time",0)
         up_t = job.get("up_time",0); tot = job.get("total_time",0)
-        if dl_t or mg_t or up_t:
+        status = job['status']
+
+        if status in ("downloading", "merging", "uploading"):
+            dl_str = f"{_tm(job.get('dl_eta',0))}" if status == "downloading" else "Done ✅"
+            mg_str = "Done ✅" if status == "uploading" else f"~{_tm(job.get('mg_eta',0))}"
+            up_str = f"~{_tm(job.get('up_eta',0))}"
+            tot_str = f"~{_tm(job.get('total_eta',0))}"
+            
+            text += (
+                f"\n╭──── ⏳ Live ETA ────╮\n"
+                f"┃ ⬇️ Download: {dl_str}\n"
+                f"┃ 🔀 Merge: {mg_str}\n"
+                f"┃ ⬆️ Upload: {up_str}\n"
+                f"┃ 📊 Total ETA: {tot_str}\n"
+                f"╰────────────────────╯\n"
+            )
+        elif dl_t or mg_t or up_t:
             text += (
                 f"\n╭──── ⏱ Timings ────╮\n"
                 f"┃ ⬇️ Download: {_tm(dl_t)}\n"
@@ -635,6 +675,7 @@ async def mg_cb(bot, query):
         if job.get("error"): text += f"\n<b>⚠️ Error:</b> <code>{job['error'][:200]}</code>"
 
         await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔄 Refresh", callback_data=f"mg#info#{param}")],
             [InlineKeyboardButton("↩ Bᴀᴄᴋ", callback_data=f"mg#{mtype}_list")]
         ]))
 
