@@ -786,17 +786,7 @@ async def _render_list(bot, uid, msg_or_q, mtype):
 # /merge command — shortcut, picks type
 # ══════════════════════════════════════════════════════════════════════════════
 
-@Client.on_message(filters.command("merge") & filters.private)
-async def merge_cmd(bot, message):
-    if not _check_ffmpeg():
-        return await message.reply("<b>❌ FFmpeg not installed.</b>\n<code>sudo apt install ffmpeg</code>")
-    await message.reply(
-        "<b>🔀 Merger</b>\n\n<i>Choose merge type:</i>",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🎵 Aᴜᴅɪᴏ Mᴇʀɢᴇ", callback_data="mg#audio_list"),
-             InlineKeyboardButton("🎬 Vɪᴅᴇᴏ Mᴇʀɢᴇ", callback_data="mg#video_list")],
-            [InlineKeyboardButton("⫷ Cʟᴏsᴇ", callback_data="mg#close")]
-        ]))
+# /merge command — removed by user request
 
 
 # ══════════════════════════════════════════════════════════════════════════════
