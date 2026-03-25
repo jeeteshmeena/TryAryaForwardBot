@@ -412,14 +412,22 @@ async def _run_job(job_id: str, user_id: int):
                 valid = [m for m in msgs if m and not m.empty and not m.service]
                 valid.sort(key=lambda m: m.id)
                 
-                # Filter out messages from other chats (Pyrogram fetches global IDs for private/basic groups)
+                # Cross-chat filter: only needed for private groups (negative int IDs)
+                # where Pyrogram may return messages from a different peer due to global ID overlaps.
+                # For DM sources (positive int) or string usernames, skip this — get_messages
+                # already fetches from the exact peer specified and m.chat may not match for DMs.
                 filtered = []
                 for m in valid:
-                    if m.chat is None: continue
-                    if isinstance(from_chat, int) and m.chat.id != from_chat: continue
-                    if isinstance(from_chat, str):
+                    if isinstance(from_chat, int) and from_chat < 0:
+                        # Group/channel: verify the message belongs to the correct chat
+                        if m.chat is None: continue
+                        if m.chat.id != from_chat: continue
+                    elif isinstance(from_chat, str) and from_chat != "me":
+                        # Username: verify
+                        if m.chat is None: continue
                         src = from_chat.replace("@", "").lower()
                         if str(m.chat.id) != src and (not m.chat.username or m.chat.username.lower() != src): continue
+                    # For positive int IDs (DMs/bots) and "me": no filter needed
                     filtered.append(m)
                 valid = filtered
 
@@ -519,11 +527,14 @@ async def _run_job(job_id: str, user_id: int):
                             break
                         valid.sort(key=lambda m: m.id)
                         
+                        # Cross-chat filter: only for private groups (negative), not DMs (positive)
                         filtered = []
                         for m in valid:
-                            if m.chat is None: continue
-                            if isinstance(from_chat, int) and m.chat.id != from_chat: continue
-                            if isinstance(from_chat, str):
+                            if isinstance(from_chat, int) and from_chat < 0:
+                                if m.chat is None: continue
+                                if m.chat.id != from_chat: continue
+                            elif isinstance(from_chat, str) and from_chat != "me":
+                                if m.chat is None: continue
                                 src = from_chat.replace("@", "").lower()
                                 if str(m.chat.id) != src and (not m.chat.username or m.chat.username.lower() != src): continue
                             filtered.append(m)
