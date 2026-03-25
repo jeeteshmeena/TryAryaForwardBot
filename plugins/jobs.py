@@ -412,6 +412,18 @@ async def _run_job(job_id: str, user_id: int):
                 valid = [m for m in msgs if m and not m.empty and not m.service]
                 valid.sort(key=lambda m: m.id)
                 
+                # Filter out messages from other chats (Pyrogram fetches global IDs for private/basic groups)
+                filtered = []
+                for m in valid:
+                    if m.chat is None: continue
+                    if isinstance(from_chat, int) and m.chat.id != from_chat: continue
+                    if isinstance(from_chat, str):
+                        src = from_chat.replace("@", "").lower()
+                        if str(m.chat.id) != src and (not m.chat.username or m.chat.username.lower() != src): continue
+                    filtered.append(m)
+                valid = filtered
+
+                
                 if not valid:
                     consecutive_empty += 1
                     if consecutive_empty >= 50:
@@ -506,7 +518,17 @@ async def _run_job(job_id: str, user_id: int):
                         if not valid:
                             break
                         valid.sort(key=lambda m: m.id)
-                        new_msgs.extend(valid)
+                        
+                        filtered = []
+                        for m in valid:
+                            if m.chat is None: continue
+                            if isinstance(from_chat, int) and m.chat.id != from_chat: continue
+                            if isinstance(from_chat, str):
+                                src = from_chat.replace("@", "").lower()
+                                if str(m.chat.id) != src and (not m.chat.username or m.chat.username.lower() != src): continue
+                            filtered.append(m)
+                        
+                        new_msgs.extend(filtered)
                         probe = valid[-1].id + 1
                         if len(valid) < 49:
                             break
