@@ -179,9 +179,10 @@ def _build_atempo_chain(speed):
     return ",".join(filters) if filters else ""
 
 
-def _ffmpeg_merge(file_list, output_path, metadata=None, mtype="audio", cover=None, speed=1.0):
+def _ffmpeg_merge(file_list, output_path, metadata=None, mtype="audio", cover=None, speed=1.0, make_video=False):
     """Merge file_list → output_path. Tries lossless copy first, falls back to re-encode.
-    speed: 1.0 = normal, 2.5 = 2.5x faster (no pitch change via atempo).
+    make_video: If True and cover is present, creates an MP4 video out of the merged audio and cover image.
+    speed: 1.0 = normal, 2.5 = 2.5x faster.
     Returns (ok: bool, error: str).
     """
     lst = output_path + ".list.txt"
@@ -213,24 +214,32 @@ def _ffmpeg_merge(file_list, output_path, metadata=None, mtype="audio", cover=No
                 return True, ""
 
         # Re-encode (needed for speed change OR if lossless failed)
-        cmd2 = ["ffmpeg","-y","-threads","1","-f","concat","-safe","0","-i",lst]
-        if cover and os.path.exists(cover) and mtype == "audio":
-            cmd2 += ["-i", cover]
-        if mtype == "video":
-            vf = f"setpts={1.0/speed:.4f}*PTS" if abs(speed - 1.0) > 0.001 else ""
-            if vf: cmd2 += ["-vf", vf]
+        cmd2 = ["ffmpeg","-y","-threads","1"]
+        if make_video and cover and os.path.exists(cover) and mtype == "audio":
+            # Image + Audio merged to Video
+            cmd2 += ["-loop", "1", "-framerate", "1", "-i", cover]
+            cmd2 += ["-f","concat","-safe","0","-i",lst]
             if atempo: cmd2 += ["-af", atempo]
-            cmd2 += ["-c:v","libx264","-preset","fast","-crf","24",
-                     "-c:a","aac","-b:a","128k","-movflags","+faststart"]
+            cmd2 += ["-c:v", "libx264", "-tune", "stillimage", "-c:a", "aac", "-b:a", "192k", "-pix_fmt", "yuv420p", "-shortest"]
         else:
-            if atempo: cmd2 += ["-af", atempo]
-            # 192k MP3 — transparent quality, ~60% smaller than many originals
-            cmd2 += ["-c:a","libmp3lame","-b:a","192k","-ar","44100"]
-            if cover and os.path.exists(cover):
-                cmd2 += ["-map","0:a","-map","1:0",
-                         "-id3v2_version","3",
-                         "-metadata:s:v","title=Album cover",
-                         "-metadata:s:v","comment=Cover (front)"]
+            cmd2 += ["-f","concat","-safe","0","-i",lst]
+            if cover and os.path.exists(cover) and mtype == "audio":
+                cmd2 += ["-i", cover]
+            if mtype == "video":
+                vf = f"setpts={1.0/speed:.4f}*PTS" if abs(speed - 1.0) > 0.001 else ""
+                if vf: cmd2 += ["-vf", vf]
+                if atempo: cmd2 += ["-af", atempo]
+                cmd2 += ["-c:v","libx264","-preset","fast","-crf","24",
+                         "-c:a","aac","-b:a","128k","-movflags","+faststart"]
+            else:
+                if atempo: cmd2 += ["-af", atempo]
+                # 192k MP3 — transparent quality, ~60% smaller than many originals
+                cmd2 += ["-c:a","libmp3lame","-b:a","192k","-ar","44100"]
+                if cover and os.path.exists(cover):
+                    cmd2 += ["-map","0:a","-map","1:0",
+                             "-id3v2_version","3",
+                             "-metadata:s:v","title=Album cover",
+                             "-metadata:s:v","comment=Cover (front)"]
         if metadata:
             for k, v in (metadata or {}).items():
                 if v: cmd2 += ["-metadata", f"{k}={v}"]
@@ -524,7 +533,7 @@ async def _run_job(jid, uid, bot):
             loop = asyncio.get_event_loop()
             # Chunk parts: always lossless (speed applied at final merge only)
             ok, err = await loop.run_in_executor(
-                None, _ffmpeg_merge, chunk_files_sorted, part_path, None, mtype, None, 1.0)
+                None, _ffmpeg_merge, chunk_files_sorted, part_path, None, mtype, None, 1.0, False)
 
             if not ok:
                 await _db_up(jid, status="error", error=f"Chunk {chunk_num} merge failed: {err[:300]}")
@@ -553,7 +562,10 @@ async def _run_job(jid, uid, bot):
         # PHASE 3 — Final combine of all parts
         # ══════════════════════════════════════════════════════════════════
         await _db_up(jid, status="merging")
-        out_ext  = ".mp4" if mtype == "video" else ".mp3"
+        make_video = job.get("make_video", False)
+        
+        # If make_video is true dynamically overwrite the out_ext for the final combination:
+        out_ext  = ".mp4" if (mtype == "video" or make_video) else ".mp3"
         out_path = os.path.join(wdir, f"{out_name}{out_ext}")
 
         try:
@@ -565,7 +577,7 @@ async def _run_job(jid, uid, bot):
         part_files_sorted = sorted(part_files, key=lambda p: os.path.basename(p))
         loop = asyncio.get_event_loop()
         ok, err = await loop.run_in_executor(
-            None, _ffmpeg_merge, part_files_sorted, out_path, metadata, mtype, cover, speed)
+            None, _ffmpeg_merge, part_files_sorted, out_path, metadata, mtype, cover, speed, make_video)
 
         if not ok:
             await _db_up(jid, status="error", error=err[:500])
@@ -1088,6 +1100,25 @@ async def _create_flow(bot, uid, mtype="audio"):
             try: cover_path = await bot.download_media(msg, file_name=os.path.join(tmp_dir, "cover.jpg"))
             except: pass
 
+        # Step 6c: Make Video?
+        make_video = False
+        upload_to_yt = False
+        if cover_path and mtype == "audio":
+            msg = await _mg_ask(bot, uid,
+                "<b>Step 6c:</b> Create an <b>MP4 Video</b> from this audio using the cover image? (Uses very little RAM)\n\n"
+                "Send <code>yes</code> to build a video, or <code>skip</code> to just embed the image as MP3 cover art.")
+            if "yes" in (msg.text or "").lower():
+                make_video = True
+                
+            # Step 6d: YouTube Upload?
+            if make_video:
+                msg = await _mg_ask(bot, uid,
+                    "<b>Step 6d:</b> Auto-Upload this video directly to <b>YouTube</b>?\n\n"
+                    "<i>(Requires running /ytauth first to link your channel)</i>\n\n"
+                    "Send <code>yes</code> to upload, or <code>skip</code> for Telegram only.")
+                if "yes" in (msg.text or "").lower():
+                    upload_to_yt = True
+
         # Step 7: Confirm
         dest_preview = "DM only"
         if dest_chats:
@@ -1097,12 +1128,14 @@ async def _create_flow(bot, uid, mtype="audio"):
         meta_pre = "\n".join(f"  {k}: {v}" for k,v in list(metadata.items())[:5] if v) if metadata else ""
 
         msg = await _mg_ask(bot, uid,
-            f"<b>Step 7/7: Confirm {label} Merge</b>\n\n"
+            f"<b>Step 7: Confirm {label} Merge</b>\n\n"
             f"<b>Source:</b> <code>{from_chat}</code>\n"
             f"<b>Range:</b> {sid} → {eid} ({total} msgs)\n"
             f"<b>Output:</b> <code>{out_name}</code>\n"
             f"<b>Type:</b> {icon} {label}\n"
             f"<b>Cover:</b> {'✅' if cover_path else '❌'}\n"
+            f"<b>Make MP4 Video:</b> {'✅' if make_video else '❌'}\n"
+            f"<b>Upload to YT:</b> {'✅' if upload_to_yt else '❌'}\n"
             f"<b>Dest:</b> {dest_preview}\n"
             + (f"\n<b>Metadata:</b>\n{meta_pre}\n" if meta_pre else "") +
             f"\n<i>All media merged in exact order. No file skipped.</i>",
