@@ -993,6 +993,8 @@ async def _create_job_flow(bot, user_id: int):
         except Exception:
             from_title = str(from_chat)
 
+    from_thread = await _ask_topic(bot, user_id, "Source")
+
     # ── Step 4: First Destination ────────────────────────────────────────────
     channels = await db.get_user_channels(user_id)
     if not channels:
@@ -1109,6 +1111,7 @@ async def _create_job_flow(bot, user_id: int):
         "account_id":         sel_acc["id"],
         "from_chat":          from_chat,
         "from_title":         from_title,
+        "from_thread":        from_thread,
         # Primary destination
         "to_chat":            to_chat,
         "to_title":           to_title,

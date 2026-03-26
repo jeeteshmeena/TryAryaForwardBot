@@ -1282,61 +1282,61 @@ async def _create_flow(bot, uid, mtype="audio"):
                 if not video_cover_path:
                     video_cover_path = cover_path
 
-                # Outro Image
-                outro_cover_path = None
+        if mtype == "video" or make_video:
+            # Outro Image
+            msg = await _mg_ask(bot, uid,
+                "<b>Step 6e/9:</b> Send the <b>Outro Image</b> to show at the end of the video for 5 seconds.\n\n"
+                "Send <code>skip</code> to skip the outro.")
+            tmp_odir = os.path.abspath(f"merge_tmp/_ocover_{uid}")
+            os.makedirs(tmp_odir, exist_ok=True)
+            if msg.photo:
+                try:
+                    outro_cover_path = await bot.download_media(msg, file_name=os.path.join(tmp_odir, "outro_cover.jpg"))
+                    outro_cover_path = os.path.abspath(outro_cover_path)
+                except: pass
+            elif msg.document and msg.document.mime_type and 'image' in msg.document.mime_type:
+                try:
+                    outro_cover_path = await bot.download_media(msg, file_name=os.path.join(tmp_odir, "outro_cover.jpg"))
+                    outro_cover_path = os.path.abspath(outro_cover_path)
+                except: pass
+
+            # Step 6f: YouTube Upload?
+            msg = await _mg_ask(bot, uid,
+                "<b>Step 6f/9:</b> Auto-Upload to <b>YouTube (Private)</b> after rendering?\n\n"
+                "<i>(Requires /ytauth setup first)</i>\n\n"
+                "Send <code>yes</code> or <code>skip</code>.")
+            if "yes" in (msg.text or "").lower():
+                upload_to_yt = True
+
+                # Step 6g: YouTube Title
                 msg = await _mg_ask(bot, uid,
-                    "<b>Step 6e/9:</b> Send the <b>Outro Image</b> to show at the end of the video for 5 seconds.\n\n"
-                    "Send <code>skip</code> to skip the outro.")
-                tmp_odir = os.path.abspath(f"merge_tmp/_ocover_{uid}")
-                os.makedirs(tmp_odir, exist_ok=True)
+                    "<b>Step 6g/9:</b> Enter specific <b>YouTube Title</b>:\n\n"
+                    "Send <code>skip</code> to use bot default.")
+                yt_title = msg.text.strip() if msg.text.lower() != "skip" else None
+
+                # Step 6h: YouTube Thumbnail
+                msg = await _mg_ask(bot, uid,
+                    "<b>Step 6h/9:</b> Send custom <b>YouTube Thumbnail</b> image:\n\n"
+                    "Send <code>skip</code> for none.")
+                tmp_tdir = os.path.abspath(f"merge_tmp/_ythumb_{uid}")
+                os.makedirs(tmp_tdir, exist_ok=True)
                 if msg.photo:
                     try:
-                        outro_cover_path = await bot.download_media(msg, file_name=os.path.join(tmp_odir, "outro_cover.jpg"))
-                        outro_cover_path = os.path.abspath(outro_cover_path)
+                        yt_thumb_path = await bot.download_media(msg, file_name=os.path.join(tmp_tdir, "yt_thumb.jpg"))
+                        yt_thumb_path = os.path.abspath(yt_thumb_path)
                     except: pass
                 elif msg.document and msg.document.mime_type and 'image' in msg.document.mime_type:
                     try:
-                        outro_cover_path = await bot.download_media(msg, file_name=os.path.join(tmp_odir, "outro_cover.jpg"))
-                        outro_cover_path = os.path.abspath(outro_cover_path)
+                        yt_thumb_path = await bot.download_media(msg, file_name=os.path.join(tmp_tdir, "yt_thumb.jpg"))
+                        yt_thumb_path = os.path.abspath(yt_thumb_path)
                     except: pass
 
-                # Step 6f: YouTube Upload?
+                # Step 6i: Starting Episode
                 msg = await _mg_ask(bot, uid,
-                    "<b>Step 6f/9:</b> Auto-Upload to <b>YouTube (Private)</b> after rendering?\n\n"
-                    "<i>(Requires /ytauth setup first)</i>\n\n"
-                    "Send <code>yes</code> or <code>skip</code>.")
-                if "yes" in (msg.text or "").lower():
-                    upload_to_yt = True
-
-                    # Step 6g: YouTube Title
-                    msg = await _mg_ask(bot, uid,
-                        "<b>Step 6g/9:</b> Enter specific <b>YouTube Title</b>:\n\n"
-                        "Send <code>skip</code> to use bot default.")
-                    yt_title = msg.text.strip() if msg.text.lower() != "skip" else None
-
-                    # Step 6h: YouTube Thumbnail
-                    msg = await _mg_ask(bot, uid,
-                        "<b>Step 6h/9:</b> Send custom <b>YouTube Thumbnail</b> image:\n\n"
-                        "Send <code>skip</code> for none.")
-                    tmp_tdir = os.path.abspath(f"merge_tmp/_ythumb_{uid}")
-                    os.makedirs(tmp_tdir, exist_ok=True)
-                    if msg.photo:
-                        try:
-                            yt_thumb_path = await bot.download_media(msg, file_name=os.path.join(tmp_tdir, "yt_thumb.jpg"))
-                            yt_thumb_path = os.path.abspath(yt_thumb_path)
-                        except: pass
-                    elif msg.document and msg.document.mime_type and 'image' in msg.document.mime_type:
-                        try:
-                            yt_thumb_path = await bot.download_media(msg, file_name=os.path.join(tmp_tdir, "yt_thumb.jpg"))
-                            yt_thumb_path = os.path.abspath(yt_thumb_path)
-                        except: pass
-
-                    # Step 6i: Starting Episode
-                    msg = await _mg_ask(bot, uid,
-                        "<b>Step 6i/9:</b> Enter <b>Starting Episode Number</b> for Timestamps (e.g. 1 or 201).\n\n"
-                        "Send <code>skip</code> to assume 1.")
-                    if msg.text.lower() != "skip" and msg.text.strip().isdigit():
-                        yt_start_epi = int(msg.text.strip())
+                    "<b>Step 6i/9:</b> Enter <b>Starting Episode Number</b> for Timestamps (e.g. 1 or 201).\n\n"
+                    "Send <code>skip</code> to assume 1.")
+                if msg.text.lower() != "skip" and msg.text.strip().isdigit():
+                    yt_start_epi = int(msg.text.strip())
 
         # Step 7: Confirm
         dest_preview = "DM only"

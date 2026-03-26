@@ -175,22 +175,56 @@ async def settings_query(bot, query):
         reply_markup=InlineKeyboardMarkup(buttons))
                                
   elif type=="caption":
-     buttons = []
-     data = await get_configs(user_id)
+     data    = await get_configs(user_id)
      caption = data['caption']
-     if caption is None:
-        buttons.append([InlineKeyboardButton('✚ Add Caption ✚', 
-                      callback_data="settings#addcaption")])
+     rm_cap  = data.get('filters', {}).get('rm_caption', False)
+
+     # Determine mode label
+     if rm_cap is True:
+         mode_lbl = "🤖 Smart Clean  (active)"
+     elif rm_cap == 2:
+         mode_lbl = "🗑️ Wipe All Captions  (active)"
      else:
-        buttons.append([InlineKeyboardButton('See Caption', 
-                      callback_data="settings#seecaption")])
-        buttons[-1].append(InlineKeyboardButton('🗑️ Delete Caption', 
-                      callback_data="settings#deletecaption"))
-     buttons.append([InlineKeyboardButton('↩ Back', 
-                      callback_data="settings#main")])
+         mode_lbl = "✅ Keep Original  (active)"
+
+     cap_lbl = "✚ Add Custom Caption" if caption is None else "✏️ Edit Custom Caption"
+
+     buttons = [[
+         InlineKeyboardButton("━━━━  Caption Mode  ━━━━",
+             callback_data="settings_#noop")
+     ],[
+         InlineKeyboardButton("✅ Keep Original" + (" ◀" if not rm_cap else ""),
+             callback_data="settings#caption_mode-off"),
+     ],[
+         InlineKeyboardButton("🤖 Smart Clean" + (" ◀" if rm_cap is True else ""),
+             callback_data="settings#caption_mode-smart"),
+     ],[
+         InlineKeyboardButton("🗑️ Wipe All Captions" + (" ◀" if rm_cap == 2 else ""),
+             callback_data="settings#caption_mode-wipe"),
+     ],[
+         InlineKeyboardButton("━━━━  Custom Template  ━━━━",
+             callback_data="settings_#noop")
+     ],[
+         InlineKeyboardButton(cap_lbl, callback_data="settings#addcaption"),
+     ]]
+     if caption is not None:
+         buttons.append([
+             InlineKeyboardButton("👁 View Template",  callback_data="settings#seecaption"),
+             InlineKeyboardButton("🗑️ Clear Template", callback_data="settings#deletecaption"),
+         ])
+     buttons.append([InlineKeyboardButton("↩ Back", callback_data="settings#main")])
+
      await query.message.edit_text(
-        "<b><u>CUSTOM CAPTION</b></u>\n\n<b>You can set a custom caption to videos and documents. Normaly use its default caption</b>\n\n<b><u>AVAILABLE FILLINGS:</b></u>\n- <code>{filename}</code> : Filename\n- <code>{size}</code> : File size\n- <code>{caption}</code> : default caption",
-        reply_markup=InlineKeyboardMarkup(buttons))
+         "<b><u>📝 Caption Settings</u></b>\n\n"
+         f"<b>Current mode:</b> {mode_lbl}\n\n"
+         "<b>Modes:</b>\n"
+         "• <b>Keep Original</b> — forward caption as-is\n"
+         "• <b>Smart Clean</b> — strip links/usernames but keep text\n"
+         "• <b>Wipe All Captions</b> — remove caption completely from every file\n\n"
+         "<b>Custom Template</b> — override caption with your own text.\n"
+         "  Supports: <code>{filename}</code>, <code>{size}</code>, <code>{caption}</code>",
+         reply_markup=InlineKeyboardMarkup(buttons))
+
                                
   elif type=="seecaption":   
      data = await get_configs(user_id)
@@ -205,10 +239,78 @@ async def settings_query(bot, query):
     
   elif type=="deletecaption":
      await update_configs(user_id, 'caption', None)
+     await query.answer("\u2705 Caption template cleared.", show_alert=False)
+     # Redirect back to caption sub-menu
+     data    = await get_configs(user_id)
+     rm_cap  = data.get('filters', {}).get('rm_caption', False)
+     buttons = [[
+         InlineKeyboardButton("✅ Keep Original" + (" ◀" if not rm_cap else ""), callback_data="settings#caption_mode-off"),
+     ],[
+         InlineKeyboardButton("🤖 Smart Clean" + (" ◀" if rm_cap is True else ""), callback_data="settings#caption_mode-smart"),
+     ],[
+         InlineKeyboardButton("🗑️ Wipe All Captions" + (" ◀" if rm_cap == 2 else ""), callback_data="settings#caption_mode-wipe"),
+     ],[
+         InlineKeyboardButton("✚ Add Custom Caption", callback_data="settings#addcaption"),
+     ],[
+         InlineKeyboardButton("↩ Back", callback_data="settings#main")
+     ]]
      await query.message.edit_text(
-        "<b>successfully updated</b>",
-        reply_markup=InlineKeyboardMarkup(buttons))
+         "<b><u>📝 Caption Settings</u></b>\n\n<b>Template cleared successfully.</b>",
+         reply_markup=InlineKeyboardMarkup(buttons))
                               
+  elif type.startswith("caption_mode"):
+     mode = type.split("-")[1]  # off | smart | wipe
+     if mode == "off":
+         val = False
+     elif mode == "smart":
+         val = True
+     else:
+         val = 2  # wipe
+     filters_data = (await get_configs(user_id)).get('filters', {})
+     filters_data['rm_caption'] = val
+     await update_configs(user_id, 'filters', filters_data)
+     await query.answer("✅ Caption mode updated!", show_alert=False)
+     # Refresh the caption sub-menu
+     data    = await get_configs(user_id)
+     caption = data['caption']
+     rm_cap  = data.get('filters', {}).get('rm_caption', False)
+     if rm_cap is True:
+         mode_lbl = "🤖 Smart Clean  (active)"
+     elif rm_cap == 2:
+         mode_lbl = "🗑️ Wipe All Captions  (active)"
+     else:
+         mode_lbl = "✅ Keep Original  (active)"
+     cap_lbl = "✚ Add Custom Caption" if caption is None else "✏️ Edit Custom Caption"
+     buttons = [[
+         InlineKeyboardButton("━━━━  Caption Mode  ━━━━", callback_data="settings_#noop")
+     ],[
+         InlineKeyboardButton("✅ Keep Original" + (" ◀" if not rm_cap else ""), callback_data="settings#caption_mode-off"),
+     ],[
+         InlineKeyboardButton("🤖 Smart Clean" + (" ◀" if rm_cap is True else ""), callback_data="settings#caption_mode-smart"),
+     ],[
+         InlineKeyboardButton("🗑️ Wipe All Captions" + (" ◀" if rm_cap == 2 else ""), callback_data="settings#caption_mode-wipe"),
+     ],[
+         InlineKeyboardButton("━━━━  Custom Template  ━━━━", callback_data="settings_#noop")
+     ],[
+         InlineKeyboardButton(cap_lbl, callback_data="settings#addcaption"),
+     ]]
+     if caption is not None:
+         buttons.append([
+             InlineKeyboardButton("👁 View Template",  callback_data="settings#seecaption"),
+             InlineKeyboardButton("🗑️ Clear Template", callback_data="settings#deletecaption"),
+         ])
+     buttons.append([InlineKeyboardButton("↩ Back", callback_data="settings#main")])
+     await query.message.edit_text(
+         "<b><u>📝 Caption Settings</u></b>\n\n"
+         f"<b>Current mode:</b> {mode_lbl}\n\n"
+         "<b>Modes:</b>\n"
+         "• <b>Keep Original</b> — forward caption as-is\n"
+         "• <b>Smart Clean</b> — strip links/usernames but keep text\n"
+         "• <b>Wipe All Captions</b> — remove caption completely from every file\n\n"
+         "<b>Custom Template</b> — override caption with your own text.\n"
+         "  Supports: <code>{filename}</code>, <code>{size}</code>, <code>{caption}</code>",
+         reply_markup=InlineKeyboardMarkup(buttons))
+
   elif type=="addcaption":
      await query.message.delete()
      try:
@@ -654,11 +756,13 @@ async def filters_buttons(user_id):
        InlineKeyboardButton('✅' if filter['duplicate'] else '❌',
                     callback_data=f'settings#updatefilter-duplicate-{filter["duplicate"]}')
        ],[
-       InlineKeyboardButton('📝 Caption',
-                    callback_data=f'settings_#updatefilter-rm_caption-{filters.get("rm_caption", False)}'),
-       InlineKeyboardButton('🤖' if filters.get('rm_caption', False) is True else ('📝' if filters.get('rm_caption', False) == 2 else '❌'),
-                    callback_data=f'settings#updatefilter-rm_caption-{filters.get("rm_caption", False)}')
-       ],[
+               InlineKeyboardButton('📝 Caption Settings →',
+                     callback_data='settings#caption'),
+        InlineKeyboardButton(
+            '🤖' if filters.get('rm_caption', False) is True else (
+            '🗑️' if filters.get('rm_caption', False) == 2 else '✅'),
+                     callback_data='settings#caption')
+        ],[
        InlineKeyboardButton('⫷ Bᴀᴄᴋ',
                     callback_data="settings#main")
        ]]
