@@ -266,9 +266,7 @@ async def settings_query(bot, query):
          val = True
      else:
          val = 2  # wipe
-     filters_data = (await get_configs(user_id)).get('filters', {})
-     filters_data['rm_caption'] = val
-     await update_configs(user_id, 'filters', filters_data)
+     await update_configs(user_id, 'rm_caption', val)
      await query.answer("✅ Caption mode updated!", show_alert=False)
      # Refresh the caption sub-menu
      data    = await get_configs(user_id)
@@ -450,7 +448,7 @@ async def settings_query(bot, query):
          else:
             await update_configs(user_id, key, True)
             
-     if key in ['poll', 'protect', 'download', 'rm_caption']:
+     if key in ['poll', 'protect', 'download', 'rm_caption', 'links']:
         return await query.edit_message_reply_markup(
            reply_markup=await next_filters_buttons(user_id)) 
      await query.edit_message_reply_markup(
@@ -756,12 +754,18 @@ async def filters_buttons(user_id):
        InlineKeyboardButton('✅' if filter['duplicate'] else '❌',
                     callback_data=f'settings#updatefilter-duplicate-{filter["duplicate"]}')
        ],[
-               InlineKeyboardButton('📝 Caption Settings →',
-                     callback_data='settings#caption'),
-        InlineKeyboardButton(
-            '🤖' if filters.get('rm_caption', False) is True else (
-            '🗑️' if filters.get('rm_caption', False) == 2 else '✅'),
-                     callback_data='settings#caption')
+               InlineKeyboardButton('📝 Caption Settings →',
+
+                     callback_data='settings#caption'),
+
+        InlineKeyboardButton(
+
+            '🤖' if filters.get('rm_caption', False) is True else (
+
+            '🗑️' if filters.get('rm_caption', False) == 2 else '✅'),
+
+                     callback_data='settings#caption')
+
         ],[
        InlineKeyboardButton('⫷ Bᴀᴄᴋ',
                     callback_data="settings#main")
@@ -771,6 +775,7 @@ async def filters_buttons(user_id):
 async def next_filters_buttons(user_id):
   filter = await get_configs(user_id)
   filters = filter['filters']
+  links_on = filters.get('links', False)
   buttons = [[
        InlineKeyboardButton('📊 Poll',
                     callback_data=f'settings_#updatefilter-poll-{filters["poll"]}'),
@@ -786,6 +791,11 @@ async def next_filters_buttons(user_id):
                     callback_data=f'settings_#updatefilter-download-{filter["download"]}'),
        InlineKeyboardButton('✅' if filter.get('download') else '❌',
                     callback_data=f'settings#updatefilter-download-{filter["download"]}')
+       ],[
+       InlineKeyboardButton('🔗 Strip Links',
+                    callback_data=f'settings_#updatefilter-links-{links_on}'),
+       InlineKeyboardButton('✅ ON' if links_on else '❌ OFF',
+                    callback_data=f'settings#updatefilter-links-{links_on}')
        ],[
        InlineKeyboardButton('🛑 size limit',
                     callback_data='settings#file_size')

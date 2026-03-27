@@ -73,6 +73,10 @@ async def pub_(bot, message):
           pling=0
           await edit(m, 'Progressing', 10, sts)
           print(f"Starting Forwarding Process... From :{sts.get('FROM')} To: {sts.get('TO')} Totel: {sts.get('limit')} stats : {sts.get('skip')})")
+          # Start channel-side progress bar
+          _dest_chat = int(sts.get('TO'))
+          _total_msgs = int(sts.get('limit')) if sts.get('limit') else 0
+          asyncio.create_task(channel_progress_start(client, _dest_chat, _total_msgs))
 
           # Use getattr to safely check for 'continuous' attribute since old STS objects might not have it
           is_continuous = getattr(sts, 'continuous', False)
@@ -247,6 +251,9 @@ async def pub_(bot, message):
                 pling += 1
                 if pling % 5 == 0:
                    await edit(m, 'Progressing', 10, sts)
+                 if pling % 10 == 0:
+                    _fwded = int(sts.get('total_files') or 0)
+                    asyncio.create_task(channel_progress_update(client, _dest_chat, _fwded, _total_msgs))
                 # Check message type filtering
                 is_filtered = False
                 _filters = data.get('filters', [])
@@ -302,8 +309,8 @@ async def pub_(bot, message):
                     continue
 
                 # Compute caption & replacements for this message before buffering
-                _filters = data.get('filters', [])
-                new_caption = custom_caption(message, caption, apply_smart_clean=data.get('rm_caption', False))
+                _filters = data.get('filters', {})
+                new_caption = custom_caption(message, caption, apply_smart_clean=_filters.get('rm_caption', False), remove_links_flag=_filters.get('links', False))
 
                 replacements = data.get('replacements', {})
                 if replacements and new_caption:
@@ -370,7 +377,10 @@ async def pub_(bot, message):
         except Exception:
             pass
 
-        await edit(m, 'Completed', "completed", sts) 
+        await edit(m, 'Completed', "completed", sts)
+        # Finalize channel progress bar
+        _fwded_final = int(sts.get('total_files') or 0)
+        asyncio.create_task(channel_progress_done(client, _dest_chat, _fwded_final, _total_msgs, cancelled=False))
         await stop(client, user)
             
 async def copy(bot, msg, m, sts, download=False, attempt=0, seq_index=None, upload_queue=None):
@@ -615,6 +625,13 @@ async def is_cancelled(client, user, msg, sts):
       temp.IS_FRWD_CHAT.remove(sts.TO)
       await edit(msg, "Cancelled", "completed", sts)
       await send(client, user, "<b>❌ Forwarding Process Cancelled</b>")
+      # Mark channel progress as cancelled
+      try:
+          _fwded = int(sts.get('total_files') or 0)
+          _tot   = int(sts.get('limit') or 0)
+          asyncio.create_task(channel_progress_done(client, int(sts.TO), _fwded, _tot, cancelled=True))
+      except Exception:
+          pass
       await stop(client, user)
       return True 
       
@@ -639,6 +656,84 @@ async def send(bot, user, text):
       await bot.send_message(user, text=text)
    except:
       pass 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Channel-side Live Progress Bar
+# Shows a progress message in the DESTINATION channel during forwarding.
+# The message is auto-deleted 3 minutes after completion.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Stores {dest_chat_id: message_id} for the active progress message
+_channel_progress_msgs: dict = {}
+
+def _build_channel_progress_text(forwarded: int, total: int, status: str = "forwarding") -> str:
+    """Build a clean progress bar text for the destination channel."""
+    if total and total > 0:
+        pct = min(int(forwarded * 100 / total), 100)
+    else:
+        pct = 0
+    filled = pct // 5   # 20 blocks total → each = 5%
+    empty  = 20 - filled
+    bar = "█" * filled + "░" * empty
+    if status == "done":
+        heading = "✅ <b>Forwarding Complete!</b>"
+        status_line = f"<b>All {forwarded} files forwarded successfully.</b>"
+    elif status == "cancelled":
+        heading = "❌ <b>Forwarding Cancelled</b>"
+        status_line = f"<b>Stopped at {forwarded} / {total if total else '?'} files.</b>"
+    else:
+        heading = "📤 <b>Bot is forwarding, please wait…</b>"
+        status_line = f"<b>Files:</b> <code>{forwarded}</code> / <code>{total if total else '?'}</code>"
+    return (
+        f"{heading}\n\n"
+        f"<code>[{bar}]</code>  <b>{pct}%</b>\n"
+        f"{status_line}\n\n"
+        f"<i>Powered by Arya Forward Bot</i>"
+    )
+
+async def channel_progress_start(client, dest_chat: int, total: int, thread_id: int = None) -> None:
+    """Send the initial progress message to the destination channel."""
+    try:
+        text = _build_channel_progress_text(0, total, "forwarding")
+        kw = {"text": text, "parse_mode": "html"}
+        if thread_id:
+            kw["message_thread_id"] = thread_id
+        msg = await client.send_message(dest_chat, **kw)
+        _channel_progress_msgs[dest_chat] = msg.id
+    except Exception as e:
+        logger.warning(f"[ChannelProgress] Could not send to {dest_chat}: {e}")
+
+async def channel_progress_update(client, dest_chat: int, forwarded: int, total: int) -> None:
+    """Edit the progress message in the destination channel."""
+    msg_id = _channel_progress_msgs.get(dest_chat)
+    if not msg_id:
+        return
+    try:
+        text = _build_channel_progress_text(forwarded, total, "forwarding")
+        await client.edit_message_text(dest_chat, msg_id, text, parse_mode="html")
+    except (MessageNotModified, Exception):
+        pass
+
+async def channel_progress_done(client, dest_chat: int, forwarded: int, total: int,
+                                  cancelled: bool = False, auto_delete_secs: int = 180) -> None:
+    """Edit the progress message to show completion and schedule auto-delete."""
+    msg_id = _channel_progress_msgs.pop(dest_chat, None)
+    if not msg_id:
+        return
+    status = "cancelled" if cancelled else "done"
+    try:
+        text = _build_channel_progress_text(forwarded, total, status)
+        await client.edit_message_text(dest_chat, msg_id, text, parse_mode="html")
+    except Exception:
+        pass
+    # Schedule auto-delete after delay
+    async def _delete_later():
+        await asyncio.sleep(auto_delete_secs)
+        try:
+            await client.delete_messages(dest_chat, msg_id)
+        except Exception:
+            pass
+    asyncio.create_task(_delete_later())
      
 import re
 
@@ -646,25 +741,32 @@ def smart_clean_caption(caption: str) -> str:
     if not caption:
         return ""
     
-    # Try to extract the title up to the resolution tag
-    match = re.search(r'^.*?(?:480p|720p|1080p|1440p|2160p|4k|8k)(?:\.|\s|$)', caption, flags=re.IGNORECASE | re.MULTILINE)
-    if match:
-        cleaned = match.group(0)
-    else:
-        cleaned = caption
-        
-    # Remove file extensions
-    cleaned = re.sub(r'(?i)(\.mkv|\.mp4|\.avi|\.webm|\.flv).*$', '', cleaned)
-    # Remove Telegram promotional links
-    cleaned = re.sub(r'(?i)(⚡️.*?Join Us.*|@\w+).*$', '', cleaned)
-    # Remove typical junk release tags if no resolution was matched and it's long
-    if not match:
-        cleaned = re.sub(r'(?i)(\.WEB-DL|\.HINDI|\.AAC|\.H\.264|\.x264).*$', '', cleaned)
-        cleaned = re.sub(r'(-[a-zA-Z0-9_]+)$', '', cleaned)
-        
+    cleaned = caption
+    # Remove common audio/video codecs and group tags attached to the extension
+    cleaned = re.sub(r'(?i)(AAC[0-9.]*|H\.?264|H\.?265|x264|x265|HEVC).*?(\.mkv|\.mp4|\.avi|\.webm|\.flv)', '', cleaned)
+    # Remove isolated extensions
+    cleaned = re.sub(r'(?i)(\.mkv|\.mp4|\.avi|\.webm|\.flv)', '', cleaned)
+    # Remove trailing group tags like -Siddh_12
+    cleaned = re.sub(r'(-[a-zA-Z0-9_]+)(\s*)$', r'\2', cleaned)
+    # Remove prominent promotional channel intros
+    cleaned = re.sub(r'(?i)(⚡️.*?Join Us.*|@\w+)', '', cleaned)
+    
     return cleaned.strip()
 
-def custom_caption(msg, caption, apply_smart_clean=False):
+def remove_all_links(text: str) -> str:
+    if not text:
+        return ""
+    # Strip HTML anchor tags entirely, or maybe keep their inner text?
+    # Keeping inner text: replacing <a href="...">Text</a> with Text
+    text = re.sub(r'(?i)<a\s+href="[^"]*".*?>(.*?)</a>', r'\1', text)
+    # Remove raw URLs
+    text = re.sub(r'(?i)\bhttps?://[^\s]+', '', text)
+    text = re.sub(r'(?i)\bt\.me/[^\s]+', '', text)
+    # Remove mentions
+    text = re.sub(r'(?i)@\w+', '', text)
+    return text.strip()
+
+def custom_caption(msg, caption, apply_smart_clean=False, remove_links_flag=False):
   if not msg.media: return None
   if not (msg.video or msg.document or msg.audio or msg.photo): return None
   
@@ -681,12 +783,14 @@ def custom_caption(msg, caption, apply_smart_clean=False):
       # Wipe All Captions. Block it completely.
       fcaption = ""
   elif apply_smart_clean is True:
-      # Smart Clean: Remove links and usernames from caption
-      import re
-      fcaption = re.sub(r'(?i)(https?://[^\s]+|t\.me/[^\s]+|@\w+)', '', fcaption).strip()
+      # Smart Clean: Remove target patterns
+      fcaption = smart_clean_caption(fcaption)
   elif apply_smart_clean is False:
       # Keep Original
       pass
+
+  if remove_links_flag and fcaption:
+      fcaption = remove_all_links(fcaption)
 
   # If an explicit custom template exists, format it
   if caption:

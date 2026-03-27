@@ -164,10 +164,11 @@ async def _forward_message(
     to_chat: int, remove_caption: bool, cap_tpl: str | None, forward_tag: bool = False,
     thread_id: int = None,
     to_chat_2: int = None, thread_id_2: int = None,
-    replacements: dict = None
+    replacements: dict = None,
+    remove_links_flag: bool = False
 ):
     """Copy message to 1 or 2 destinations. Falls back to download/re-upload if restricted."""
-    from plugins.regix import custom_caption
+    from plugins.regix import custom_caption, remove_all_links
     import re
     import asyncio
     import os
@@ -177,7 +178,7 @@ async def _forward_message(
     is_text_replaced = False
 
     if msg.media:
-        new_caption = custom_caption(msg, cap_tpl, apply_smart_clean=remove_caption)
+        new_caption = custom_caption(msg, cap_tpl, apply_smart_clean=remove_caption, remove_links_flag=remove_links_flag)
         if replacements and new_caption:
             for old_txt, new_txt_str in replacements.items():
                 if old_txt is None: continue
@@ -186,6 +187,10 @@ async def _forward_message(
                 except Exception: new_caption = str(new_caption).replace(str(old_txt), new_str)
     else:
         new_text = msg.text.html if msg.text else ""
+        if remove_links_flag and new_text:
+            new_text = remove_all_links(new_text)
+            is_text_replaced = True
+            
         if replacements and new_text:
             orig_text = new_text
             for old_txt, new_txt_str in replacements.items():
@@ -394,6 +399,7 @@ async def _run_job(job_id: str, user_id: int):
                 configs        = await db.get_configs(user_id)
                 filters_dict   = configs.get('filters', {})
                 remove_caption = filters_dict.get('rm_caption', False)
+                remove_links   = filters_dict.get('links', False)
                 cap_tpl        = configs.get('caption')
                 forward_tag    = configs.get('forward_tag', False)
                 sleep_secs     = max(1, int(configs.get('duration', 1) or 1))
@@ -470,7 +476,7 @@ async def _run_job(job_id: str, user_id: int):
 
                     try:
                         await _forward_message(client, msg, to_chat, remove_caption, cap_tpl, forward_tag,
-                                               to_thread, to_chat_2, to_thread_2, replacements)
+                                               to_thread, to_chat_2, to_thread_2, replacements, remove_links)
                         await _inc_forwarded(job_id, 1, forward_type='batch')
                     except FloodWait as fw:
                         await asyncio.sleep(fw.value + 1)
@@ -503,6 +509,7 @@ async def _run_job(job_id: str, user_id: int):
             configs        = await db.get_configs(user_id)
             filters_dict   = configs.get('filters', {})
             remove_caption = filters_dict.get('rm_caption', False)
+            remove_links   = filters_dict.get('links', False)
             cap_tpl        = configs.get('caption')
             forward_tag    = configs.get('forward_tag', False)
             replacements   = configs.get('replacements', {})
@@ -580,7 +587,7 @@ async def _run_job(job_id: str, user_id: int):
                     continue
                 try:
                     await _forward_message(client, msg, to_chat, remove_caption, cap_tpl, forward_tag,
-                                           to_thread, to_chat_2, to_thread_2)
+                                           to_thread, to_chat_2, to_thread_2, replacements, remove_links)
                     await _inc_forwarded(job_id, 1, forward_type='live')
                 except FloodWait as fw:
                     await asyncio.sleep(fw.value + 1)

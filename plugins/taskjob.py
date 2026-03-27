@@ -324,6 +324,7 @@ async def _run_task_job(job_id: str, user_id: int):
             configs        = await db.get_configs(user_id)
             filters_dict   = configs.get('filters', {})
             remove_caption = filters_dict.get('rm_caption', False)
+            remove_links   = filters_dict.get('links', False)
             cap_tpl        = configs.get('caption')
             forward_tag    = configs.get('forward_tag', False)
             sleep_secs     = max(1, configs.get('duration', 1) or 1)
@@ -412,7 +413,7 @@ async def _run_task_job(job_id: str, user_id: int):
 
                 caption = None
                 if getattr(msg, 'media', None):
-                    caption = custom_caption(msg, cap_tpl, apply_smart_clean=remove_caption)
+                    caption = custom_caption(msg, cap_tpl, apply_smart_clean=remove_caption, remove_links_flag=remove_links)
 
                 await dl_queue.put((seq_counter, msg, caption, forward_tag, remove_caption))
                 seq_counter += 1
