@@ -798,9 +798,9 @@ async def next_filters_buttons(user_id):
        InlineKeyboardButton('✅' if filter.get('download') else '❌',
                     callback_data=f'settings#updatefilter-download-{filter["download"]}')
        ],[
-       InlineKeyboardButton('🔗 Strip Links',
+       InlineKeyboardButton('🔗 Links',
                     callback_data=f'settings_#updatefilter-links-{links_on}'),
-       InlineKeyboardButton('✅ ON' if links_on else '❌ OFF',
+       InlineKeyboardButton('✅' if links_on else '❌',
                     callback_data=f'settings#updatefilter-links-{links_on}')
        ],[
        InlineKeyboardButton('🛑 size limit',

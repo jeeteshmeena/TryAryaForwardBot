@@ -95,6 +95,13 @@ def _passes_filters(msg, disabled_types: list) -> bool:
     """Return True if message passes the user's content-type filters."""
     if msg.empty or msg.service:
         return False
+        
+    if 'links' in disabled_types:
+        import re
+        text = msg.text or msg.caption or ""
+        if text and re.search(r'(https?://\S+|www\.\S+|t\.me/\S+)', text, flags=re.IGNORECASE):
+            return False
+
     checks = [
         ('text',      lambda m: m.text and not m.media),
         ('audio',     lambda m: m.audio),
@@ -394,6 +401,22 @@ async def _run_job(job_id: str, user_id: int):
 
             logger.info(f"[Job {job_id}] Batch phase: msg {batch_cursor} → {batch_end}")
             
+            # Progress bar helpers
+            def make_progress_bar(percentage: int) -> str:
+                return "█" * (percentage // 10) + "░" * (10 - (percentage // 10))
+                
+            def get_prog_text(percentage: int) -> str:
+                return f"<b>🔄 Forwarding Process:</b>\n{make_progress_bar(percentage)} {percentage}%\n\n<i>Please wait...</i>"
+
+            if not job.get("prog_msg_created"):
+                try:
+                    sent = await client.send_message(to_chat, get_prog_text(0))
+                    await _update_job(job_id, prog_msg_created=True, prog_msg_id=sent.id)
+                    try: await client.pin_chat_message(to_chat, sent.id, disable_notification=True)
+                    except Exception: pass
+                except Exception:
+                    await _update_job(job_id, prog_msg_created=True)
+            
             consecutive_empty = 0
 
             while batch_cursor <= batch_end:
@@ -496,12 +519,30 @@ async def _run_job(job_id: str, user_id: int):
 
                 batch_cursor = chunk_end + 1
                 await _update_job(job_id, batch_cursor=batch_cursor)
+                
+                # Update progress bar occasionally
+                try:
+                    prog_id = (await _get_job(job_id)).get("prog_msg_id")
+                    if prog_id:
+                        total_msgs = max(1, batch_end - int(job.get("batch_start_id") or 1))
+                        current_prog = max(0, batch_cursor - int(job.get("batch_start_id") or 1))
+                        pct = min(100, int((current_prog / total_msgs) * 100))
+                        await client.edit_message_text(to_chat, prog_id, get_prog_text(pct))
+                except Exception:
+                    pass
 
             # Batch complete — mark done, advance last_seen past the batch
             await _update_job(job_id, batch_done=True, batch_cursor=batch_end,
                               last_seen_id=max(last_seen, batch_end))
             last_seen = max(last_seen, batch_end)
             logger.info(f"[Job {job_id}] Batch phase complete. Switching to live mode.")
+            
+            try:
+                prog_id = (await _get_job(job_id)).get("prog_msg_id")
+                if prog_id:
+                    await client.edit_message_text(to_chat, prog_id, "<b>✅ Forwarding Completed! All files have been successfully transferred.</b>")
+            except Exception:
+                pass
 
         # ── LIVE PHASE ─────────────────────────────────────────────────────
         logger.info(f"[Job {job_id}] Live polling started. last_seen={last_seen}")

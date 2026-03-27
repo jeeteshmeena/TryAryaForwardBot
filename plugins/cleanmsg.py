@@ -108,6 +108,33 @@ async def _do_delete(client, chat_id, wanted: str, status_msg, is_bot: bool, che
             except Exception:
                 pass
 
+    async def _process_msg(msg):
+        if wanted == "link":
+            text = msg.text or msg.caption
+            if text:
+                import re
+                if re.search(r'(https?://\S+|www\.\S+|t\.me/\S+)', text, flags=re.IGNORECASE):
+                    new_text = re.sub(r'(https?://\S+|www\.\S+|t\.me/\S+)', '', text, flags=re.IGNORECASE).strip()
+                    try:
+                        if msg.text:
+                            if not new_text:
+                                batch.append(msg.id)
+                            else:
+                                await client.edit_message_text(chat_id, msg.id, text=new_text)
+                                total[0] += 1
+                        elif msg.caption is not None:
+                            await client.edit_message_caption(chat_id, msg.id, caption=new_text)
+                            total[0] += 1
+                    except FloodWait as fw:
+                        await asyncio.sleep(fw.value + 2)
+                    except Exception:
+                        pass
+        elif _type_matches(msg, wanted):
+            batch.append(msg.id)
+            
+        if len(batch) >= 100:
+            await flush()
+
     if check_range:
         start_id = min(check_range[0], check_range[1])
         end_id = max(check_range[0], check_range[1])
@@ -120,10 +147,7 @@ async def _do_delete(client, chat_id, wanted: str, status_msg, is_bot: bool, che
                 if not isinstance(msgs, list): msgs = [msgs]
                 valid = [m for m in msgs if m and not m.empty and not m.service]
                 for msg in valid:
-                    if _type_matches(msg, wanted):
-                        batch.append(msg.id)
-                        if len(batch) >= 100:
-                            await flush()
+                    await _process_msg(msg)
             except FloodWait as fw:
                 await asyncio.sleep(fw.value + 2)
             except Exception:
@@ -135,10 +159,7 @@ async def _do_delete(client, chat_id, wanted: str, status_msg, is_bot: bool, che
         # USERBOT path: get_chat_history works here
         try:
             async for msg in client.get_chat_history(chat_id, limit=0):
-                if _type_matches(msg, wanted):
-                    batch.append(msg.id)
-                    if len(batch) >= 100:
-                        await flush()
+                await _process_msg(msg)
         except Exception as e:
             print(f"[CleanMSG] get_chat_history error for {chat_id}: {e}")
     else:
@@ -173,10 +194,7 @@ async def _do_delete(client, chat_id, wanted: str, status_msg, is_bot: bool, che
 
             consecutive_empty = 0
             for msg in valid:
-                if _type_matches(msg, wanted):
-                    batch.append(msg.id)
-                    if len(batch) >= 100:
-                        await flush()
+                await _process_msg(msg)
 
             current += BATCH
 
@@ -341,6 +359,7 @@ async def _cleanmsg_flow(bot, user_id: int):
             [KeyboardButton("📄 Document"),       KeyboardButton("🖼 Photo")],
             [KeyboardButton("🎞 Animation"),      KeyboardButton("🖍 Text Only")],
             [KeyboardButton("📦 All Media"),      KeyboardButton("🤖 Commands")],
+            [KeyboardButton("🔗 Links")],
             [KeyboardButton("/cancel")],
         ], resize_keyboard=True, one_time_keyboard=True)
     )
@@ -353,6 +372,7 @@ async def _cleanmsg_flow(bot, user_id: int):
         "Video": "video",         "Document":  "document",
         "Photo": "photo",         "Animation": "animation",
         "Text Only": "text",      "Commands": "commands",
+        "Links": "link"
     }
     wanted = "all"
     for label, key in type_map.items():
