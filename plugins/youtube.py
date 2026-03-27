@@ -9,7 +9,10 @@ from pyrogram import Client, filters
 
 logger = logging.getLogger(__name__)
 
-YOUTUBE_SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
+YOUTUBE_SCOPES = [
+    "https://www.googleapis.com/auth/youtube.upload",
+    "https://www.googleapis.com/auth/youtube"
+]
 TOKEN_FILE = "youtube_token.json"
 CLIENT_SECRET_FILE = "client_secret.json"
 
@@ -89,6 +92,33 @@ async def upload_video_to_youtube(video_path, title, description="", tags=None, 
         return True, f"https://youtu.be/{video_id}"
     except Exception as e:
         logger.error(f"YouTube Upload Failed: {e}")
+        return False, str(e)
+
+
+async def update_youtube_video(video_id: str, title: str, description: str = "") -> tuple:
+    """Update the title and description of an existing YouTube video."""
+    try:
+        import asyncio
+        youtube = get_authenticated_service()
+        if not youtube:
+            return False, "YouTube is not authorized. Please configure OAuth first."
+
+        body = {
+            'id': video_id,
+            'snippet': {
+                'title': title,
+                'description': description,
+                'categoryId': '22'  # People & Blogs
+            }
+        }
+
+        loop = asyncio.get_event_loop()
+        request = youtube.videos().update(part="snippet", body=body)
+        response = await loop.run_in_executor(None, request.execute)
+        updated_id = response.get('id', video_id)
+        return True, f"Updated: https://youtu.be/{updated_id}"
+    except Exception as e:
+        logger.error(f"YouTube Update Failed: {e}")
         return False, str(e)
 
 

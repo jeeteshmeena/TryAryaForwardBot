@@ -692,7 +692,7 @@ def _build_channel_progress_text(forwarded: int, total: int, status: str = "forw
     )
 
 async def channel_progress_start(client, dest_chat: int, total: int, thread_id: int = None) -> None:
-    """Send the initial progress message to the destination channel."""
+    """Send the initial progress message to the destination channel and pin it."""
     try:
         text = _build_channel_progress_text(0, total, "forwarding")
         kw = {"text": text, "parse_mode": "html"}
@@ -700,6 +700,11 @@ async def channel_progress_start(client, dest_chat: int, total: int, thread_id: 
             kw["message_thread_id"] = thread_id
         msg = await client.send_message(dest_chat, **kw)
         _channel_progress_msgs[dest_chat] = msg.id
+        # Auto-pin the progress message so it stays visible
+        try:
+            await client.pin_chat_message(dest_chat, msg.id, disable_notification=True)
+        except Exception:
+            pass  # If pinning fails (e.g., no admin rights), continue silently
     except Exception as e:
         logger.warning(f"[ChannelProgress] Could not send to {dest_chat}: {e}")
 
@@ -716,24 +721,40 @@ async def channel_progress_update(client, dest_chat: int, forwarded: int, total:
 
 async def channel_progress_done(client, dest_chat: int, forwarded: int, total: int,
                                   cancelled: bool = False, auto_delete_secs: int = 180) -> None:
-    """Edit the progress message to show completion and schedule auto-delete."""
+    """Edit the progress message to show completion, unpin it, delete it, then send completion message."""
     msg_id = _channel_progress_msgs.pop(dest_chat, None)
-    if not msg_id:
-        return
     status = "cancelled" if cancelled else "done"
-    try:
-        text = _build_channel_progress_text(forwarded, total, status)
-        await client.edit_message_text(dest_chat, msg_id, text, parse_mode="html")
-    except Exception:
-        pass
-    # Schedule auto-delete after delay
-    async def _delete_later():
-        await asyncio.sleep(auto_delete_secs)
+
+    if msg_id:
         try:
-            await client.delete_messages(dest_chat, msg_id)
+            text = _build_channel_progress_text(forwarded, total, status)
+            await client.edit_message_text(dest_chat, msg_id, text, parse_mode="html")
         except Exception:
             pass
-    asyncio.create_task(_delete_later())
+        # Unpin the progress message now that forwarding is done
+        try:
+            await client.unpin_chat_message(dest_chat, msg_id)
+        except Exception:
+            pass
+        # Schedule auto-delete of progress message after delay
+        async def _delete_later():
+            await asyncio.sleep(auto_delete_secs)
+            try:
+                await client.delete_messages(dest_chat, msg_id)
+            except Exception:
+                pass
+        asyncio.create_task(_delete_later())
+
+    # Send completion message to destination channel (only when not cancelled)
+    if not cancelled:
+        try:
+            completion_text = (
+                "<i>Hey, the story is complete. Hope you like it \U0001faf6\U0001f3fb.</i>\n\n"
+                "<u>If you're looking for another story, then try… @StoriesByJeetXNew</u>"
+            )
+            await client.send_message(dest_chat, completion_text, parse_mode="html")
+        except Exception:
+            pass
      
 import re
 

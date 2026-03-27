@@ -759,31 +759,22 @@ async def _run_job(jid, uid, bot):
                 
                 start_epi = job.get("yt_start_epi")
                 
+                # Sequential timestamp generation — correct episode numbering
+                # Each file in log_entries corresponds to one episode in strict order.
+                # We do NOT extract numbers from filenames (that caused "Episode 3" everywhere).
+                # Instead, we assign episode numbers sequentially: start_epi, start_epi+1, ...
                 yt_timestamps = ""
-                last_epi = None
-                import re
-                
+                seq_epi = int(start_epi) if start_epi is not None else 1
+                total_epi_count = seq_epi  # track last for description
+
                 for tc, original_name, _ in log_entries:
-                    numbers = re.findall(r'\d+', str(original_name))
-                    epi_num = int(numbers[-1]) if numbers else None
-                    
-                    if epi_num is not None:
-                        if start_epi is not None and last_epi is None:
-                            last_epi = start_epi - 1
-                        
-                        if last_epi is not None and epi_num > last_epi + 1:
-                            for missing in range(int(last_epi) + 1, int(epi_num)):
-                                yt_timestamps += f"{tc} Episode {missing}\n"
-                        yt_timestamps += f"{tc} Episode {epi_num}\n"
-                        last_epi = epi_num
-                    else:
-                        fallback_epi = (int(last_epi) + 1) if last_epi is not None else (int(start_epi) if start_epi is not None else 1)
-                        yt_timestamps += f"{tc} Episode {fallback_epi}\n"
-                        last_epi = fallback_epi
+                    yt_timestamps += f"{tc} Episode {seq_epi}\n"
+                    total_epi_count = seq_epi
+                    seq_epi += 1
 
-                desc_hindi = f"हे अजनबियों, मैं आर्य बॉट [आपका दोस्त] हूँ। मैंने सफलतापूर्वक '{title}' को 'The Last Broadcast' पर मर्ज और अपलोड कर दिया है। मैंने इसे अपने टेलीग्राम डेटाबेस से एकत्र किया है और इसे [1-{last_epi or global_seq}] के उसी क्रम में मर्ज/अपलोड किया है।\n\nचूंकि यह एक स्वचालित प्रक्रिया है, इसलिए आपको कुछ समस्याएं मिल सकती हैं—जैसे एपिसोड के क्रम में गड़बड़ी (जैसे कि एपिसोड 11, 10 से पहले), कुछ एपिसोड का छूटना, थोड़ी गुणवत्ता में कमी या अन्य असंगतताएं। यदि आपको कोई समस्या आती है, तो आप टिप्पणियों में रिपोर्ट कर सकते हैं। बेहतर सुविधा के लिए, टाइमस्टैम्प नीचे दिए गए हैं ताकि आप आसानी से एपिसोड के बीच नेविगेट कर सकें।"
+                desc_hindi = f"हे अजनबियों, मैं आर्य बॉट [आपका दोस्त] हूँ। मैंने सफलतापूर्वक '{title}' को 'The Last Broadcast' पर मर्ज और अपलोड कर दिया है। मैंने इसे अपने टेलीग्राम डेटाबेस से एकत्र किया है और इसे [{start_epi or 1}-{total_epi_count}] के उसी क्रम में मर्ज/अपलोड किया है।\n\nचूंकि यह एक स्वचालित प्रक्रिया है, इसलिए आपको कुछ समस्याएं मिल सकती हैं—जैसे एपिसोड के क्रम में गड़बड़ी (जैसे कि एपिसोड 11, 10 से पहले), कुछ एपिसोड का छूटना, थोड़ी गुणवत्ता में कमी या अन्य असंगतताएं। यदि आपको कोई समस्या आती है, तो आप टिप्पणियों में रिपोर्ट कर सकते हैं। बेहतर सुविधा के लिए, टाइमस्टैम्प नीचे दिए गए हैं ताकि आप आसानी से एपिसोड के बीच नेविगेट कर सकें।"
 
-                desc_english = f"Hey Strangers, I'm Arya Bot [Your Friend]. I successfully merged and uploaded '{title}' on The Last Broadcast. I collected this from my Telegram database and merged/uploaded it in the same order [1-{last_epi or global_seq}].\n\nYou may notice some issues such as episode order mismatches (e.g., episode 11 before 10), missing episodes, slight quality loss, or other inconsistencies. If you face issues, you can report them in the comments. Since this is an automated process, some limitations may exist. For better navigation, timestamps are provided below so you can jump between episodes easily."
+                desc_english = f"Hey Strangers, I'm Arya Bot [Your Friend]. I successfully merged and uploaded '{title}' on The Last Broadcast. I collected this from my Telegram database and merged/uploaded it in the same order. Episodes {start_epi or 1}–{total_epi_count} are included.\n\nYou may notice some issues such as episode order mismatches, missing episodes, slight quality loss, or other inconsistencies. If you face issues, you can report them in the comments. Since this is an automated process, some limitations may exist. For better navigation, timestamps are provided below so you can jump between episodes easily."
 
                 support_msg = "If my work has helped you in any way, you can support me as per your wish by visiting this link: https://razorpay.me/@SusJeetX and sending any amount (minimum 50 INR). This will help me continue providing more stories like this."
                 support_msg_hi = "यदि मेरे कार्य से आपको किसी भी प्रकार की सहायता मिली है, तो आप इस लिंक पर जाकर अपनी इच्छानुसार मुझे समर्थन दे सकते हैं: https://razorpay.me/@SusJeetX और कोई भी राशि (न्यूनतम 50 INR) भेज सकते हैं। इससे मुझे इस तरह की और कहानियाँ प्रदान करने में मदद मिलेगी।"
@@ -791,7 +782,11 @@ async def _run_job(jid, uid, bot):
                 copyright_msg = "Warning: Copyright issues may occur at any time. Join my Telegram channel: https://t.me/StoriesByJeetXNew to get all stories and updates about the new YouTube channel, so you don't miss any content."
                 copyright_msg_hi = "चेतावनी: किसी भी समय कॉपीराइट की समस्या आ सकती है। मेरे टेलीग्राम चैनल: https://t.me/StoriesByJeetXNew से जुड़ें ताकि आपको सभी कहानियाँ और नए YouTube चैनल के बारे में अपडेट मिलते रहें, और आप कोई भी सामग्री मिस न करें।"
 
-                desc = f"{desc_hindi}\n\n{support_msg_hi}\n\n{copyright_msg_hi}\n\n───────────────────────────\n\n{desc_english}\n\n{support_msg}\n\n{copyright_msg}\n\n───────────────────────────\n\n⏱ **TIMESTAMPS / CHAPTERS** ⏱\n\n{yt_timestamps}"
+                desc = (f"{desc_hindi}\n\n{support_msg_hi}\n\n{copyright_msg_hi}"
+                        f"\n\n───────────────────────────\n\n"
+                        f"{desc_english}\n\n{support_msg}\n\n{copyright_msg}"
+                        f"\n\n───────────────────────────\n\n"
+                        f"TIMESTAMPS / CHAPTERS\n\n{yt_timestamps}")
                 success, yt_res = await upload_video_to_youtube(
                     video_path=out_path,
                     title=title,
@@ -803,6 +798,12 @@ async def _run_job(jid, uid, bot):
                 if success:
                     yt_msg = f"┃ 🟥 YouTube: <a href='{yt_res}'>Private Link</a>\n"
                     await yt_status.edit_text(f"<b>✅ YouTube Upload Successful!</b>\n{yt_res}")
+                    # Persist yt_video_id, yt_title, and log_entries for later editing
+                    try:
+                        _yt_vid_id = yt_res.split("/")[-1] if "/" in yt_res else yt_res
+                        await _db_up(jid, yt_video_id=_yt_vid_id, yt_title=title, log_entries=log_entries)
+                    except Exception:
+                        pass
                 else:
                     yt_msg = f"┃ 🟥 YouTube: Failed\n"
                     await yt_status.edit_text(f"<b>❌ YouTube Upload Failed</b>\n<code>{yt_res}</code>")
@@ -1019,12 +1020,82 @@ async def mg_cb(bot, query):
         if meta_txt: text += f"\n<b>Metadata:</b>\n{meta_txt}\n"
         if job.get("error"): text += f"\n<b>⚠️ Error:</b> <code>{job['error'][:200]}</code>"
 
-        await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup([
+        info_btns = [
             [InlineKeyboardButton("🔄 Refresh", callback_data=f"mg#info#{param}")],
-            [InlineKeyboardButton("↩ Bᴀᴄᴋ", callback_data=f"mg#{mtype}_list")]
-        ]))
+        ]
+        # Only show Edit YT button if the job is done and has a YouTube video ID stored
+        if job.get("status") == "done" and job.get("yt_video_id"):
+            info_btns.append([InlineKeyboardButton("✏️ Edit YT Title/Desc", callback_data=f"mg#yt_edit#{param}")])
+        info_btns.append([InlineKeyboardButton("↩ Bᴀᴄᴋ", callback_data=f"mg#{mtype}_list")])
+        await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup(info_btns))
 
-    # ── Rename ────────────────────────────────────────────────────────────
+    # ── Edit YouTube Video Title/Description ──────────────────────────────
+    elif action == "yt_edit":
+        job = await _db_get(param)
+        if not job: return await query.answer("Not found!", show_alert=True)
+        if not job.get("yt_video_id"):
+            return await query.answer("No YouTube video linked to this job.", show_alert=True)
+        await query.message.delete()
+        try:
+            r = await _mg_ask(bot, uid,
+                "<b>✏️ Edit YouTube Video</b>\n\n"
+                f"Current video: <code>https://youtu.be/{job['yt_video_id']}</code>\n\n"
+                "The bot will re-generate the description and update the YouTube video title and description "
+                "from this job's stored data.\n\n"
+                "Send <b>CONFIRM</b> to proceed, or /cancel to abort.",
+                reply_markup=ReplyKeyboardMarkup(
+                    [[KeyboardButton("CONFIRM")], [KeyboardButton("/cancel")]],
+                    resize_keyboard=True, one_time_keyboard=True))
+            if "/cancel" in r.text.lower() or "confirm" not in r.text.upper():
+                return await bot.send_message(uid, "<b>Cancelled.</b>", reply_markup=ReplyKeyboardRemove())
+            await bot.send_message(uid, "<code>Updating YouTube video…</code>", reply_markup=ReplyKeyboardRemove())
+            # Re-generate description from stored job data
+            import re as _re
+            log_entries = job.get("log_entries", [])
+            start_epi = job.get("yt_start_epi")
+            title = job.get("yt_title") or job.get("output_name") or "Untitled"
+            # Rebuild timestamps sequentially
+            yt_timestamps = ""
+            seq_epi = int(start_epi) if start_epi is not None else 1
+            total_epi_count = seq_epi
+            for tc, orig_name, _ in log_entries:
+                yt_timestamps += f"{tc} Episode {seq_epi}\n"
+                total_epi_count = seq_epi
+                seq_epi += 1
+            if not yt_timestamps:
+                yt_timestamps = "0:00 Episode 1\n"
+            desc_hindi = (f"हे अजनबियों, मैं आर्य बॉट [आपका दोस्त] हूँ। मैंने सफलतापूर्वक '{title}' को 'The Last Broadcast' पर मर्ज और अपलोड कर दिया है। "
+                          f"मैंने इसे अपने टेलीग्राम डेटाबेस से एकत्र किया है और इसे [{start_epi or 1}-{total_epi_count}] के उसी क्रम में मर्ज/अपलोड किया है।\n\n"
+                          "चूंकि यह एक स्वचालित प्रक्रिया है, इसलिए आपको कुछ समस्याएं मिल सकती हैं। बेहतर सुविधा के लिए, टाइमस्टैम्प नीचे दिए गए हैं।")
+            desc_english = (f"Hey Strangers, I'm Arya Bot [Your Friend]. I successfully merged and uploaded '{title}' on The Last Broadcast. "
+                            f"Episodes {start_epi or 1}–{total_epi_count} are included.\n\nFor better navigation, timestamps are provided below.")
+            support_msg = "If my work has helped you, support me: https://razorpay.me/@SusJeetX (minimum 50 INR)."
+            support_msg_hi = "यदि मेरे कार्य से आपको सहायता मिली है, तो आप इस लिंक पर जाकर मुझे समर्थन दें: https://razorpay.me/@SusJeetX (न्यूनतम 50 INR)।"
+            copyright_msg = "Warning: Copyright issues may occur. Join: https://t.me/StoriesByJeetXNew"
+            copyright_msg_hi = "चेतावनी: कॉपीराइट समस्या आ सकती है। जुड़ें: https://t.me/StoriesByJeetXNew"
+            new_desc = (f"{desc_hindi}\n\n{support_msg_hi}\n\n{copyright_msg_hi}"
+                        f"\n\n───────────────────────────\n\n"
+                        f"{desc_english}\n\n{support_msg}\n\n{copyright_msg}"
+                        f"\n\n───────────────────────────\n\n"
+                        f"TIMESTAMPS / CHAPTERS\n\n{yt_timestamps}")
+            try:
+                from plugins.youtube import update_youtube_video
+                success, msg2 = await update_youtube_video(
+                    video_id=job["yt_video_id"],
+                    title=title[:100],
+                    description=new_desc[:5000]
+                )
+                if success:
+                    await bot.send_message(uid, f"<b>✅ YouTube video updated!</b>\n{msg2}")
+                else:
+                    await bot.send_message(uid, f"<b>❌ Update failed:</b> <code>{msg2}</code>")
+            except Exception as yt_e:
+                await bot.send_message(uid, f"<b>❌ Error updating YouTube video:</b> <code>{yt_e}</code>")
+        except Exception as fe:
+            logger.warning(f"yt_edit error: {fe}")
+            await bot.send_message(uid, "<b>Cancelled or timed out.</b>", reply_markup=ReplyKeyboardRemove())
+        await bot.send_message(uid, "Use /merge or /settings to see the job list.")
+
     elif action == "rename":
         await query.message.delete()
         try:
