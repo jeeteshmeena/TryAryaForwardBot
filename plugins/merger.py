@@ -339,7 +339,7 @@ def _ffmpeg_merge(file_list, output_path, metadata=None, mtype="audio", cover=No
         needs_reencode = bool(atempo)
 
         if not needs_reencode:
-            # Try lossless concat copy first
+            # Try lossless concat copy first (only safe for audio output or pure video concat)
             cmd = ["ffmpeg","-y","-threads","1","-f","concat","-safe","0","-i",lst]
             if cover and os.path.exists(cover) and mtype == "audio":
                 cmd += ["-i", cover, "-map","0:a","-map","1:0","-c:a","copy",
@@ -347,15 +347,17 @@ def _ffmpeg_merge(file_list, output_path, metadata=None, mtype="audio", cover=No
                         "-metadata:s:v","title=Album cover",
                         "-metadata:s:v","comment=Cover (front)",
                         "-max_muxing_queue_size", "1024"]
+            elif mtype == "video":
+                # Video concat: add faststart so YouTube can process it
+                cmd += ["-c", "copy", "-movflags", "+faststart", "-max_muxing_queue_size", "1024"]
             else:
                 cmd += ["-c", "copy", "-max_muxing_queue_size", "1024"]
             if metadata:
                 for k, v in (metadata or {}).items():
                     if v: cmd += ["-metadata", f"{k}={v}"]
             cmd.append(output_path)
-            # CRITICAL: also use absolute output path in lossless attempt
             abs_out = os.path.abspath(output_path)
-            cmd[-1] = abs_out  # replace last element (output_path) with absolute
+            cmd[-1] = abs_out
             r = subprocess.run(cmd, capture_output=True, text=True, timeout=7200)
             if r.returncode == 0 and os.path.exists(abs_out) and os.path.getsize(abs_out) > 1000:
                 return True, ""
@@ -388,8 +390,16 @@ def _ffmpeg_merge(file_list, output_path, metadata=None, mtype="audio", cover=No
             
             cmd2 += ["-f","concat","-safe","0","-i",lst]
             if atempo: cmd2 += ["-af", atempo]
-            # Enforce exactly 1280x720 pad to make final concat lossless with outro
-            cmd2 += ["-c:v","libx264","-preset","superfast","-tune","stillimage","-c:a","aac","-b:a","192k","-vf","scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p","-shortest","-max_muxing_queue_size","1024"]
+            # CRITICAL: -movflags +faststart is REQUIRED for YouTube to be able to process the file.
+            # Without this, YouTube shows 'Upload failed: Can't process file'.
+            # format=yuv420p ensures wide browser/device compatibility.
+            cmd2 += [
+                "-c:v","libx264","-preset","superfast","-tune","stillimage",
+                "-c:a","aac","-b:a","192k",
+                "-vf","scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p",
+                "-movflags","+faststart",
+                "-shortest","-max_muxing_queue_size","1024"
+            ]
         else:
             cmd2 += ["-f","concat","-safe","0","-i",lst]
             if cover and os.path.exists(cover) and mtype == "audio" and not make_video:
@@ -856,13 +866,20 @@ async def _run_job(jid, uid, bot):
         up_eta_static = fsize / avg_dl_speed
         await _db_up(jid, dl_eta=0, mg_eta=0, up_eta=up_eta_static, total_eta=up_eta_static)
 
-        up_state = {"last": 0}
+        up_state = {"last": 0, "last_bytes": 0, "last_ts": up_start, "speed_bps": 0}
         async def _up_prog(current, total):
             now = time.time()
             if now - up_state["last"] >= 3:
+                elapsed = now - up_state["last_ts"]
+                delta_bytes = current - up_state["last_bytes"]
+                if elapsed > 0 and delta_bytes > 0:
+                    up_state["speed_bps"] = delta_bytes / elapsed
+                up_state["last_ts"] = now
+                up_state["last_bytes"] = current
                 up_state["last"] = now
-                ela = now - up_start
-                eta = (total - current) * ela / max(current, 1)
+                # ETA based on live speed
+                speed = up_state["speed_bps"]
+                eta = (total - current) / max(speed, 1) if speed > 0 else 0
                 await _db_up(jid, dl_eta=0, mg_eta=0, up_eta=eta, total_eta=eta)
 
         for dest in all_dests:
