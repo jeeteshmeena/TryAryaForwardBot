@@ -7,6 +7,17 @@ and automatically posts the grouped batch buttons into a Public Channel.
 import uuid
 import math
 import asyncio
+import logging
+from pyrogram import Client, filters
+from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton
+from database import db
+from plugins.test import CLIENT
+from plugins.jobs import _ask
+
+logger = logging.getLogger(__name__)
+_CLIENT = CLIENT()
+import math
+import asyncio
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton
 from database import db
@@ -174,159 +185,198 @@ async def sl_callback(bot, query):
         asyncio.create_task(_create_share_flow(bot, user_id))
 
 async def _build_share_links(bot, user_id, sj, info_msg):
-    # Immediately acknowledge to unfreeze the user's keyboard
     sts = await info_msg.reply_text("<i>⏳ Initializing share worker...</i>", reply_markup=ReplyKeyboardRemove())
-    
+
+    async def safe_edit(text):
+        try:
+            await sts.edit_text(text)
+        except Exception:
+            try:
+                await bot.send_message(user_id, text)
+            except Exception:
+                pass
+
     try:
-        # Check token aggressively
         token = await db.get_share_bot_token()
         if not token:
-            return await sts.edit_text("❌ You must set the Share Bot Token in /settings first!")
-        
+            return await safe_edit("❌ You must set the Share Bot Token in /settings first!")
+
         import plugins.share_bot as share_mod
         if not share_mod.share_client or not getattr(share_mod.share_client, 'is_connected', False):
             try:
                 await share_mod.start_share_bot(token)
-            except Exception: pass
-            
+            except Exception:
+                pass
+
         if not share_mod.share_client or not getattr(share_mod.share_client, 'is_connected', False):
-            return await sts.edit_text("❌ Share Bot failed to start. Review terminal logs.")
-            
-        bot_usr = share_mod.share_client.me.username if share_mod.share_client.me else "ShareBot"
-        
+            return await safe_edit("❌ Share Bot failed to start. Check terminal logs.")
+
+        bot_usr = share_mod.share_client.me.username
+
+        # If SHAREBOT selected → poster is the Share Bot (it must be admin in target channel)
+        # The MAIN bot is used for scanning ONLY (it has the SQLite peer cache)
         if sj['bot_id'] == "SHAREBOT":
-            worker = share_mod.share_client
+            poster = share_mod.share_client  # posts the link messages to target channel
         else:
             from plugins.test import start_clone_bot
             bot_info = await db.get_bot(sj['bot_id'])
             if not bot_info:
-                return await sts.edit_text("❌ Worker account not found in DB.")
-            worker = await start_clone_bot(_CLIENT.client(bot_info))
-            
-        if not worker:
-            return await bot.send_message(user_id, "❌ Failed to start worker account.")
+                return await safe_edit("❌ Worker account not found in DB.")
+            poster = await start_clone_bot(_CLIENT.client(bot_info))
 
-        async def safe_edit(text):
-            try:
-                await sts.edit_text(text)
-            except Exception:
-                try:
-                    await bot.send_message(user_id, text)
-                except Exception: pass
+        if not poster:
+            return await safe_edit("❌ Failed to start worker account.")
 
-        await safe_edit("<i>⏳ Hydrating session cache and scanning database...</i>")
-        
-        # ===== DEFINITIVE FIX FOR CHANNEL_INVALID =====
-        # The Share Bot runs in_memory=True, so after every restart it has ZERO peer cache.
-        # When it tries to call get_messages(-100xxx, ...) Pyrogram needs to first resolve the
-        # integer chat_id to an InputPeerChannel(channel_id, access_hash). It does this by calling
-        # GetChannels, but since the Share Bot has never seen this channel, it has no access_hash
-        # to send along, so Telegram rejects it with CHANNEL_INVALID.
-        #
-        # THE REAL SOLUTION: The MAIN BOT has a persistent SQLite session and IS already an admin
-        # in the DB channel. Use it to resolve the InputPeerChannel, then directly write the
-        # access_hash into the Share Bot's in-memory peer cache via storage.update_peers().
-        # After this, the Share Bot can call get_messages() without any GetChannels round-trip.
+        await safe_edit("<i>⏳ Scanning database channel and generating links...</i>")
+
+        # ===== DEFINITIVE CHANNEL_INVALID FIX =====
+        # The Share Bot uses in_memory=True; it has ZERO peer cache after every restart.
+        # SOLUTION: Use the MAIN BOT (which has a persistent SQLite session + is admin)
+        # to resolve the InputPeerChannel, then invoke channels.GetMessages on the raw layer
+        # of the MAIN BOT directly — we never ask the Share Bot (worker) to touch the DB channel.
+        # The Share Bot is only used for POSTING to the public target channel and for
+        # DELIVERING files to users (it IS admin there by the user's configuration).
+        from pyrogram.raw.functions.channels import GetMessages as ChannelGetMessages
+        from pyrogram.raw.types import InputMessageID, InputPeerChannel
+
         source_chat_id = sj['source']
+
+        # Step 1: Resolve the database channel peer using the MAIN BOT (always works)
         try:
-            from pyrogram.raw.types import InputPeerChannel
-            peer = await bot.resolve_peer(source_chat_id)
-            if isinstance(peer, InputPeerChannel):
-                await worker.storage.update_peers([
-                    (peer.channel_id, peer.access_hash, "channel", None, None)
-                ])
-        except Exception as hydrate_err:
+            db_peer = await bot.resolve_peer(source_chat_id)
+        except Exception as e:
             return await safe_edit(
-                f"<b>❌ Cannot hydrate Share Bot peer cache.</b>\n\n"
-                f"Error: <code>{hydrate_err}</code>\n\n"
-                f"<b>Most likely cause:</b> The Main Bot (Arya) is NOT an admin in the Source Database Channel. "
-                f"Add @{(await bot.get_me()).username} as an admin to your hidden database channel and try again."
+                f"<b>❌ Cannot Access Database Channel</b>\n\n"
+                f"<code>{e}</code>\n\n"
+                f"The Main Bot (@{(await bot.get_me()).username}) must be an admin in the hidden database channel."
             )
-        # ===== END FIX =====
-        
-        protect = await db.get_share_protect(user_id)
+
+        protect  = await db.get_share_protect(user_id)
         auto_del = await db.get_share_autodelete(user_id)
-        
+
         current_id = sj['start_id']
-        end_ep = sj['end_id']
+        end_ep     = sj['end_id']
         chunk_size = sj['batch_size']
-        
-        # Phase 1: Scan and create raw buttons
+        story      = sj['story']
+
         raw_buttons = []
-        
-        import pyrogram
-        
+        ep_counter  = 1  # Episode number (1-based, tracks across all batches)
+
         while current_id <= end_ep:
             chunk_end = min(current_id + chunk_size - 1, end_ep)
-            msg_ids = list(range(current_id, chunk_end + 1))
-            
-            valid_ids = []
-            
+            msg_ids   = list(range(current_id, chunk_end + 1))
+
+            # Step 2: Fetch messages via raw API on the MAIN BOT with the resolved peer
+            # This completely bypasses Pyrogram's peer resolution on the worker side
             try:
-                messages = await worker.get_messages(source_chat_id, msg_ids)
+                raw_result = await bot.invoke(
+                    ChannelGetMessages(
+                        channel=db_peer,
+                        id=[InputMessageID(id=mid) for mid in msg_ids]
+                    )
+                )
+                messages = raw_result.messages
             except Exception as e:
-                return await safe_edit(f"<b>❌ Scan Error:</b> <code>{e}</code>\n\n<i>Is the Share Bot added as admin to the Database Channel?</i>")
-                
+                return await safe_edit(
+                    f"<b>❌ Scan Error:</b> <code>{e}</code>\n\n"
+                    f"<i>Make sure the Main Bot is an admin in the database channel.</i>"
+                )
+
+            # Filter out empty/service messages
+            valid_ids = [m.id for m in messages if hasattr(m, 'id') and not getattr(m, 'deleted', False) and m.id > 0 and m.QUALNAME if hasattr(m, 'QUALNAME') else m]
+
+            # More robust filter: only keep actual media/document/text messages
+            valid_ids = []
             for m in messages:
-                if m.empty or m.service: continue
+                # Raw Pyrogram message types: Message (has content), MessageEmpty, MessageService
+                cls = type(m).__name__
+                if cls in ('MessageEmpty', 'MessageService'):
+                    continue
                 valid_ids.append(m.id)
-            
+
             if valid_ids:
+                ep_start = ep_counter
+                ep_end   = ep_counter + len(valid_ids) - 1
+
                 uuid_str = str(uuid.uuid4()).replace('-', '')[:16]
                 await db.save_share_link(uuid_str, valid_ids, source_chat_id, protect, auto_del)
-                
+
                 url = f"https://t.me/{bot_usr}?start={uuid_str}"
-                # Format e.g., "1–20"
-                btn_text = f"{valid_ids[0]} - {valid_ids[-1]}" if len(valid_ids) > 1 else str(valid_ids[0])
-                btn = InlineKeyboardButton(btn_text, url=url)
-                
+
+                # Episode-named button label
+                if len(valid_ids) == 1:
+                    btn_text = f"{story} Ep. {ep_start}"
+                else:
+                    btn_text = f"{story} Ep. {ep_start}–{ep_end}"
+
                 raw_buttons.append({
-                    "btn": btn,
-                    "start_id": valid_ids[0],
-                    "end_id": valid_ids[-1]
+                    "btn": InlineKeyboardButton(btn_text, url=url),
+                    "ep_start": ep_start,
+                    "ep_end":   ep_end,
                 })
-                
+
+                ep_counter = ep_end + 1
+
             current_id = chunk_end + 1
-            await asyncio.sleep(1) # Floodwaits
-            
-        # Phase 2: Group and Post in batches of 10
+            await asyncio.sleep(0.5)  # Flood-wait safety
+
+        if not raw_buttons:
+            return await safe_edit("❌ No valid messages found in the given range. Check Start/End IDs.")
+
+        # Phase 2: Group into posts of 10 buttons (2 per row) and send to target channel
         post_count = 0
         for i in range(0, len(raw_buttons), 10):
-            chunk_btns = raw_buttons[i:i+10]
-            
-            first_ep = chunk_btns[0]["start_id"]
-            last_ep = chunk_btns[-1]["end_id"]
-            
-            # Title uses Story Name + Range
-            txt = f"<b>{sj['story'].upper()} EPS {first_ep} - {last_ep}</b>"
-            
+            chunk = raw_buttons[i:i + 10]
+
+            first_ep = chunk[0]["ep_start"]
+            last_ep  = chunk[-1]["ep_end"]
+
+            txt = f"<b>📂 {story.upper()} | Episodes {first_ep}–{last_ep}</b>"
+
             keyboard = []
-            # 2 buttons per row
-            for j in range(0, len(chunk_btns), 2):
-                row = [cb["btn"] for cb in chunk_btns[j:j+2]]
+            for j in range(0, len(chunk), 2):
+                row = [c["btn"] for c in chunk[j:j + 2]]
                 keyboard.append(row)
-                
-            # Permanent footer row
+
             keyboard.append([
                 InlineKeyboardButton("Tutorial 🎥", url="https://t.me/StoriesLinkopningguide"),
-                InlineKeyboardButton("Issue ?", url="https://t.me/+EAc-6v1bmZ1iMDBl")
+                InlineKeyboardButton("Support ❓", url="https://t.me/+EAc-6v1bmZ1iMDBl")
             ])
-            
-            await worker.send_message(
-                chat_id=sj['target'],
-                text=txt,
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
+
+            try:
+                await poster.send_message(
+                    chat_id=sj['target'],
+                    text=txt,
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
+            except Exception as e:
+                return await safe_edit(
+                    f"<b>❌ Failed to post to target channel:</b> <code>{e}</code>\n\n"
+                    f"<i>Make sure the selected account is an admin in the target/public channel.</i>"
+                )
+
             post_count += 1
             await asyncio.sleep(1)
-            
-        await safe_edit(f"<b>✅ Completed!</b>\n\nGenerated ({post_count}) structured posts containing {len(raw_buttons)} protected links mapped to @{bot_usr}.")
-        
+
+        total_ep = ep_counter - 1
+        await safe_edit(
+            f"<b>✅ Share Links Generated!</b>\n\n"
+            f"📊 <b>Episodes covered:</b> {total_ep}\n"
+            f"🔗 <b>Links created:</b> {len(raw_buttons)}\n"
+            f"📝 <b>Posts sent to channel:</b> {post_count}\n\n"
+            f"<i>Users can now click any button to receive their episodes from @{bot_usr}.</i>"
+        )
+
     except Exception as e:
+        import traceback
+        tb = traceback.format_exc()
         try:
-            await sts.edit_text(f"<b>Error during linking:</b>\n<code>{e}</code>")
+            await sts.edit_text(f"<b>Error during link generation:</b>\n<code>{e}</code>")
         except Exception:
-            await bot.send_message(user_id, f"<b>Error during linking:</b>\n<code>{e}</code>")
+            await bot.send_message(user_id, f"<b>Error during link generation:</b>\n<code>{e}</code>")
+        logger.error(f"Share link generation error:\n{tb}")
     finally:
         if user_id in new_share_job:
             del new_share_job[user_id]
+
+
