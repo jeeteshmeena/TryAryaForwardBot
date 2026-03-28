@@ -136,7 +136,7 @@ async def _create_share_flow(bot, user_id):
             new_share_job[user_id]['end_id'] = end_id
             
         msg_batch = await _ask(bot, user_id, 
-            "<b>❪ STEP 7: EPISODES PER LINK ❫</b>\n\nHow many files should be grouped in one link button?\nExample: <code>20</code>", 
+            "<b>❪ STEP 7: EPISODES PER BUTTON ❫</b>\n\nHow many episodes per link button?\nExample: <code>20</code>", 
             reply_markup=markup
         )
         if (msg_batch.text or "") == "/cancel": return await bot.send_message(user_id, "Cancelled.", reply_markup=ReplyKeyboardRemove())
@@ -145,10 +145,28 @@ async def _create_share_flow(bot, user_id):
         batch_size = int(raw_b) if raw_b.isdigit() else 20
         if batch_size < 1: batch_size = 20
         new_share_job[user_id]['batch_size'] = batch_size
+
+        msg_start_ep = await _ask(bot, user_id,
+            "<b>❪ STEP 8: STARTING EPISODE NUMBER ❫</b>\n\n"
+            "What is the episode number of the <b>first message</b> in your range?\n"
+            "Example: if the first file is <code>Episode 201</code>, type <code>201</code>\n\n"
+            "<i>This anchors every message ID to its real episode number so labels are always accurate, "
+            "even when episodes are missing or duplicated.</i>",
+            reply_markup=markup
+        )
+        if (msg_start_ep.text or "") == "/cancel": return await bot.send_message(user_id, "Cancelled.", reply_markup=ReplyKeyboardRemove())
+        raw_ep = (msg_start_ep.text or msg_start_ep.caption or "1").strip()
+        start_ep = int(raw_ep) if raw_ep.isdigit() else 1
+        if start_ep < 1: start_ep = 1
+        new_share_job[user_id]['start_ep'] = start_ep
         
         sj = new_share_job[user_id]
-        total_msgs = (sj['end_id'] - sj['start_id']) + 1
-        total_links = math.ceil(total_msgs / sj['batch_size'])
+        start_ep    = sj.get('start_ep', 1)
+        ep_offset   = start_ep - sj['start_id']   # ep_num = msg_id + ep_offset
+        total_msgs  = (sj['end_id'] - sj['start_id']) + 1
+        end_ep_num  = sj['end_id'] + ep_offset
+        # How many full windows of batch_size cover [start_ep … end_ep_num]?
+        total_links = math.ceil((end_ep_num - start_ep + 1) / sj['batch_size'])
         total_posts = math.ceil(total_links / 10)
         
         markup_conf = ReplyKeyboardMarkup([["🚀 Generate & Group Links"], ["❌ Cancel"]], resize_keyboard=True, one_time_keyboard=True)
@@ -157,10 +175,12 @@ async def _create_share_flow(bot, user_id):
             f"<b>Story Name:</b> {sj['story']}\n"
             f"<b>Source ID:</b> <code>{sj['source']}</code>\n"
             f"<b>Target ID:</b> <code>{sj['target']}</code>\n"
-            f"<b>Range:</b> {sj['start_id']} to {sj['end_id']} ({total_msgs} files)\n"
-            f"<b>Batch Size:</b> {sj['batch_size']} files per link\n"
-            f"<b>Total Buttons to create:</b> {total_links}\n"
-            f"<b>Total Grouped Posts (10 btns each):</b> {total_posts}\n",
+            f"<b>Msg ID Range:</b> {sj['start_id']} → {sj['end_id']} ({total_msgs} slots)\n"
+            f"<b>Episode Range:</b> {start_ep} → {end_ep_num}\n"
+            f"<b>Episodes/Button:</b> {sj['batch_size']}\n"
+            f"<b>Est. Buttons:</b> ~{total_links}\n"
+            f"<b>Est. Posts ({10} btns each):</b> ~{total_posts}\n"
+            f"\n<i>⚠️ Missing episodes will be silently skipped inside their correct window.</i>",
             reply_markup=markup_conf
         )
         
@@ -332,34 +352,87 @@ async def _build_share_links(bot, user_id, sj, info_msg):
         # Sort to guarantee ascending order (Telegram may return out-of-order)
         all_valid_ids.sort()
 
-        # ── PHASE 2: Group valid IDs into batches of exactly batch_size episodes ──
-        # ep_counter tracks the SEQUENTIAL episode label (1, 2, 3...) regardless of
-        # gaps in message IDs or deleted messages — so button "21–40" always has ≤20 files.
+        # ── PHASE 2: Offset-Based Episode-Window Grouping ─────────────────────
+        #
+        # Core principle: every message_id maps to a FIXED real episode number:
+        #     ep_num = message_id + ep_offset   (where ep_offset = start_ep - start_id)
+        #
+        # We group by FIXED windows of batch_size episodes:
+        #     window_index = (ep_num - start_ep) // batch_size
+        #     window_start = start_ep + window_index * batch_size
+        #     window_end   = window_start + batch_size - 1
+        #
+        # This guarantees:
+        #  ✅ Missing ep 206 → button "201–220" skips it, still labelled 201–220
+        #  ✅ Next button correctly starts at 221 (not 220)
+        #  ✅ Duplicate msg at same offset → only first kept (dedup by ep_num)
+        #  ✅ No overlapping button ranges ever
+        #
+        start_ep   = sj.get('start_ep', 1)
+        ep_offset  = start_ep - sj['start_id']  # msg_id + ep_offset = ep_num
+
+        # Deduplicate: if two message IDs map to same episode slot, keep FIRST
+        seen_ep_nums   = set()
+        ep_to_msg_id   = {}    # ep_num → message_id
+        duplicates_dropped = 0
+        for msg_id in all_valid_ids:        # already sorted ascending
+            ep_num = msg_id + ep_offset
+            if ep_num in seen_ep_nums:
+                duplicates_dropped += 1
+                logger.warning(
+                    f"[ShareBot] Duplicate episode slot ep={ep_num} (msg_id={msg_id}) — skipping duplicate."
+                )
+                continue
+            seen_ep_nums.add(ep_num)
+            ep_to_msg_id[ep_num] = msg_id
+
+        # Determine window boundaries covering every episode seen
+        all_ep_nums = sorted(ep_to_msg_id.keys())
+        if not all_ep_nums:
+            return await safe_edit("❌ No valid non-duplicate episodes found. Check your range.")
+
+        first_ep_num = all_ep_nums[0]
+        last_ep_num  = all_ep_nums[-1]
+
+        # Snap first window to a clean batch boundary:
+        #   window_start = start_ep + floor((first - start_ep) / batch_size) * batch_size
+        def window_start_for(ep: int) -> int:
+            """Return the start of the batch_size window that ep falls into."""
+            return start_ep + ((ep - start_ep) // batch_size) * batch_size
+
         raw_buttons = []
-        ep_counter  = 1
+        w_start = window_start_for(first_ep_num)
 
-        for i in range(0, len(all_valid_ids), batch_size):
-            batch    = all_valid_ids[i : i + batch_size]
-            ep_start = ep_counter
-            ep_end   = ep_counter + len(batch) - 1
+        while w_start <= last_ep_num:
+            w_end = w_start + batch_size - 1
 
-            uuid_str = str(uuid.uuid4()).replace('-', '')[:16]
-            await db.save_share_link(
-                uuid_str, batch, source_chat_id,
-                protect=protect, access_hash=db_access_hash
-            )
+            # Collect all messages whose episode number falls in [w_start, w_end]
+            batch = [
+                ep_to_msg_id[ep]
+                for ep in all_ep_nums
+                if w_start <= ep <= w_end
+            ]
 
-            url = f"https://t.me/{bot_usr}?start={uuid_str}"
+            if batch:   # only create a button if there is at least 1 file
+                uuid_str = str(uuid.uuid4()).replace('-', '')[:16]
+                await db.save_share_link(
+                    uuid_str, batch, source_chat_id,
+                    protect=protect, access_hash=db_access_hash
+                )
 
-            # Pure number labels — no story name, no "Ep." inside buttons
-            btn_text = str(ep_start) if len(batch) == 1 else f"{ep_start}–{ep_end}"
+                url = f"https://t.me/{bot_usr}?start={uuid_str}"
 
-            raw_buttons.append({
-                "btn":      InlineKeyboardButton(btn_text, url=url),
-                "ep_start": ep_start,
-                "ep_end":   ep_end,
-            })
-            ep_counter = ep_end + 1
+                # Label = the WINDOW boundaries (NOT just the files present)
+                # so users see "201–220" even if 206 is missing inside
+                btn_text = str(w_start) if batch_size == 1 else f"{w_start}\u2013{w_end}"
+
+                raw_buttons.append({
+                    "btn":      InlineKeyboardButton(btn_text, url=url),
+                    "ep_start": w_start,
+                    "ep_end":   w_end,
+                })
+
+            w_start += batch_size   # advance to next window — never overlaps
 
         # ── PHASE 3: Group buttons into posts and send to target channel ──────
         post_count = 0
@@ -396,11 +469,16 @@ async def _build_share_links(bot, user_id, sj, info_msg):
             post_count += 1
             await asyncio.sleep(1)
 
-        total_ep = ep_counter - 1
+        total_files = sum(
+            1 for ep in all_ep_nums
+            if any(b["ep_start"] <= ep <= b["ep_end"] for b in raw_buttons)
+        )
+        dup_note = f"\n⚠️ <b>Duplicates skipped:</b> {duplicates_dropped}" if duplicates_dropped else ""
         await safe_edit(
             f"<b>✅ Share Links Generated!</b>\n\n"
-            f"📊 <b>Valid files found:</b> {len(all_valid_ids)}\n"
-            f"🎯 <b>Episodes labelled:</b> 1–{total_ep}\n"
+            f"📊 <b>Valid files scanned:</b> {len(all_valid_ids)}\n"
+            f"🔁 <b>Unique episodes:</b> {len(all_ep_nums)}{dup_note}\n"
+            f"🎯 <b>Episode range:</b> {first_ep_num}–{last_ep_num}\n"
             f"🔗 <b>Link buttons created:</b> {len(raw_buttons)}\n"
             f"📝 <b>Posts sent to channel:</b> {post_count}\n\n"
             f"<i>Users click any button to receive their episodes from @{bot_usr}.</i>"
