@@ -33,6 +33,12 @@ async def sl_callback(bot, query):
         new_share_job[user_id] = {}
         
         btns = []
+        
+        # Explicitly add the Share Bot Token if it's set
+        share_token = await db.get_share_bot_token()
+        if share_token:
+            btns.append([InlineKeyboardButton("🤖 (Dedicated) Share Bot", callback_data="sl#acc_SHAREBOT")])
+        
         for b in bots:
             typ = "🤖" if b.get('is_bot', True) else "👤"
             btns.append([InlineKeyboardButton(f"{typ} {b['name']}", callback_data=f"sl#acc_{b['id']}")])
@@ -55,7 +61,7 @@ async def sl_callback(bot, query):
             
         btns = []
         for c in chans:
-            btns.append([InlineKeyboardButton(c['title'], callback_data=f"sl#src_{c['id']}")])
+            btns.append([InlineKeyboardButton(c['title'], callback_data=f"sl#src_{c['chat_id']}")])
         btns.append([InlineKeyboardButton("❌ Cancel", callback_data="back")])
         
         await query.message.edit_text(
@@ -70,7 +76,7 @@ async def sl_callback(bot, query):
         chans = await db.get_user_channels(user_id)
         btns = []
         for c in chans:
-            btns.append([InlineKeyboardButton(c['title'], callback_data=f"sl#tgt_{c['id']}")])
+            btns.append([InlineKeyboardButton(c['title'], callback_data=f"sl#tgt_{c['chat_id']}")])
         btns.append([InlineKeyboardButton("❌ Cancel", callback_data="back")])
         
         await query.message.edit_text(
@@ -133,8 +139,13 @@ async def sl_callback(bot, query):
             
         bot_usr = share_client.me.username if share_client.me else "ShareBot"
         
-        from plugins.test import start_clone_bot
-        worker = await start_clone_bot(_CLIENT, sj['bot_id'])
+        if sj['bot_id'] == "SHAREBOT":
+            # Direct use of the Share Bot client
+            worker = share_client
+        else:
+            from plugins.test import start_clone_bot
+            worker = await start_clone_bot(_CLIENT, sj['bot_id'])
+            
         if not worker:
             return await query.message.edit_text("❌ Failed to start worker account.")
 

@@ -66,7 +66,8 @@ async def process_start(client, message):
         await client.copy_messages(
             chat_id=user_id,
             from_chat_id=source_chat,
-            message_ids=msg_ids
+            message_ids=msg_ids,
+            protect_content=True
         )
         await sts.delete()
     except Exception as e:
