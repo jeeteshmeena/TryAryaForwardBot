@@ -182,17 +182,47 @@ async def pub_(bot, message):
           seq_counter = 0
           smart_order = data.get('smart_order', True)
           # SMART ORDER: batch size is 10 — large enough to catch most source mismatches
-          SORT_WINDOW = 10 if smart_order else 1
+          SORT_WINDOW = 30 if smart_order else 1
           sort_buffer = []
+
+          def _human_sort_key(item):
+              msg = item[0]
+              text = getattr(msg.text, 'html', '') if msg.text else ''
+              if msg.caption:
+                  text += f" {getattr(msg.caption, 'html', msg.caption)}"
+              media = getattr(msg, 'audio', None) or getattr(msg, 'video', None) or getattr(msg, 'document', None)
+              if media and getattr(media, 'file_name', None):
+                  text += f" {media.file_name}"
+              
+              if not text:
+                  return (0.0, msg.id)
+                  
+              text = text.lower()
+              import re
+              # Strip heavy resolutions to prevent false number detection
+              text = re.sub(r'\b(720[p]?|1080[p]?|480[p]?|360[p]?|4k|1440[p]?|2160[p]?|aac|hevc|x264|x265)\b', '', text)
+              
+              # S01E05 style
+              m = re.search(r's\d+[ex](\d+(?:\.\d+)?)', text)
+              if m: return (float(m.group(1)), msg.id)
+              
+              # Ep 5, Part 5, Ch 5 style
+              m = re.search(r'(?:ep|episode|part|ch|chapter|no|#)[^\d]*(\d+(?:\.\d+)?)', text)
+              if m: return (float(m.group(1)), msg.id)
+              
+              # Fallback: exact last standalone block of numbers
+              numbers = re.findall(r'\b(\d+(?:\.\d+)?)\b', text)
+              if numbers: return (float(numbers[-1]), msg.id)
+              
+              return (0.0, msg.id)
           
           async def flush_buffer():
               nonlocal seq_counter, sort_buffer
               if not sort_buffer: return
               
               if smart_order:
-                  # Sort the collected window strictly by Telegram message ID
-                  # e.g. source sends [42, 43, 45, 44, 46] → sorts to [42, 43, 44, 45, 46]
-                  sort_buffer.sort(key=lambda item: item[0].id)
+                  # Advanced Human AI sorting overrides Telegram sequence ID
+                  sort_buffer.sort(key=_human_sort_key)
               
               for message, forward_tag, new_caption, protect, download_mode, sleep in sort_buffer:
                   sts.add('fetched')
