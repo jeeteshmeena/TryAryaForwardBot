@@ -216,8 +216,34 @@ async def _build_share_links(bot, user_id, sj, info_msg):
 
         await safe_edit("<i>⏳ Hydrating session cache and scanning database...</i>")
         
-        # 🚨 CRITICAL BUG REMEDIATION: Force Pyrogram Worker to organically learn the access_hash.
-        # This replaces the failed Wake-Up Broadcast by manually caching the peer into the worker's storage!
+        # ===== DEFINITIVE FIX FOR CHANNEL_INVALID =====
+        # The Share Bot runs in_memory=True, so after every restart it has ZERO peer cache.
+        # When it tries to call get_messages(-100xxx, ...) Pyrogram needs to first resolve the
+        # integer chat_id to an InputPeerChannel(channel_id, access_hash). It does this by calling
+        # GetChannels, but since the Share Bot has never seen this channel, it has no access_hash
+        # to send along, so Telegram rejects it with CHANNEL_INVALID.
+        #
+        # THE REAL SOLUTION: The MAIN BOT has a persistent SQLite session and IS already an admin
+        # in the DB channel. Use it to resolve the InputPeerChannel, then directly write the
+        # access_hash into the Share Bot's in-memory peer cache via storage.update_peers().
+        # After this, the Share Bot can call get_messages() without any GetChannels round-trip.
+        source_chat_id = sj['source']
+        try:
+            from pyrogram.raw.types import InputPeerChannel
+            peer = await bot.resolve_peer(source_chat_id)
+            if isinstance(peer, InputPeerChannel):
+                await worker.storage.update_peers([
+                    (peer.channel_id, peer.access_hash, "channel", None, None)
+                ])
+        except Exception as hydrate_err:
+            return await safe_edit(
+                f"<b>❌ Cannot hydrate Share Bot peer cache.</b>\n\n"
+                f"Error: <code>{hydrate_err}</code>\n\n"
+                f"<b>Most likely cause:</b> The Main Bot (Arya) is NOT an admin in the Source Database Channel. "
+                f"Add @{(await bot.get_me()).username} as an admin to your hidden database channel and try again."
+            )
+        # ===== END FIX =====
+        
         protect = await db.get_share_protect(user_id)
         auto_del = await db.get_share_autodelete(user_id)
         
@@ -237,23 +263,9 @@ async def _build_share_links(bot, user_id, sj, info_msg):
             valid_ids = []
             
             try:
-                # 🚨 CRITICAL API RULE: The WORKER (ShareBot/UserBot) MUST scan the channel!
-                # The Main Bot (Arya) is just a Management system and throws CHANNEL_PRIVATE because it lacks access.
-                messages = await worker.get_messages(sj['source'], msg_ids)
-            except (pyrogram.errors.ChannelInvalid, pyrogram.errors.PeerIdInvalid):
-                # If the Worker is an in-memory ShareBot, it completely forgets the -100x
-                # database integer ID whenever you restart your server!
-                return await safe_edit(
-                    f"<b>❌ FATAL: Pyrogram Session Amnesia Detected!</b>\n\n"
-                    f"The Worker account has forgotten the hidden 64-bit encryption key to your Database Channel (<code>{sj['source']}</code>) because its memory reset on startup.\n\n"
-                    f"<b>🛠 HOW TO FIX THIS IN 5 SECONDS:</b>\n"
-                    f"1. Open your Source Database channel on Telegram.\n"
-                    f"2. Type the word '<code>hello</code>' (or send any sticker) directly <b>inside</b> that channel.\n"
-                    f"3. Come back and click '🚀 Generate & Group Links' again!\n\n"
-                    f"<i>(Sending a message inside the channel forces the Telegram Server to broadcast an update to all members, permanently repairing the Share Bot's broken memory!)</i>"
-                )
+                messages = await worker.get_messages(source_chat_id, msg_ids)
             except Exception as e:
-                return await safe_edit(f"<b>❌ Scan Error (Is ShareBot an Admin in the DB?):</b> {e}")
+                return await safe_edit(f"<b>❌ Scan Error:</b> <code>{e}</code>\n\n<i>Is the Share Bot added as admin to the Database Channel?</i>")
                 
             for m in messages:
                 if m.empty or m.service: continue
@@ -261,7 +273,7 @@ async def _build_share_links(bot, user_id, sj, info_msg):
             
             if valid_ids:
                 uuid_str = str(uuid.uuid4()).replace('-', '')[:16]
-                await db.save_share_link(uuid_str, valid_ids, sj['source'], protect, auto_del)
+                await db.save_share_link(uuid_str, valid_ids, source_chat_id, protect, auto_del)
                 
                 url = f"https://t.me/{bot_usr}?start={uuid_str}"
                 # Format e.g., "1–20"
