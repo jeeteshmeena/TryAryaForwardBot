@@ -83,8 +83,8 @@ async def check_all_subscriptions(client, user_id: int, fsub_channels: list, bot
             # MEMBER / ADMINISTRATOR / OWNER / RESTRICTED = they're in → allow
         except UserNotParticipant:
             if is_jr:
-                # For JR channels: check if this user was already auto-approved
-                # (auto-approve handler added them to the approved set)
+                # For JR channels: check if this user was already recorded
+                # (JR handler added them to the pending set for instant access)
                 uid_key = f"{chat_id}_{user_id}"
                 if uid_key in _jr_approved:
                     # Already sent join request → treat as joined
@@ -110,23 +110,25 @@ _jr_approved: set = set()
 # Module-level handler functions (required for add_handler to work)
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def _fsub_auto_approve(client, request):
+async def _fsub_record_jr(client, request):
     """
-    Auto-approve join requests for FSub channels that have JR mode enabled.
-    This lets users get immediate access after sending a join request —
-    they don't need to wait for manual admin approval.
+    Record that a user has sent a join request to a JR channel.
+    This grants them instant access to files WITHOUT auto-approving their request.
     """
-    fsub_chs = await db.get_share_fsub_channels()
+    bot_id = str(client.me.id) if client.me else None
+    fsub_chs = await db.get_bot_fsub_channels(bot_id) if bot_id else []
+    if not fsub_chs:
+        fsub_chs = await db.get_share_fsub_channels()
+
     for ch in fsub_chs:
         if str(request.chat.id) == ch.get('chat_id') and ch.get('join_request'):
             try:
-                await request.approve()
-                # Mark user as approved so FSub check knows they're cleared
+                # Mark user as having requested to join so FSub check knows they're cleared
                 uid_key = f"{request.chat.id}_{request.from_user.id}"
                 _jr_approved.add(uid_key)
-                logger.info(f"Auto-approved JR: user {request.from_user.id} in {request.chat.id}")
+                logger.info(f"Recorded JR for instant access: user {request.from_user.id} in {request.chat.id}")
             except Exception as e:
-                logger.error(f"FSub auto-approve failed: {e}")
+                logger.error(f"FSub JR record failed: {e}")
 
 
 async def _process_start(client, message):
@@ -134,6 +136,9 @@ async def _process_start(client, message):
     user_id = message.from_user.id
     args = message.command
     bot_id = str(client.me.id) if client.me else None
+
+    # Track user for stats and broadcast
+    await db.add_share_bot_user(bot_id, user_id)
 
     # Plain /start — show welcome
     if len(args) < 2:
@@ -415,7 +420,8 @@ async def _send_about(client, message, bot_id: str = None):
     update_link = about.get('update_link', UPDATE_LINK)
     support_chan = about.get('support_chan', 'Light Chat')
     support_link = about.get('support_link', SUPPORT_LINK)
-    version      = about.get('version', ARYA_VERSION)
+    from plugins.commands import get_bot_version
+    version      = about.get('version', get_bot_version())
     about_img    = about.get('image_id', None)
     about_text   = about.get('custom_text', None)
 
@@ -520,7 +526,7 @@ async def _process_delivery_cancel(client, query):
 def register_share_handlers(app: Client):
     """Register all handlers on a started Client instance."""
     # Auto-approve join requests for JR channels so users get instant access
-    app.add_handler(ChatJoinRequestHandler(_fsub_auto_approve))
+    app.add_handler(ChatJoinRequestHandler(_fsub_record_jr))
     app.add_handler(MessageHandler(
         _process_start,
         filters.private & filters.command("start")

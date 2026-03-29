@@ -399,7 +399,7 @@ async def settings_query(bot, query):
   elif type.startswith("sb_view_"):
       b_id = type.split("sb_view_")[1]
       bots = await db.get_share_bots()
-      bt = next((x for x in bots if x['id'] == str(b_id)), None)
+      bt = next((x for x in bots if str(x['id']) == str(b_id)), None)
       if not bt: return await query.answer("Bot not found!")
 
       buttons = [
@@ -409,6 +409,10 @@ async def settings_query(bot, query):
           [InlineKeyboardButton('📌 Cᴜsᴛᴏᴍ Cᴀᴘᴛɪᴏɴ',      callback_data=f"settings#sb_set_caption_{b_id}")],
           [InlineKeyboardButton('✨ Aʙᴏᴜᴛ Sᴇᴄᴛɪᴏɴ',       callback_data=f"settings#sb_about_{b_id}")],
           [InlineKeyboardButton('📢 Fᴏʀᴄᴇ Sᴜʙsᴄʀɪʙᴇ',    callback_data=f"settings#sb_fsub_{b_id}")],
+          [
+              InlineKeyboardButton('📊 Sᴛᴀᴛs', callback_data=f"settings#sb_stats_{b_id}"),
+              InlineKeyboardButton('📢 Bʀᴏᴀᴅᴄᴀsᴛ', callback_data=f"settings#sb_broadcast_{b_id}")
+          ],
           [InlineKeyboardButton('❌ Rᴇᴍᴏᴠᴇ Bᴏᴛ ❌',        callback_data=f"settings#sb_remove_{b_id}")],
           [InlineKeyboardButton('↩ Bᴀᴄᴋ',                 callback_data="settings#sbt_manage")],
       ]
@@ -454,11 +458,120 @@ async def settings_query(bot, query):
           "Send the caption to add to delivered media. Any font is accepted.",
           f"settings#sb_view_{b_id}")
 
+  # ── Stats & Broadcast ────────────────────────────────────────────────────────
+  elif type.startswith("sb_stats_"):
+      b_id = type.split("sb_stats_")[1]
+      users = await db.get_share_bot_users(b_id)
+      cnt = len(users)
+      await query.message.edit_text(
+          f"<b>📊 SHARE BOT STATS</b>\n\n"
+          f"<b>Total Users:</b> <code>{cnt}</code>\n\n"
+          "<i>These are users who have opened or interacted with this specific bot.</i>",
+          reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("↩ Bᴀᴄᴋ", callback_data=f"settings#sb_view_{b_id}")]])
+      )
+
+  elif type.startswith("sb_broadcast_"):
+      b_id = type.split("sb_broadcast_")[1]
+      await query.message.delete()
+      
+      ask = await bot.send_message(
+          user_id,
+          "<b>📢 Broadcast Message</b>\n\n"
+          "Send the message you want to broadcast to all users of this bot.\n"
+          "You can use text, photos, videos, etc.\n\n"
+          "/cancel to abort."
+      )
+      
+      try:
+          resp = await bot.listen(chat_id=user_id, timeout=300)
+          msg_to_send = resp.text or resp.caption or "media"
+          
+          if getattr(resp, "text", "") and str(resp.text).strip() == "/cancel":
+              await ask.delete()
+              await resp.delete()
+              return await bot.send_message(
+                  user_id, "<b>Cancelled.</b>",
+                  reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("↩ Back", callback_data=f"settings#sb_view_{b_id}")]])
+              )
+              
+          users = await db.get_share_bot_users(b_id)
+          if not users:
+              await ask.delete()
+              return await bot.send_message(
+                  user_id, "<b>❌ No users found for this bot.</b>",
+                  reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("↩ Back", callback_data=f"settings#sb_view_{b_id}")]])
+              )
+              
+          from plugins.share_bot import share_clients
+          sb_client = share_clients.get(int(b_id)) if b_id.isdigit() else None
+          if not sb_client:
+              await ask.delete()
+              return await bot.send_message(
+                  user_id, "<b>❌ Delivery Bot is not running online.</b>",
+                  reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("↩ Back", callback_data=f"settings#sb_view_{b_id}")]])
+              )
+              
+          await ask.edit_text(
+              f"<b>📢 Broadcast Started...</b>\n\n"
+              f"<b>Target:</b> <code>{len(users)} users</code>"
+          )
+          
+          import asyncio
+          async def _do_broadcast(sb_app, uids, msg_obj, status_msg, back_btn_data):
+              sent = 0
+              failed = 0
+              blocked = 0
+              for u in uids:
+                  try:
+                      await msg_obj.copy(chat_id=u)
+                      sent += 1
+                  except Exception as e:
+                      failed += 1
+                      if "USER_IS_BLOCKED" in str(e) or "bot was blocked" in str(e).lower():
+                          blocked += 1
+                  await asyncio.sleep(0.05) # Rate limit protection
+                  if (sent + failed) % 15 == 0:
+                      try:
+                          await status_msg.edit_text(
+                              f"<b>📢 Broadcast In Progress...</b>\n\n"
+                              f"<b>Total:</b> <code>{len(uids)}</code>\n"
+                              f"<b>✅ Sent:</b> <code>{sent}</code>\n"
+                              f"<b>❌ Failed:</b> <code>{failed}</code>\n"
+                              f"<b>🚫 Blocked:</b> <code>{blocked}</code>"
+                          )
+                      except Exception:
+                          pass
+                          
+              await status_msg.edit_text(
+                  f"<b>✅ Broadcast Complete!</b>\n\n"
+                  f"<b>Total Target:</b> <code>{len(uids)}</code>\n"
+                  f"<b>✅ Sent:</b> <code>{sent}</code>\n"
+                  f"<b>❌ Failed:</b> <code>{failed}</code>\n"
+                  f"<b>🚫 Blocked:</b> <code>{blocked}</code>\n\n"
+                  "<i>Use Arya font and styling.</i>",
+                  reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("↩ Bᴀᴄᴋ", callback_data=back_btn_data)]])
+              )
+              try:
+                  await msg_obj.delete()
+              except: pass
+              
+          import asyncio as _aio
+          _aio.create_task(_do_broadcast(sb_client, users, resp, ask, f"settings#sb_view_{b_id}"))
+
+      except asyncio.TimeoutError:
+          try:
+              await bot.send_message(
+                  user_id, "Timeout.",
+                  reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("↩ Back", callback_data=f"settings#sb_view_{b_id}")]])
+              )
+          except Exception:
+              pass
+
   # ── About section editor ──────────────────────────────────────────────────
   elif type.startswith("sb_about_"):
       b_id = type.split("sb_about_")[1]
       bots = await db.get_share_bots()
-      bt = next((x for x in bots if x['id'] == str(b_id)), None)
+      bt = next((x for x in bots if str(x['id']) == str(b_id)), None)
       if not bt: return await query.answer("Bot not found!")
       about = await db.get_share_bot_about(b_id)
       img_set = "✅ Set" if about.get('image_id') else "❌ None"

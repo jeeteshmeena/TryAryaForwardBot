@@ -165,6 +165,17 @@ class Database:
     async def remove_share_bot_config(self, bot_id: str):
         await self.share_config.delete_one({'_id': f'bot_{bot_id}'})
 
+    # Per-bot Users Tracker
+    async def add_share_bot_user(self, bot_id: str, user_id: int):
+        if not bot_id: return
+        await self.share_config.update_one(
+            {'_id': f'bot_{bot_id}'},
+            {'$addToSet': {'users': user_id}},
+            upsert=True
+        )
+
+    async def get_share_bot_users(self, bot_id: str) -> list:
+        return (await self._bot_cfg(bot_id)).get('users', [])
 
     # save_share_link — access_hash allows Share Bot to rebuild peer cache at delivery time
     async def save_share_link(self, uuid_str: str, message_ids: list, source_chat,
