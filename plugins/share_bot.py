@@ -400,16 +400,10 @@ async def _send_help(client, message, bot_id: str = None):
         [InlineKeyboardButton("◀️ Bᴀᴄᴋ", callback_data="sbd#back")],
         [InlineKeyboardButton("🔔 Uᴘᴅᴀᴛᴇ Cʜᴀɴɴᴇʟ", url=UPDATE_LINK)]
     ]
-    markup = InlineKeyboardMarkup(buttons)
-    is_photo = bool(getattr(message, 'photo', None))
     try:
-        if is_photo:
-            await message.edit_caption(caption=txt, reply_markup=markup)
-        else:
-            await message.edit_text(txt, reply_markup=markup)
+        await message.edit_text(txt, reply_markup=InlineKeyboardMarkup(buttons))
     except Exception:
-        await message.reply_text(txt, reply_markup=markup)
-
+        await message.reply_text(txt, reply_markup=InlineKeyboardMarkup(buttons))
 
 
 async def _send_about(client, query_or_msg, bot_id: str = None, edit: bool = True):
