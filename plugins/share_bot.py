@@ -22,7 +22,8 @@ def format_msg(text: str, user) -> str:
 
 logger = logging.getLogger(__name__)
 
-share_client = None  # global reference
+share_clients = {}  # global reference dict: { bot_id: Client }
+active_downloads = set()
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -35,7 +36,8 @@ async def delete_later(client, chat_id, msg_ids: list, notice_id: int, delay_sec
         except Exception:
             pass
     try:
-        await client.delete_messages(chat_id, notice_id)
+        if notice_id:
+            await client.delete_messages(chat_id, notice_id)
     except Exception:
         pass
 
@@ -67,31 +69,44 @@ async def check_all_subscriptions(client, user_id: int, fsub_channels: list) -> 
     return not_joined
 
 
-async def start_share_bot(token: str = None):
-    """Start the Share Bot client. If token is None, loads from DB."""
-    global share_client
-    if not token:
-        token = await db.get_share_bot_token()
-    if not token:
-        logger.warning("Share Bot token not set — skipping startup.")
-        return
-    if share_client:
+async def start_share_bot():
+    """Start all Share Bot clients from DB."""
+    global share_clients
+    
+    # 1. Stop existing clients safely
+    for b_id, cl in share_clients.items():
         try:
-            await share_client.stop()
+            await cl.stop()
         except Exception:
             pass
-    share_client = Client(
-        name="share_bot_session",
-        bot_token=token,
-        api_id=Config.API_ID,
-        api_hash=Config.API_HASH,
-        in_memory=True,
-    )
-    # Register handlers BEFORE starting so Pyrogram picks them up
-    register_share_handlers(share_client)
-    await share_client.start()
-    logger.info(f"Share Bot started: @{share_client.me.username}")
-
+    share_clients.clear()
+    
+    # 2. Fetch configured bots
+    bots = await db.get_share_bots()
+    if not bots:
+        logger.warning("No Share Bots configured — skipping startup.")
+        return
+        
+    for index, b in enumerate(bots):
+        try:
+            sc = Client(
+                name=f"share_bot_{b['id']}_{index}",
+                bot_token=b['token'],
+                api_id=Config.API_ID,
+                api_hash=Config.API_HASH,
+                in_memory=True,
+            )
+            # Register handlers BEFORE starting so Pyrogram picks them up
+            register_share_handlers(sc)
+            await sc.start()
+            share_clients[b['id']] = sc
+            logger.info(f"Share Bot started: @{sc.me.username} ({b['name']})")
+            
+            # Update DB with active username/id info if missing
+            if b.get('username') != sc.me.username:
+                await db.add_share_bot(b['token']) # re-adds with correct name
+        except Exception as e:
+            logger.error(f"Failed to start Share Bot {b['name']}: {e}")
 
 # ── Handlers ─────────────────────────────────────────────────────────────────
 
@@ -209,8 +224,16 @@ def register_share_handlers(app: Client):
         # 4. Read auto-delete from GLOBAL config (not per-link) so setting changes apply everywhere
         auto_delete_mins = await db.get_share_autodelete_global()
 
-        # 5. Deliver files one by one with copy_message (singular — guaranteed in Pyrogram 2.x)
-        sts = await message.reply_text("<i>⏳ Fetching your files securely, please wait...</i>")
+        # 5. Deliver files one by one with copy_message
+        dl_id = f"{user_id}_{uuid_str}"
+        active_downloads.add(dl_id)
+        
+        sts = await message.reply_text(
+            "<i>⏳ Fetching your files securely, please wait...</i>",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("❌ Cancel", callback_data=f"cancel_dl_{uuid_str}")
+            ]])
+        )
 
         sent_ids   = []
         fail_count = 0
@@ -219,6 +242,9 @@ def register_share_handlers(app: Client):
 
         try:
             for msg_id in msg_ids:
+                if dl_id not in active_downloads:
+                    await sts.edit_text("<b>🚫 Download Cancelled.</b>")
+                    return
                 try:
                     kwargs = {
                         "chat_id": user_id,
@@ -234,10 +260,18 @@ def register_share_handlers(app: Client):
                 except Exception as copy_err:
                     logger.warning(f"Failed to copy msg {msg_id}: {copy_err}")
                     fail_count += 1
+                    
+                await asyncio.sleep(0.3)  # Rate limit safety
+
+            active_downloads.discard(dl_id)
+            try:
+                await sts.delete()
+            except Exception:
+                pass
 
             total = len(sent_ids)
             if total == 0:
-                await sts.edit_text(
+                await message.reply_text(
                     "<b>❌ Delivery Failed</b>\n\n"
                     "Could not copy any files. "
                     "Ensure the Share Bot is an <b>admin</b> in the Database Channel."
@@ -263,7 +297,7 @@ def register_share_handlers(app: Client):
                         f"If your episodes get auto-deleted, then repeat the same process next time — "
                         f"you only need to click 'Try Again' once.{fail_note}"
                     )
-                notice = await sts.edit_text(txt)
+                notice = await message.reply_text(txt)
                 asyncio.create_task(
                     delete_later(client, user_id, sent_ids, notice.id, auto_delete_mins * 60)
                 )
@@ -273,10 +307,26 @@ def register_share_handlers(app: Client):
                     txt = format_msg(custom_suc, message.from_user)
                 else:
                     txt = f"<b>✅ {total} file(s) delivered!</b>{fail_note}"
-                await sts.edit_text(txt)
+                await message.reply_text(txt)
 
         except Exception as e:
-            await sts.edit_text(
+            active_downloads.discard(dl_id)
+            try: await sts.delete()
+            except Exception: pass
+            await message.reply_text(
                 f"<b>❌ Delivery Failed</b>\n\n<code>{e}</code>\n\n"
                 f"<i>The Share Bot must be an admin in the Database Channel to deliver files.</i>"
             )
+
+    @app.on_callback_query(filters.regex(r'^cancel_dl_'))
+    async def process_delivery_cancel(client, query):
+        uuid_str = query.data.split('_')[-1]
+        dl_id = f"{query.from_user.id}_{uuid_str}"
+        if dl_id in active_downloads:
+            active_downloads.discard(dl_id)
+            await query.answer("Action aborted.", show_alert=True)
+            try:
+                await query.message.edit_text("<b>🚫 Download Cancelled.</b>")
+            except Exception: pass
+        else:
+            await query.answer("This task is already cancelled or finished.", show_alert=True)

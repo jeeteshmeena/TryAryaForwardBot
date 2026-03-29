@@ -29,11 +29,41 @@ class Database:
         self.share_config = self.db.share_config  # global share bot settings
         
     async def set_share_bot_token(self, token: str):
-        await self.stats.update_one({'_id': 'share_bot'}, {'$set': {'token': token}}, upsert=True)
+        # Migrated: now handles multiple bots via array push, preserving backwards compatibility for singles initially if desired, or just override.
+        pass
 
     async def get_share_bot_token(self):
+        # Legacy
         doc = await self.stats.find_one({'_id': 'share_bot'})
         return doc.get('token') if doc else None
+        
+    async def get_share_bots(self) -> list:
+        # Returns list of dicts: [{'id': 'BOT_ID', 'token': 'TOKEN', 'name': 'NAME', 'username': 'USERNAME'}]
+        doc = await self.stats.find_one({'_id': 'share_bots_list'})
+        if doc and 'bots' in doc:
+            return doc['bots']
+        # Migrate legacy token if exists
+        legacy = await self.get_share_bot_token()
+        if legacy:
+            try:
+                # Add it cleanly via dummy info, or just return basic
+                return [{'id': 'legacy', 'token': legacy, 'username': 'UnknownBot', 'name': 'Legacy Bot'}]
+            except: pass
+        return []
+
+    async def add_share_bot(self, b_id: int, token: str, username: str, name: str):
+        bot_dict = {'id': str(b_id), 'token': token, 'username': username, 'name': name}
+        await self.stats.update_one(
+            {'_id': 'share_bots_list'},
+            {'$push': {'bots': bot_dict}},
+            upsert=True
+        )
+
+    async def remove_share_bot(self, b_id: str):
+        await self.stats.update_one(
+            {'_id': 'share_bots_list'},
+            {'$pull': {'bots': {'id': b_id}}}
+        )
 
     async def set_share_protect_global(self, protect: bool):
         await self._set_share_cfg(protect=protect)

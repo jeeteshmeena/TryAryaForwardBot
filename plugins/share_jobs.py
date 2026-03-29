@@ -31,38 +31,37 @@ new_share_job = {}
 async def _create_share_flow(bot, user_id):
     try:
         new_share_job[user_id] = {}
-        all_bots = await db.get_bots(user_id)
-        # ONLY show actual Bot accounts, because Userbots cannot send Share Link buttons effectively
-        bots = [b for b in all_bots if b.get('is_bot', False)]
-        share_token = await db.get_share_bot_token()
+        share_bots = await db.get_share_bots()
         
-        if not bots and not share_token:
-            return await bot.send_message(user_id, "<b>❌ No Share Bots available. Please add a Bot Token in /settings (Share Bot or Accounts).</b>")
+        if not share_bots:
+            return await bot.send_message(user_id, "<b>❌ No Share Bots available. Please add a Bot Token in /settings -> Share Bots.</b>")
             
         kb = []
-        if share_token:
-            kb.append(["🤖 (Dedicated) Share Bot"])
-            
-        for b in bots:
-            kb.append([f"🤖 {b['name']}"])
+        for b in share_bots:
+            kb.append([f"🤖 {b['name']} (@{b['username']})"])
             
         kb.append(["❌ Cancel"])
         
         msg = await _ask(bot, user_id, 
-            "<b>❪ SHARE LINKS: SELECT ACCOUNT ❫</b>\n\nChoose the account that has Admin access to both the Source Database Channel and Target Channel:",
+            "<b>❪ SHARE LINKS: SELECT ACCOUNT ❫</b>\n\nChoose the Share Bot you want to use for link generation and delivery:",
             reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True, one_time_keyboard=True)
         )
         if not msg.text or msg.text == "/cancel" or "Cancel" in msg.text:
             return await bot.send_message(user_id, "<b>Cancelled.</b>", reply_markup=ReplyKeyboardRemove())
             
-        if "Share Bot" in msg.text:
-            new_share_job[user_id]['bot_id'] = "SHAREBOT"
-        else:
-            sel_name = msg.text.split(" ", 1)[1] if " " in msg.text else msg.text
-            acc = next((a for a in bots if a["name"] == sel_name), None)
-            if not acc:
-                return await bot.send_message(user_id, "<b>❌ Account not found.</b>", reply_markup=ReplyKeyboardRemove())
-            new_share_job[user_id]['bot_id'] = acc['id']
+        # Match selection
+        import re
+        sel = msg.text
+        match = re.search(r"@([a-zA-Z0-9_]+)", sel)
+        if not match:
+            return await bot.send_message(user_id, "<b>❌ Invalid selection.</b>", reply_markup=ReplyKeyboardRemove())
+            
+        username = match.group(1)
+        selected_bot = next((b for b in share_bots if b['username'] == username), None)
+        if not selected_bot:
+            return await bot.send_message(user_id, "<b>❌ Account not found.</b>", reply_markup=ReplyKeyboardRemove())
+            
+        new_share_job[user_id]['bot_id'] = selected_bot['id']
 
         chans = await db.get_user_channels(user_id)
         if not chans:
@@ -148,7 +147,16 @@ async def _create_share_flow(bot, user_id):
         if batch_size < 1: batch_size = 20
         new_share_job[user_id]['batch_size'] = batch_size
 
-        # No longer need step 8 / start_ep because we extract numbers directly from captions/filenames!
+        msg_bpp = await _ask(bot, user_id, 
+            "<b>❪ STEP 8: BUTTONS PER POST ❫</b>\n\nHow many buttons should appear in one post in the channel?\nExample: <code>10</code>", 
+            reply_markup=markup
+        )
+        if (msg_bpp.text or "") == "/cancel": return await bot.send_message(user_id, "Cancelled.", reply_markup=ReplyKeyboardRemove())
+        
+        raw_bpp = (msg_bpp.text or msg_bpp.caption or "10").strip()
+        bpp = int(raw_bpp) if raw_bpp.isdigit() else 10
+        if bpp < 1: bpp = 10
+        new_share_job[user_id]['buttons_per_post'] = bpp
 
         sj = new_share_job[user_id]
         total_msgs  = (sj['end_id'] - sj['start_id']) + 1
@@ -161,6 +169,7 @@ async def _create_share_flow(bot, user_id):
             f"<b>Target ID:</b> <code>{sj['target']}</code>\n"
             f"<b>Msg ID Range:</b> {sj['start_id']} → {sj['end_id']} ({total_msgs} slots)\n"
             f"<b>Episodes/Button:</b> {sj['batch_size']}\n"
+            f"<b>Buttons/Post:</b> {sj['buttons_per_post']}\n"
             f"\n<i>🤖 Smart Parse active: I will read filenames & captions to correctly group duplicates and missing episodes.</i>",
             reply_markup=markup_conf
         )
@@ -198,35 +207,22 @@ async def _build_share_links(bot, user_id, sj, info_msg):
                 pass
 
     try:
-        token = await db.get_share_bot_token()
-        if not token:
-            return await safe_edit("❌ You must set the Share Bot Token in /settings first!")
-
         import plugins.share_bot as share_mod
-        if not share_mod.share_client or not getattr(share_mod.share_client, 'is_connected', False):
+        
+        selected_bot_id = sj['bot_id']
+        poster = share_mod.share_clients.get(selected_bot_id)
+        
+        if not poster or not getattr(poster, 'is_connected', False):
             try:
-                await share_mod.start_share_bot(token)
+                await share_mod.start_share_bot()  # reload bots if missing
+                poster = share_mod.share_clients.get(selected_bot_id)
             except Exception:
                 pass
 
-        if not share_mod.share_client or not getattr(share_mod.share_client, 'is_connected', False):
-            return await safe_edit("❌ Share Bot failed to start. Check terminal logs.")
+        if not poster or not getattr(poster, 'is_connected', False):
+            return await safe_edit("❌ Share Bot failed to start or connect. Check settings.")
 
-        bot_usr = share_mod.share_client.me.username
-
-        # If SHAREBOT selected → poster is the Share Bot (it must be admin in target channel)
-        # The MAIN bot is used for scanning ONLY (it has the SQLite peer cache)
-        if sj['bot_id'] == "SHAREBOT":
-            poster = share_mod.share_client  # posts the link messages to target channel
-        else:
-            from plugins.test import start_clone_bot
-            bot_info = await db.get_bot(sj['bot_id'])
-            if not bot_info:
-                return await safe_edit("❌ Worker account not found in DB.")
-            poster = await start_clone_bot(_CLIENT.client(bot_info))
-
-        if not poster:
-            return await safe_edit("❌ Failed to start worker account.")
+        bot_usr = poster.me.username
 
         await safe_edit("<i>⏳ Scanning database channel and generating links...</i>")
 
@@ -265,7 +261,7 @@ async def _build_share_links(bot, user_id, sj, info_msg):
         # Save db channel access_hash for delivery-time peer injection in the Share Bot
         db_access_hash   = db_peer.access_hash if hasattr(db_peer, 'access_hash') else 0
         protect          = await db.get_share_protect_global()
-        buttons_per_post = await db.get_share_buttons_per_post()
+        buttons_per_post = sj.get('buttons_per_post', 10)
 
 
         source_chat_id = sj['source']
@@ -315,68 +311,91 @@ async def _build_share_links(bot, user_id, sj, info_msg):
             return await safe_edit("❌ No files found in that range.")
 
         # ── PARSE EPISODE NUMBERS NATIVELY ──
-        # Extract episode number from filename/caption using smart pattern matching
-        def extract_ep(msg) -> int:
+        all_valid_msgs.sort(key=lambda x: x.id) # Sort chronologically
+
+        def extract_eps(msg):
             text = (msg.caption or "") + " " + (msg.text or "")
             if msg.document and getattr(msg.document, "file_name", None):
                 text += " " + str(msg.document.file_name)
             
-            # Rule 1: Explicit pattern "Ep 23", "Episode 23", "Part 23", "Ch 23"
-            m = _re.search(r'\b(ep|episode|ch|chapter|part|audio)\s*[-_.:]?\s*(\d+)\b', text, _re.IGNORECASE)
-            if m: return int(m.group(2))
+            # Match "31-40", "31 to 40", "31_40"
+            m_range = _re.search(r'\b(?:ep|episode|ch|chapter|part|audio)?\s*(\d+)\s*[-_to]+\s*(\d+)\b', text, _re.IGNORECASE)
+            if m_range:
+                s, e = int(m_range.group(1)), int(m_range.group(2))
+                if s < e and (e - s) < 500: return s, e
             
-            # Rule 2: Last continuous number <= 9999 (to avoid catching 6-digit hash IDs)
+            m_single = _re.search(r'\b(?:ep|episode|ch|chapter|part|audio)\s*[-_.:]?\s*(\d+)\b', text, _re.IGNORECASE)
+            if m_single: return int(m_single.group(1)), int(m_single.group(1))
+            
             numbers = _re.findall(r'\b\d{1,4}\b', text)
-            if numbers: return int(numbers[-1])
-            return -1
+            if numbers: return int(numbers[-1]), int(numbers[-1])
+            return None, None
 
-        all_valid_msgs.sort(key=lambda x: x.id) # Sort chronologically
+        parsed_data = [] # List of tuples: (msg_id, assigned_start, assigned_end)
         
-        parsed_data = [] # List of tuples: (msg_id, ep_num)
-        last_known = 0
+        s, e = extract_eps(all_valid_msgs[0])
+        current_ep = s if s is not None else 1
         
-        for m in all_valid_msgs:
-            ep = extract_ep(m)
-            if ep == -1:
-                # If utterly failed to parse, assume it's the next logical episode
-                ep = last_known + 1
-            parsed_data.append((m.id, ep))
-            last_known = ep
-
-        # Sort files by their detected episode number securely
-        parsed_data.sort(key=lambda x: x[1])
+        for idx, m in enumerate(all_valid_msgs):
+            if idx == 0:
+                parsed_data.append((m.id, current_ep, e if e is not None else current_ep))
+                current_ep = (e if e is not None else current_ep)
+                continue
+                
+            s, e = extract_eps(m)
+            if s is None:
+                current_ep += 1
+                parsed_data.append((m.id, current_ep, current_ep))
+            else:
+                if s <= current_ep:
+                    if s != e:
+                        val_s = current_ep + 1
+                        val_e = current_ep + 1 + (e - s)
+                        parsed_data.append((m.id, val_s, val_e))
+                        current_ep = val_e
+                    else:
+                        current_ep += 1
+                        parsed_data.append((m.id, current_ep, current_ep))
+                else:
+                    parsed_data.append((m.id, s, e))
+                    current_ep = e
 
         first_ep_num = parsed_data[0][1]
-        last_ep_num  = parsed_data[-1][1]
+        last_ep_num  = parsed_data[-1][2]
 
-        def window_start_for(ep: int) -> int:
-            return first_ep_num + ((ep - first_ep_num) // batch_size) * batch_size
+        buckets = {} # (w_start, w_end): [msg_ids...]
+        
+        for m_id, a_s, a_e in parsed_data:
+            for ep in range(a_s, a_e + 1):
+                if ep < 1: continue
+                # Calculate strictly aligned mathematical bucket interval (e.g. 1-10, 11-20)
+                b_s = ((ep - 1) // batch_size) * batch_size + 1
+                b_e = b_s + batch_size - 1
+                b_key = (b_s, b_e)
+                
+                if b_key not in buckets:
+                    buckets[b_key] = []
+                if m_id not in buckets[b_key]:
+                    buckets[b_key].append(m_id)
 
         raw_buttons = []
-        w_start = first_ep_num
+        for (w_start, w_end), batch in sorted(buckets.items()):
+            if not batch: continue
+            
+            uuid_str = str(uuid.uuid4()).replace('-', '')[:16]
+            await db.save_share_link(
+                uuid_str, batch, source_chat_id,
+                protect=protect, access_hash=db_access_hash
+            )
+            url = f"https://t.me/{bot_usr}?start={uuid_str}"
 
-        while w_start <= last_ep_num:
-            w_end = w_start + batch_size - 1
-
-            # Get EVERY msg_id inside this window (duplicates inherently included!)
-            batch = [pid for pid, pep in parsed_data if w_start <= pep <= w_end]
-
-            if batch:
-                uuid_str = str(uuid.uuid4()).replace('-', '')[:16]
-                await db.save_share_link(
-                    uuid_str, batch, source_chat_id,
-                    protect=protect, access_hash=db_access_hash
-                )
-                url = f"https://t.me/{bot_usr}?start={uuid_str}"
-
-                btn_text = str(w_start) if batch_size == 1 else f"{w_start}\u2013{w_end}"
-                raw_buttons.append({
-                    "btn":      InlineKeyboardButton(btn_text, url=url),
-                    "ep_start": w_start,
-                    "ep_end":   w_end,
-                })
-
-            w_start += batch_size
+            # Strictly display numbers only per user request
+            btn_text = str(w_start) if batch_size == 1 else f"{w_start}\u2013{w_end}"
+            raw_buttons.append({
+                "btn":      InlineKeyboardButton(btn_text, url=url),
+                "ep_start": w_start,
+                "ep_end":   w_end,
+            })
 
 
         # ── PHASE 3: Group buttons into posts and send to target channel ──────

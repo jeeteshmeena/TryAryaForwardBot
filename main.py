@@ -137,8 +137,10 @@ async def main():
 
     await idle()
     try:
-        from plugins.share_bot import share_client
-        if share_client: await share_client.stop()
+        from plugins.share_bot import share_clients
+        for c in share_clients.values():
+            try: await c.stop()
+            except: pass
     except Exception: pass
     await bot.stop()
 
