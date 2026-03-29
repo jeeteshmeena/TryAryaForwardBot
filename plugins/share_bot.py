@@ -444,26 +444,18 @@ async def _send_about(client, query_or_msg, bot_id: str = None, edit: bool = Tru
 
     try:
         if is_photo_msg:
-            # Edit caption inline (no new message sent)
+            # Edit caption inline — preserves the welcome image
             await msg.edit_caption(caption=txt, reply_markup=markup)
         else:
-            if about_img:
-                # Current message is text but we have an image.
-                # Delete current and send photo (only case we must send new msg).
-                try:
-                    await msg.delete()
-                except Exception:
-                    pass
-                chat_id = msg.chat.id
-                await client.send_photo(chat_id, photo=about_img, caption=txt, reply_markup=markup)
-            else:
-                await msg.edit_text(txt, reply_markup=markup, disable_web_page_preview=True)
+            # Edit text inline — no deletion, no new message
+            await msg.edit_text(txt, reply_markup=markup, disable_web_page_preview=True)
     except Exception as e:
         logger.warning(f"_send_about edit failed: {e}")
         try:
             await msg.reply_text(txt, reply_markup=markup, disable_web_page_preview=True)
         except Exception:
             pass
+
 
 
 async def _process_delivery_button(client, query):

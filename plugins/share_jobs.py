@@ -317,10 +317,10 @@ async def _build_share_links(bot, user_id, sj, info_msg):
 
         _NOISE_RE = [
             _re.compile(r'(?i)\b(?:360|480|720|1080|2160|4k)[pi]?\b'),
-            _re.compile(r'(?i)\b(?:x264|x265|h\.?264|h\.?265|hevc|avc|aac|mp[34]|mkv|avi|mov|wmv|flv|opus|ogg|wav|webm)\b'),
+            _re.compile(r'(?i)\b(?:x264|x265|h\.?264|h\.?265|hevc|avc|aac|mp[34]|m4a|m4v|m4b|mkv|avi|mov|wmv|flv|flac|opus|ogg|wav|webm|3gp|ts|mts|m2ts)\b'),
             _re.compile(r'(?<!\d)(?:19[0-9]{2}|20[0-9]{2})(?!\d)'),
             _re.compile(r'(?i)\b\d+(?:\.\d+)?\s*(?:mb|gb|kb)\b'),
-            _re.compile(r'(?i)\b(?:track|s[0-9]{1,2}e[0-9]{1,2}|part)(?=\s|$)'),  # strip track/episode labels
+            _re.compile(r'(?i)\b(?:track|s[0-9]{1,2}e[0-9]{1,2})(?=\s|$)'),
         ]
 
         def _clean(text: str) -> str:
@@ -378,13 +378,18 @@ async def _build_share_links(bot, user_id, sj, info_msg):
             return _extract_from_text(text)
 
         def _get_file_names(msg):
-            """Collect file_name strings from all media attributes."""
+            """Collect file_name strings (without extension) from all media attributes."""
+            import os as _os
             names = []
             for attr in ("audio", "voice", "document", "video"):
                 media = getattr(msg, attr, None)
                 if media:
                     fname = getattr(media, "file_name", None)
-                    if fname: names.append(str(fname))
+                    if fname:
+                        # Strip extension to prevent '4' in '.m4a' / '3' in '.mp3' etc.
+                        # from contaminating the number pool
+                        base, _ = _os.path.splitext(str(fname))
+                        names.append(base)
             return names
 
         def _get_audio_title(msg):
