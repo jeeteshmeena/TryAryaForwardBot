@@ -38,21 +38,22 @@ class Database:
         return doc.get('token') if doc else None
         
     async def get_share_bots(self) -> list:
-        # Returns list of dicts: [{'id': 'BOT_ID', 'token': 'TOKEN', 'name': 'NAME', 'username': 'USERNAME'}]
+        """Returns list of all configured share bots from DB."""
         doc = await self.stats.find_one({'_id': 'share_bots_list'})
         if doc and 'bots' in doc:
             return doc['bots']
-        # Migrate legacy token if exists
-        legacy = await self.get_share_bot_token()
-        if legacy:
-            try:
-                # Add it cleanly via dummy info, or just return basic
-                return [{'id': 'legacy', 'token': legacy, 'username': 'UnknownBot', 'name': 'Legacy Bot'}]
-            except: pass
         return []
 
     async def add_share_bot(self, b_id: int, token: str, username: str, name: str):
-        bot_dict = {'id': str(b_id), 'token': token, 'username': username, 'name': name}
+        """Adds a new share bot. Prevents duplicates by ID."""
+        b_id_str = str(b_id)
+        # Remove existing entry with same ID first (upsert-style)
+        await self.stats.update_one(
+            {'_id': 'share_bots_list'},
+            {'$pull': {'bots': {'id': b_id_str}}},
+            upsert=True
+        )
+        bot_dict = {'id': b_id_str, 'token': token, 'username': username, 'name': name}
         await self.stats.update_one(
             {'_id': 'share_bots_list'},
             {'$push': {'bots': bot_dict}},
@@ -60,9 +61,10 @@ class Database:
         )
 
     async def remove_share_bot(self, b_id: str):
+        """Removes a share bot by its string ID."""
         await self.stats.update_one(
             {'_id': 'share_bots_list'},
-            {'$pull': {'bots': {'id': b_id}}}
+            {'$pull': {'bots': {'id': str(b_id)}}}
         )
 
     async def set_share_protect_global(self, protect: bool):

@@ -292,45 +292,66 @@ async def settings_query(bot, query):
       
   elif type == "sb_add":
       await query.message.delete()
-      from plugins.test import CLIENT
-      tmp = CLIENT()
-      res = await tmp.add_bot(client, query) # Reuse bot token fetch flow!
-      # Actually wait, add_bot adds to general account! Let's build a dedicated simple token fetcher:
+      ask = None
       try:
-          ask = await bot.send_message(user_id, "<b>❪ ADD SHARE BOT ❫</b>\n\nForward a message containing the token from @BotFather, or send the token directly.\n\n/cancel to abort")
+          from config import Config as _Cfg
+          ask = await bot.send_message(
+              user_id,
+              "<b>❪ ADD SHARE BOT ❫</b>\n\n"
+              "Send the bot token from @BotFather directly, or forward a message containing it.\n\n"
+              "/cancel to abort"
+          )
           resp = await bot.listen(chat_id=user_id, timeout=120)
-          if resp.text == "/cancel":
+          if resp.text and resp.text.strip() == "/cancel":
               await resp.delete()
-              return await ask.edit_text("Cancelled.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("↩ Back", callback_data="settings#sbt_manage")]]))
-          
-          tk = resp.text.strip()
-          import re
-          # If it's a forwarded msg:
-          match = re.search(r"([0-9]{8,11}:[a-zA-Z0-9_-]{35,})", tk)
-          if match: tk = match.group(1)
-          
-          if ":" not in tk:
-              return await ask.edit_text("<b>❌ Invalid Token Format!</b>", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("↩ Back", callback_data="settings#sbt_manage")]]))
-              
-          # Validate Token
-          test_app = Client("test_sb_"+tk[:10], api_id=CLIENT.api_id, api_hash=CLIENT.api_hash, bot_token=tk, in_memory=True)
+              return await ask.edit_text(
+                  "<b>Cancelled.</b>",
+                  reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("↩ Back", callback_data="settings#sbt_manage")]])
+              )
+
+          raw = (resp.text or "").strip()
+          await resp.delete()
+
+          import re as _re_add
+          m = _re_add.search(r"(\d{8,11}:[A-Za-z0-9_-]{35,})", raw)
+          tk = m.group(1) if m else raw
+
+          if ":" not in tk or len(tk) < 40:
+              return await ask.edit_text(
+                  "<b>❌ Invalid token format!</b>\nMake sure you send the full token from @BotFather.",
+                  reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("↩ Retry", callback_data="settings#sb_add"), InlineKeyboardButton("↩ Back", callback_data="settings#sbt_manage")]])
+              )
+
+          # Validate token by starting a temp client
+          test_app = Client(
+              f"test_sb_{tk[:8]}", bot_token=tk,
+              api_id=_Cfg.API_ID, api_hash=_Cfg.API_HASH, in_memory=True
+          )
           await test_app.start()
           me = await test_app.get_me()
           await test_app.stop()
-          
-          # Add to DB
-          await db.add_share_bot(me.id, tk, me.username, me.first_name)
-          
-          # Start it immediately globally!
+
+          # Save to DB
+          await db.add_share_bot(me.id, tk, me.username or "unknown", me.first_name or "ShareBot")
+
+          # Reload all share bots
           from plugins.share_bot import start_share_bot
-          import asyncio
-          asyncio.create_task(start_share_bot())
-          
-          await ask.edit_text(f"✅ <b>Successfully Linked 🤖 {me.first_name}</b>", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("↩ Back", callback_data="settings#sbt_manage")]]))
-          await resp.delete()
+          import asyncio as _aio
+          _aio.create_task(start_share_bot())
+
+          await ask.edit_text(
+              f"✅ <b>Successfully added @{me.username}!</b>\n\nThe delivery bot is now active.",
+              reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("↩ Back", callback_data="settings#sbt_manage")]])
+          )
       except Exception as e:
-          try: await ask.edit_text(f"❌ <b>Error:</b> {e}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("↩ Back", callback_data="settings#sbt_manage")]]))
-          except: pass
+          errmsg = f"❌ <b>Error:</b> <code>{e}</code>"
+          try:
+              if ask:
+                  await ask.edit_text(errmsg, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("↩ Back", callback_data="settings#sbt_manage")]]))
+              else:
+                  await bot.send_message(user_id, errmsg)
+          except Exception:
+              pass
 
   elif type.startswith("sb_view_"):
       b_id = type.split("_")[-1]
