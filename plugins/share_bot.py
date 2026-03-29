@@ -205,17 +205,23 @@ def register_share_handlers(app: Client):
                 )
                 return
 
-        # 3. Inject DB channel peer into Share Bot's in-memory cache (access_hash from MongoDB)
-        access_hash = link_data.get('access_hash', 0)
-        if access_hash and source_chat < 0:
-            try:
-                from pyrogram.raw.types import InputPeerChannel as _IPC
-                raw_channel_id = abs(source_chat) - 1000000000000
-                await client.storage.update_peers([
-                    (raw_channel_id, access_hash, "channel", None, None)
-                ])
-            except Exception as peer_err:
-                logger.warning(f"Peer injection failed (non-fatal): {peer_err}")
+        # 3. Resolve source channel peer — Share Bot uses in_memory so it has no peer cache.
+        #    We must call get_chat() once so Pyrogram stores the peer, or copy_message will fail.
+        try:
+            await client.get_chat(source_chat)
+        except Exception as peer_err:
+            logger.warning(f"Peer resolution failed, trying access_hash inject: {peer_err}")
+            access_hash = link_data.get('access_hash', 0)
+            if access_hash and source_chat < 0:
+                try:
+                    from pyrogram.raw.types import InputPeerChannel as _IPC
+                    raw_channel_id = abs(source_chat) - 1000000000000
+                    await client.storage.update_peers([
+                        (raw_channel_id, access_hash, "channel", None, None)
+                    ])
+                except Exception as inject_err:
+                    logger.warning(f"Peer inject also failed: {inject_err}")
+
 
         # 4. Read auto-delete from GLOBAL config (not per-link) so setting changes apply everywhere
         auto_delete_mins = await db.get_share_autodelete_global()

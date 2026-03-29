@@ -317,30 +317,37 @@ async def _build_share_links(bot, user_id, sj, info_msg):
 
         def extract_ep_num(msg) -> int:
             """
-            Returns the episode number from a message's caption/filename.
-            Returns -1 if nothing useful found.
-            Priority:
-              1. "Ep 23", "Episode 23", "Part 23", "Ch 23" etc
-              2. Range like "31-40" → take the START number
-              3. Last pure 1-4 digit number in the text
+            Returns the episode number from text+caption+filename.
+            Checks msg.audio, msg.voice, msg.document for file_name.
+            Returns -1 if nothing found.
             """
             text = (msg.caption or "") + " " + (msg.text or "")
-            if msg.document and getattr(msg.document, "file_name", None):
-                text += " " + str(msg.document.file_name)
 
-            # Named keyword + number (highest priority)
+            # Extract filename from ALL possible media types
+            for attr in ("audio", "voice", "document", "video"):
+                media = getattr(msg, attr, None)
+                if media:
+                    fname = getattr(media, "file_name", None)
+                    if fname:
+                        text += " " + str(fname)
+                    # also try title for audio tracks
+                    title = getattr(media, "title", None)
+                    if title:
+                        text += " " + str(title)
+
+            # Priority 1 — named keyword + number: "Ep 23", "Episode 23", "Part 23" etc.
             m = _re.search(r'\b(?:ep|episode|ch|chapter|part|audio)\s*[-_.:]?\s*(\d{1,4})\b', text, _re.IGNORECASE)
             if m:
                 return int(m.group(1))
 
-            # Range pattern: "31-40", "31_40", "31 to 40" → take start
-            m2 = _re.search(r'\b(\d{1,4})\s*[-_to]+\s*(\d{1,4})\b', text, _re.IGNORECASE)
+            # Priority 2 — range pattern: "31-40", "31_40" → take the START
+            m2 = _re.search(r'\b(\d{1,4})\s*[-_]+\s*(\d{1,4})\b', text)
             if m2:
                 s, e = int(m2.group(1)), int(m2.group(2))
                 if s < e and (e - s) < 200:
                     return s
 
-            # Last 1-4 digit number  (generic fallback — "204.mp3" → 204)
+            # Priority 3 — last 1–4 digit standalone number ("204.mp3" → 204)
             nums = _re.findall(r'\b\d{1,4}\b', text)
             if nums:
                 return int(nums[-1])
