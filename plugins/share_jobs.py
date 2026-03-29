@@ -316,10 +316,15 @@ async def _build_share_links(bot, user_id, sj, info_msg):
 
 
         _NOISE_RE = [
-            _re.compile(r'(?i)\b(?:360|480|720|1080|2160|4k)[pi]?\b'),
-            _re.compile(r'(?i)\b(?:x264|x265|h\.?264|h\.?265|hevc|avc|aac|mp[34]|m4a|m4v|m4b|mkv|avi|mov|wmv|flv|flac|opus|ogg|wav|webm|3gp|ts|mts|m2ts)\b'),
+            # Resolutions MUST have p/i suffix — bare '360', '480' etc. could be episode numbers!
+            _re.compile(r'(?i)\b(?:360|480|720|1080|2160|4k)[pi]\b'),
+            # Codec/format labels (only as whole words, NOT inside filenames)
+            _re.compile(r'(?i)\b(?:x264|x265|h\.?264|h\.?265|hevc|avc|aac|mp[34]|m4a|m4v|m4b|mkv|avi|mov|wmv|flv|flac|opus|ogg|wav|webm|3gp|mts|m2ts)\b'),
+            # Calendar years (4 digits starting with 19xx or 20xx)
             _re.compile(r'(?<!\d)(?:19[0-9]{2}|20[0-9]{2})(?!\d)'),
+            # File sizes
             _re.compile(r'(?i)\b\d+(?:\.\d+)?\s*(?:mb|gb|kb)\b'),
+            # Track/season-episode labels like S01E05
             _re.compile(r'(?i)\b(?:track|s[0-9]{1,2}e[0-9]{1,2})(?=\s|$)'),
         ]
 
@@ -533,6 +538,63 @@ async def _build_share_links(bot, user_id, sj, info_msg):
             expected_range = set(range(first_ep_num, last_ep_num + 1))
             present_set    = set(all_ep_nums)
             missing_eps    = sorted(expected_range - present_set)
+
+        # ── PASS 3: Sequential gap-fill for numberless files ────────────────
+        # Files that had no extractable episode number (e.g. "Veeraangadh.mp3")
+        # are assigned to the nearest sequential gap using their chronological
+        # position between neighbouring parsed episodes.
+        gap_filled_eps: list = []
+        if not GROUPED_MODE and unparseable_count > 0 and missing_eps:
+            # Build an ordered list of all messages with their resolved ep (or None)
+            id_to_ep: dict = {m.id: ep for m, ep, _, _ in parsed_msgs}
+            ordered_all = [(msg, id_to_ep.get(msg.id, None)) for msg in all_valid_msgs]
+            missing_set = set(missing_eps)
+            n_all = len(ordered_all)
+            i_all = 0
+            while i_all < n_all and missing_set:
+                if ordered_all[i_all][1] is not None:
+                    i_all += 1
+                    continue
+                # Found a null-run (consecutive numberless messages)
+                run_s = i_all
+                while i_all < n_all and ordered_all[i_all][1] is None:
+                    i_all += 1
+                run_e = i_all  # exclusive
+
+                # Neighbouring resolved episodes
+                prev_ep = None
+                for j in range(run_s - 1, -1, -1):
+                    if ordered_all[j][1] is not None:
+                        prev_ep = ordered_all[j][1]; break
+                next_ep = None
+                for j in range(run_e, n_all):
+                    if ordered_all[j][1] is not None:
+                        next_ep = ordered_all[j][1]; break
+
+                # Starting candidate(s) for the gap fill
+                if prev_ep is not None:
+                    start_candidate = prev_ep + 1
+                elif next_ep is not None:
+                    start_candidate = max(1, next_ep - (run_e - run_s))
+                else:
+                    continue
+
+                # Assign sequentially from start_candidate
+                offset = 0
+                for idx in range(run_s, run_e):
+                    candidate = start_candidate + offset
+                    offset += 1
+                    # Only assign if this ep is actually missing  AND within plausible range
+                    if candidate in missing_set and (next_ep is None or candidate < next_ep):
+                        filled_msg = ordered_all[idx][0]
+                        ep_to_msgs[candidate] = [filled_msg.id]
+                        missing_set.discard(candidate)
+                        gap_filled_eps.append(candidate)
+                        ordered_all[idx] = (filled_msg, candidate)
+
+            missing_eps = sorted(missing_set)
+            # Rebuild all_ep_nums after gap fill
+            all_ep_nums = sorted(ep_to_msgs.keys())
 
         # ── BUILD BUCKETS ─────────────────────────────────────────────────────
         # GROUPED_MODE: each file = 1 button using its own range label
