@@ -151,38 +151,38 @@ async def settings_query(bot, query):
      protect     = await db.get_share_protect_global()
      auto_delete = await db.get_share_autodelete_global()
      bpp         = await db.get_share_buttons_per_post()
-      fsub_chs    = await db.get_share_fsub_channels()
-      bots_list   = await db.get_share_bots()
+     fsub_chs    = await db.get_share_fsub_channels()
+     bots_list   = await db.get_share_bots()
 
-      ptxt = "✅ ON" if protect else "❌ OFF"
-      if auto_delete == 0:    adtxt = "❌ OFF"
-      elif auto_delete < 60:  adtxt = f"⏱ {auto_delete}m"
-      else:                   adtxt = f"⏱ {auto_delete // 60}h"
+     ptxt = "✅ ON" if protect else "❌ OFF"
+     if auto_delete == 0:    adtxt = "❌ OFF"
+     elif auto_delete < 60:  adtxt = f"⏱ {auto_delete}m"
+     else:                   adtxt = f"⏱ {auto_delete // 60}h"
 
-      buttons = [
-          [InlineKeyboardButton(f'🛡 Protection: {ptxt}', callback_data='settings#sharebotprotect'),
-           InlineKeyboardButton(f'⏱ Auto-Delete: {adtxt}', callback_data='settings#sharebotautodel')],
-          [InlineKeyboardButton(f'🗂 Buttons/Post: {bpp}', callback_data='settings#sharebot_bpp'),
-           InlineKeyboardButton(f'📢 Force-Subscribe ({len(fsub_chs)}/6)', callback_data='settings#sharefsub')],
-          [InlineKeyboardButton('📖 Welcome Msg', callback_data='settings#sbt_welcome'),
-           InlineKeyboardButton('🗑 Delete Msg', callback_data='settings#sbt_delete')],
-          [InlineKeyboardButton('📝 Custom Caption', callback_data='settings#sbt_caption'),
-           InlineKeyboardButton('✅ Success Msg', callback_data='settings#sbt_success')],
-          [InlineKeyboardButton('🔐 FSub Message', callback_data='settings#sbt_fsub'),
-           InlineKeyboardButton(f'🤖 Share Bots ({len(bots_list)})', callback_data='settings#sbt_manage')],
-          [InlineKeyboardButton('↩ Back', callback_data='settings#main')]
-      ]
-      txt = (
-          f"<b>❪ SHARE BOT CONFIGURATION ❫</b>\n\n"
-          f"<b>❯ Share Bots:</b> {len(bots_list)} active agent(s)\n\n"
-          f"<b>⚙️ Settings Overview:</b>\n"
-          f"<b>┠ Protection</b> — restricts saving & forwarding delivered files.\n"
-          f"<b>┠ Auto-Delete</b> — globally deletes files after the timer.\n"
-          f"<b>┠ Buttons/Post</b> — how many episode buttons appear in channel posts.\n"
-          f"<b>┠ Force-Subscribe</b> — users must join channels before receiving files.\n"
-          f"<b>┖ Messaging</b> — click the lower buttons to customize text & captions."
-      )
-      await query.message.edit_text(txt, reply_markup=InlineKeyboardMarkup(buttons))
+     buttons = [
+         [InlineKeyboardButton(f'🛡 Protection: {ptxt}', callback_data='settings#sharebotprotect'),
+          InlineKeyboardButton(f'⏱ Auto-Delete: {adtxt}', callback_data='settings#sharebotautodel')],
+         [InlineKeyboardButton(f'🗂 Buttons/Post: {bpp}', callback_data='settings#sharebot_bpp'),
+          InlineKeyboardButton(f'📢 Force-Subscribe ({len(fsub_chs)}/6)', callback_data='settings#sharefsub')],
+         [InlineKeyboardButton('📖 Welcome Msg', callback_data='settings#sbt_welcome'),
+          InlineKeyboardButton('🗑 Delete Msg', callback_data='settings#sbt_delete')],
+         [InlineKeyboardButton('📝 Custom Caption', callback_data='settings#sbt_caption'),
+          InlineKeyboardButton('✅ Success Msg', callback_data='settings#sbt_success')],
+         [InlineKeyboardButton('🔐 FSub Message', callback_data='settings#sbt_fsub'),
+          InlineKeyboardButton(f'🤖 Share Bots ({len(bots_list)})', callback_data='settings#sbt_manage')],
+         [InlineKeyboardButton('↩ Back', callback_data='settings#main')]
+     ]
+     txt = (
+         f"<b>❪ SHARE BOT CONFIGURATION ❫</b>\n\n"
+         f"<b>❯ Share Bots:</b> {len(bots_list)} active agent(s)\n\n"
+         f"<b>⚙️ Settings Overview:</b>\n"
+         f"<b>┠ Protection</b> — restricts saving & forwarding delivered files.\n"
+         f"<b>┠ Auto-Delete</b> — globally deletes files after the timer.\n"
+         f"<b>┠ Buttons/Post</b> — how many episode buttons appear in channel posts.\n"
+         f"<b>┠ Force-Subscribe</b> — users must join channels before receiving files.\n"
+         f"<b>┖ Messaging</b> — click the lower buttons to customize text & captions."
+     )
+     await query.message.edit_text(txt, reply_markup=InlineKeyboardMarkup(buttons))
 
   elif type == "sharebotprotect":
      protect = await db.get_share_protect_global()
