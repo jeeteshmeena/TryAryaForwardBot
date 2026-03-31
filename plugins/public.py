@@ -75,28 +75,6 @@ async def main_bot_menuimage(bot, message):
         )
 
 
-@Client.on_message(filters.private & filters.command(["resetmergelock", "fixmerge"]))
-async def reset_merge_lock_cmd(bot, message):
-    from config import Config
-    if message.from_user.id not in Config.BOT_OWNER_ID:
-        return
-    try:
-        from plugins.merger import _mg_global_lock, _mg_tasks
-        if _mg_global_lock.locked():
-            _mg_global_lock.release()
-            await message.reply(
-                "<b>✅ Merge Lock Released!</b>\n\n"
-                "The global merger lock was stuck and has been forcibly released. "
-                "You can now start new merge jobs."
-            )
-        else:
-            await message.reply(
-                "<b>ℹ️ Merge Lock is Not Stuck</b>\n\n"
-                f"Lock is currently <b>free</b>. Active tasks: {len(_mg_tasks)}"
-            )
-    except Exception as e:
-        await message.reply(f"<b>❌ Error:</b> <code>{e}</code>")
-
 #===================Run Function===================#
 
 @Client.on_message(filters.private & filters.command(["fwd", "forward"]))
