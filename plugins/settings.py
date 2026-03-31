@@ -1140,11 +1140,11 @@ async def settings_query(bot, query):
      data    = await get_configs(user_id)
      rm_cap  = data.get('filters', {}).get('rm_caption', False)
      buttons = [[
-         InlineKeyboardButton("»  ᴋᴇᴇᴘ ᴏʀɪɢɪɴᴀʟ" + (" ◀" if not rm_cap else ""), callback_data="settings#caption_mode-off"),
+         InlineKeyboardButton(("✅ " if not rm_cap else "» ") + "ᴋᴇᴇᴘ ᴏʀɪɢɪɴᴀʟ", callback_data="settings#caption_mode-off"),
      ],[
-         InlineKeyboardButton("»  ꜱᴍᴀʀᴛ ᴄʟᴇᴀɴ" + (" ◀" if rm_cap is True else ""), callback_data="settings#caption_mode-smart"),
+         InlineKeyboardButton(("✅ " if rm_cap is True else "» ") + "ꜱᴍᴀʀᴛ ᴄʟᴇᴀɴ", callback_data="settings#caption_mode-smart"),
      ],[
-         InlineKeyboardButton("»  ᴡɪᴘᴇ ᴀʟʟ ᴄᴀᴘᴛɪᴏɴꜱ" + (" ◀" if rm_cap == 2 else ""), callback_data="settings#caption_mode-wipe"),
+         InlineKeyboardButton(("✅ " if rm_cap == 2 else "» ") + "ᴡɪᴘᴇ ᴀʟʟ ᴄᴀᴘᴛɪᴏɴꜱ", callback_data="settings#caption_mode-wipe"),
      ],[
          InlineKeyboardButton("»  ᴀᴅᴅ ᴄᴜꜱᴛᴏᴍ ᴄᴀᴘᴛɪᴏɴ", callback_data="settings#addcaption"),
      ],[
@@ -1163,11 +1163,7 @@ async def settings_query(bot, query):
      else:
          val = 2  # wipe
          
-     # Update inside filters dict appropriately
-     data = await get_configs(user_id)
-     filters_dict = data.get('filters', {})
-     filters_dict['rm_caption'] = val
-     await update_configs(user_id, 'filters', filters_dict)
+     await update_configs(user_id, 'rm_caption', val)
      
      await query.answer("»  Caption mode updated!", show_alert=False)
      # Refresh the caption sub-menu
@@ -1184,11 +1180,11 @@ async def settings_query(bot, query):
      buttons = [[
          InlineKeyboardButton("      ᴄᴀᴘᴛɪᴏɴ ᴍᴏᴅᴇ      ", callback_data="settings_#noop")
      ],[
-         InlineKeyboardButton("»  ᴋᴇᴇᴘ ᴏʀɪɢɪɴᴀʟ" + (" ◀" if not rm_cap else ""), callback_data="settings#caption_mode-off"),
+         InlineKeyboardButton(("✅ " if not rm_cap else "» ") + "ᴋᴇᴇᴘ ᴏʀɪɢɪɴᴀʟ", callback_data="settings#caption_mode-off"),
      ],[
-         InlineKeyboardButton("»  ꜱᴍᴀʀᴛ ᴄʟᴇᴀɴ" + (" ◀" if rm_cap is True else ""), callback_data="settings#caption_mode-smart"),
+         InlineKeyboardButton(("✅ " if rm_cap is True else "» ") + "ꜱᴍᴀʀᴛ ᴄʟᴇᴀɴ", callback_data="settings#caption_mode-smart"),
      ],[
-         InlineKeyboardButton("»  ᴡɪᴘᴇ ᴀʟʟ ᴄᴀᴘᴛɪᴏɴꜱ" + (" ◀" if rm_cap == 2 else ""), callback_data="settings#caption_mode-wipe"),
+         InlineKeyboardButton(("✅ " if rm_cap == 2 else "» ") + "ᴡɪᴘᴇ ᴀʟʟ ᴄᴀᴘᴛɪᴏɴꜱ", callback_data="settings#caption_mode-wipe"),
      ],[
          InlineKeyboardButton("      ᴄᴜꜱᴛᴏᴍ ᴛᴇᴍᴘʟᴀᴛᴇ      ", callback_data="settings_#noop")
      ],[
