@@ -360,7 +360,7 @@ async def _run_multijob(job_id: str, user_id: int, bot=None):
         mj_prog_msg_id = job.get("prog_msg_id", None)
         if not mj_prog_msg_id:
             try:
-                sent = await client.send_message(to_chat, _mj_prog_text(0, mj_total), parse_mode="html")
+                sent = await client.send_message(to_chat, _mj_prog_text(0, mj_total), parse_mode=__import__("pyrogram.enums", fromlist=["ParseMode"]).ParseMode.HTML)
                 mj_prog_msg_id = sent.id
                 await _mj_update(job_id, prog_msg_id=mj_prog_msg_id)
                 try: await client.pin_chat_message(to_chat, mj_prog_msg_id, disable_notification=True)
@@ -386,7 +386,7 @@ async def _run_multijob(job_id: str, user_id: int, bot=None):
                     try:
                         fj = await _mj_get(job_id)
                         _fwd = fj.get("forwarded", 0) if fj else 0
-                        await client.edit_message_text(to_chat, mj_prog_msg_id, _mj_prog_text(_fwd, mj_total, "stopped"), parse_mode="html")
+                        await client.edit_message_text(to_chat, mj_prog_msg_id, _mj_prog_text(_fwd, mj_total, "stopped"), parse_mode=__import__("pyrogram.enums", fromlist=["ParseMode"]).ParseMode.HTML)
                     except Exception: pass
                 break
 
@@ -399,7 +399,7 @@ async def _run_multijob(job_id: str, user_id: int, bot=None):
                     try:
                         fj = await _mj_get(job_id)
                         _fwd = fj.get("forwarded", 0) if fj else 0
-                        await client.edit_message_text(to_chat, mj_prog_msg_id, _mj_prog_text(_fwd, mj_total, "done"), parse_mode="html")
+                        await client.edit_message_text(to_chat, mj_prog_msg_id, _mj_prog_text(_fwd, mj_total, "done"), parse_mode=__import__("pyrogram.enums", fromlist=["ParseMode"]).ParseMode.HTML)
                         await client.unpin_chat_message(to_chat, mj_prog_msg_id)
                         async def _del_done_prog():
                             await asyncio.sleep(300)
@@ -492,7 +492,7 @@ async def _run_multijob(job_id: str, user_id: int, bot=None):
                         try:
                             fj = await _mj_get(job_id)
                             _fwd = fj.get("forwarded", 0) if fj else 0
-                            await client.edit_message_text(to_chat, mj_prog_msg_id, _mj_prog_text(_fwd, mj_total, "done"), parse_mode="html")
+                            await client.edit_message_text(to_chat, mj_prog_msg_id, _mj_prog_text(_fwd, mj_total, "done"), parse_mode=__import__("pyrogram.enums", fromlist=["ParseMode"]).ParseMode.HTML)
                             await client.unpin_chat_message(to_chat, mj_prog_msg_id)
                             async def _del_empty_prog():
                                 await asyncio.sleep(300)
@@ -588,7 +588,7 @@ async def _run_multijob(job_id: str, user_id: int, bot=None):
                         f"»  <b>ETA:</b> {_eta_str}\n\n"
                         f"<i>Powered by Arya Forward Bot</i>"
                     )
-                    await client.edit_message_text(to_chat, mj_prog_msg_id, _prog_txt, parse_mode="html")
+                    await client.edit_message_text(to_chat, mj_prog_msg_id, _prog_txt, parse_mode=__import__("pyrogram.enums", fromlist=["ParseMode"]).ParseMode.HTML)
                 except Exception:
                     pass
 
@@ -599,7 +599,7 @@ async def _run_multijob(job_id: str, user_id: int, bot=None):
             try:
                 fj = await _mj_get(job_id)
                 _fwd = fj.get("forwarded", 0) if fj else 0
-                await client.edit_message_text(to_chat, mj_prog_msg_id, _mj_prog_text(_fwd, mj_total, "stopped"), parse_mode="html")
+                await client.edit_message_text(to_chat, mj_prog_msg_id, _mj_prog_text(_fwd, mj_total, "stopped"), parse_mode=__import__("pyrogram.enums", fromlist=["ParseMode"]).ParseMode.HTML)
                 await client.unpin_chat_message(to_chat, mj_prog_msg_id)
                 async def _del_cancelled_prog():
                     await asyncio.sleep(180)
@@ -614,7 +614,7 @@ async def _run_multijob(job_id: str, user_id: int, bot=None):
             try:
                 fj = await _mj_get(job_id)
                 _fwd = fj.get("forwarded", 0) if fj else 0
-                await client.edit_message_text(to_chat, mj_prog_msg_id, _mj_prog_text(_fwd, mj_total, "error"), parse_mode="html")
+                await client.edit_message_text(to_chat, mj_prog_msg_id, _mj_prog_text(_fwd, mj_total, "error"), parse_mode=__import__("pyrogram.enums", fromlist=["ParseMode"]).ParseMode.HTML)
             except Exception: pass
     finally:
         _mj_tasks.pop(job_id, None)

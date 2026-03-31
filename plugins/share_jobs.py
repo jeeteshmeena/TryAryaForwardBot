@@ -657,13 +657,26 @@ async def _build_share_links(bot, user_id, sj, info_msg):
         buckets = []  # list of (label_start, label_end, [msg_ids])
 
         if GROUPED_MODE:
-            # Each grouped file becomes exactly one button
-            # For mixed (some individual, some grouped): still one button per entry
-            for msg, ep_s, ep_e, is_r in parsed_msgs:
-                mids = ep_to_msgs.get(ep_s, [])
-                # Deduplicate: only take the first msg for each ep_s
-                if mids and mids[0] == msg.id:
-                    buckets.append((ep_s, ep_e, [msg.id]))
+            parsed_ids = {m.id for m, _, _, _ in parsed_msgs}
+            current_bucket_mids = None
+            
+            for m in sorted(all_valid_msgs, key=lambda x: x.id):
+                if m.id in parsed_ids:
+                    p_tuple = next(pt for pt in parsed_msgs if pt[0].id == m.id)
+                    ep_s, ep_e = p_tuple[1], p_tuple[2]
+                    
+                    mids = ep_to_msgs.get(ep_s, [])
+                    if mids and mids[0] == m.id:
+                        current_bucket_mids = [m.id]
+                        buckets.append([ep_s, ep_e, current_bucket_mids])
+                    elif current_bucket_mids is not None:
+                        current_bucket_mids.append(m.id)
+                else:
+                    if current_bucket_mids is None:
+                        current_bucket_mids = [m.id]
+                        buckets.append(["Extra", "Files", current_bucket_mids])
+                    else:
+                        current_bucket_mids.append(m.id)
         else:
             # Individual mode: dynamic-size buckets using chronological traversal
             msg_to_ep = {m.id: ep for m, ep, _, _ in parsed_msgs}
@@ -948,7 +961,7 @@ async def _build_share_links(bot, user_id, sj, info_msg):
             try:
                 await bot.send_document(
                     user_id, report_bytes,
-                    caption=dm_cap, parse_mode="html",
+                    caption=dm_cap, parse_mode=__import__("pyrogram.enums", fromlist=["ParseMode"]).ParseMode.HTML,
                     file_name=report_bytes.name
                 )
             except Exception as dm_err:
@@ -959,7 +972,7 @@ async def _build_share_links(bot, user_id, sj, info_msg):
                 report_bytes.seek(0)
                 await poster.send_document(
                     sj['target'], report_bytes,
-                    caption=ch_cap, parse_mode="html",
+                    caption=ch_cap, parse_mode=__import__("pyrogram.enums", fromlist=["ParseMode"]).ParseMode.HTML,
                     file_name=report_bytes.name
                 )
             except Exception as ch_err:

@@ -124,7 +124,7 @@ async def pub_(bot, message):
                       elif act == 'send_cached_media': await client.send_cached_media(**prm)
                       elif act == 'send_message': await client.send_message(**prm)
                       sts_obj.add('total_files')
-                      return True
+                      return True, None
                   except FloodWait as fw:
                       await asyncio.sleep(fw.value + 2)
                       continue
@@ -136,12 +136,12 @@ async def pub_(bot, message):
                       
                       # On first failure due to missing file, trying to fallback
                       print(f"Direct send error: {e}")
-                      sts_obj.add('deleted')
-                      return False
+                      # sts_obj.add('deleted')
+                      return False, e
               
               print(f"Max retries reached. Action failed.")
-              sts_obj.add('deleted')
-              return False
+              # sts_obj.add('deleted')
+              return False, Exception("Max retries")
 
           async def uploader_worker():
               expected_seq = 0
@@ -155,12 +155,11 @@ async def pub_(bot, message):
                   while expected_seq in buffer:
                       act, prm, fpath = buffer.pop(expected_seq)
                       if act != 'skip':
-                          success = await execute_upload_action(act, prm, fpath, sts)
+                          success, err_e = await execute_upload_action(act, prm, fpath, sts)
                           if not success:
                               # Handle uploader fallback for restricted content graciously
-                              # (Logic for downloading fallback inside `copy()` handles MOST of this now,
-                              #  but we keep a general fallback for unknown edge cases).
-                              print(f"Uploader error: {prm}")
+                              print(f"Uploader error: {prm} - {err_e}")
+                              sts.add('deleted')
                               
                       if fpath:
                           try:
@@ -244,7 +243,12 @@ async def pub_(bot, message):
                                   if ui is None: break
                                   _, act, prm, fpath = ui
                                   if act != 'skip':
-                                      await execute_upload_action(act, prm, fpath, sts)
+                                      suc, err = await execute_upload_action(act, prm, fpath, sts)
+                                      if not suc and err:
+                                          if "RESTRICTED" in str(err).upper() or "PROTECTED" in str(err).upper():
+                                              await copy(client, details, m, sts, True, 0, seq_counter, upload_queue)
+                                          else:
+                                              sts.add('deleted')
                                   if fpath:
                                       try:
                                           import os
@@ -803,7 +807,7 @@ async def channel_progress_update(client, dest_chat: int, forwarded: int, total:
         return
     try:
         text = _build_channel_progress_text(forwarded, total, "forwarding")
-        await client.edit_message_text(dest_chat, msg_id, text, parse_mode="html")
+        await client.edit_message_text(dest_chat, msg_id, text, parse_mode=__import__("pyrogram.enums", fromlist=["ParseMode"]).ParseMode.HTML)
     except (MessageNotModified, Exception):
         pass
 
@@ -816,7 +820,7 @@ async def channel_progress_done(client, dest_chat: int, forwarded: int, total: i
     if msg_id:
         try:
             text = _build_channel_progress_text(forwarded, total, status)
-            await client.edit_message_text(dest_chat, msg_id, text, parse_mode="html")
+            await client.edit_message_text(dest_chat, msg_id, text, parse_mode=__import__("pyrogram.enums", fromlist=["ParseMode"]).ParseMode.HTML)
         except Exception:
             pass
         # Unpin the progress message now that forwarding is done
@@ -840,7 +844,7 @@ async def channel_progress_done(client, dest_chat: int, forwarded: int, total: i
                 "<i>Hey, the story is complete. Hope you like it \U0001faf6\U0001f3fb.</i>\n\n"
                 "<u>If you're looking for another story, then try… @StoriesByJeetXNew</u>"
             )
-            await client.send_message(dest_chat, completion_text, parse_mode="html")
+            await client.send_message(dest_chat, completion_text, parse_mode=__import__("pyrogram.enums", fromlist=["ParseMode"]).ParseMode.HTML)
         except Exception:
             pass
      
