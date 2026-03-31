@@ -555,6 +555,7 @@ async def _run_multijob(job_id: str, user_id: int, bot=None):
 
                 # Get links-filter flag for caption stripping
                 _remove_links = 'links' in disabled_types
+                await _mj_forward(client, msg, to_chat, remove_caption, cap_tpl, forward_tag,
                                    to_thread, to_chat_2, to_thread_2, replacements, _remove_links)
                 
                 current = msg.id + 1
