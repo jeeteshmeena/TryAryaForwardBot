@@ -442,10 +442,11 @@ async def _build_share_links(bot, user_id, sj, info_msg):
             # Track/season-episode labels like S01E05
             _re.compile(r'(?i)\b(?:s[0-9]{1,2}e[0-9]{1,2})(?=\s|$)'),
             # Trailing duplicate markers ONLY when preceded by a word character:
-            # " (1)" at END of string means duplicate copy — safe to strip.
-            # But "(12)" or "(56)" alone in the name should NOT be stripped.
-            _re.compile(r'(?<=\w)\s*\(\s*\d{1,2}\s*\)\s*$'),
-            _re.compile(r'(?<=\w)\s*\[\s*\d{1,2}\s*\]\s*$'),
+            # " (1)" " (2)" at END of string means duplicate copy — safe to strip.
+            # (12), (80), etc. should NOT be stripped — they are often episode numbers!
+            # Only strip SINGLE digits (1-9) as trailing copy indicators.
+            _re.compile(r'(?<=\w)\s*\(\s*[1-9]\s*\)\s*$'),
+            _re.compile(r'(?<=\w)\s*\[\s*[1-9]\s*\]\s*$'),
             # Common text noise
             _re.compile(r'(?i)\b(?:copy|final|v\d+|new|latest|audio|track)\b'),
         ]

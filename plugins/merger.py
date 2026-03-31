@@ -679,10 +679,28 @@ async def _run_job(jid, uid, bot):
         await _db_up(jid, status="queued", error="", created_at=time.time())
 
         # ── Global queue: only 1 merge running at a time ──
-        async with _mg_global_lock:
+        # Use a timeout so a dead lock never permanently blocks new jobs
+        try:
+            got_lock = await asyncio.wait_for(_mg_global_lock.acquire(), timeout=1.0)
+        except asyncio.TimeoutError:
+            # Lock is held — wait for it to free, checking for stop every 2s
+            while _mg_global_lock.locked():
+                await asyncio.sleep(2)
+                fresh = await _db_get(jid)
+                if not fresh or fresh.get("status") in ("stopped",): return
+            await _mg_global_lock.acquire()
+        try:
             fresh = await _db_get(jid)
-            if not fresh or fresh.get("status") in ("stopped", "paused"): return
+            if not fresh or fresh.get("status") in ("stopped", "paused"):
+                _mg_global_lock.release()
+                return
             await _db_up(jid, status="scanning", error="")
+            _mg_global_lock.release()
+        except Exception:
+            try: _mg_global_lock.release()
+            except: pass
+            raise
+
 
         # ══════════════════════════════════════════════════════════════════
         # PHASE 0 — Pre-download size scan

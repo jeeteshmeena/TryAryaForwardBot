@@ -47,6 +47,56 @@ async def sysmode_cmd(bot, message):
         )
         await message.reply(text)
 
+
+@Client.on_message(filters.private & filters.command(["menuimage", "setimage", "setmenuimage"]))
+async def main_bot_menuimage(bot, message):
+    from config import Config
+    if message.from_user.id not in Config.BOT_OWNER_ID:
+        return
+    if message.reply_to_message and message.reply_to_message.photo:
+        photo_file_id = message.reply_to_message.photo.file_id
+        try:
+            import plugins.share_bot as share_mod
+            for bot_id, client in share_mod.share_clients.items():
+                about = await db.get_share_bot_about(bot_id) or {}
+                about['welcome_image_id'] = photo_file_id
+                await db.set_share_bot_about(bot_id, about)
+            await message.reply_text(
+                f"<b>✅ Menu Image Updated!</b>\n\n"
+                f"Updated across all {len(share_mod.share_clients)} share bot(s). "
+                "This image will now show in the Welcome screen."
+            )
+        except Exception as e:
+            await message.reply_text(f"<b>❌ Error:</b> <code>{e}</code>")
+    else:
+        await message.reply_text(
+            "<b>‣ To set the Menu Image:</b>\nPlease reply to an image with <code>/menuimage</code>.\n\n"
+            "The image will be set for all active share bots."
+        )
+
+
+@Client.on_message(filters.private & filters.command(["resetmergelock", "fixmerge"]))
+async def reset_merge_lock_cmd(bot, message):
+    from config import Config
+    if message.from_user.id not in Config.BOT_OWNER_ID:
+        return
+    try:
+        from plugins.merger import _mg_global_lock, _mg_tasks
+        if _mg_global_lock.locked():
+            _mg_global_lock.release()
+            await message.reply(
+                "<b>✅ Merge Lock Released!</b>\n\n"
+                "The global merger lock was stuck and has been forcibly released. "
+                "You can now start new merge jobs."
+            )
+        else:
+            await message.reply(
+                "<b>ℹ️ Merge Lock is Not Stuck</b>\n\n"
+                f"Lock is currently <b>free</b>. Active tasks: {len(_mg_tasks)}"
+            )
+    except Exception as e:
+        await message.reply(f"<b>❌ Error:</b> <code>{e}</code>")
+
 #===================Run Function===================#
 
 @Client.on_message(filters.private & filters.command(["fwd", "forward"]))
