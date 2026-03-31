@@ -270,20 +270,29 @@ def _parse_link(text):
 
 async def _safe_resolve_peer(client, chat_id):
     try:
-        await client.get_chat(chat_id)
+        await asyncio.wait_for(client.get_chat(chat_id), timeout=20)
+    except asyncio.TimeoutError:
+        logger.warning(f"[MG] _safe_resolve_peer: get_chat({chat_id}) timed out, continuing anyway")
     except Exception as e:
         err_str = str(e).upper()
         if "PEER_ID_INVALID" in err_str or "CHANNEL_INVALID" in err_str or "PEER_ID_NOT_HANDLED" in err_str:
             try:
-                me = await client.get_me()
+                me = await asyncio.wait_for(client.get_me(), timeout=15)
                 if not getattr(me, 'is_bot', False):
-                    async for _ in client.get_dialogs(limit=200): pass
-                await client.get_chat(chat_id)
+                    # Warm up dialogs cache with a strict timeout to prevent hanging
+                    try:
+                        async def _drain_dialogs():
+                            async for _ in client.get_dialogs(limit=50): pass
+                        await asyncio.wait_for(_drain_dialogs(), timeout=30)
+                    except asyncio.TimeoutError:
+                        logger.warning(f"[MG] get_dialogs timed out for {chat_id}, proceeding anyway")
+                await asyncio.wait_for(client.get_chat(chat_id), timeout=20)
+            except asyncio.TimeoutError:
+                logger.warning(f"[MG] _safe_resolve_peer second get_chat timed out for {chat_id}")
             except Exception as e2:
                 logger.warning(f"Failed to resolve {chat_id}: {e2}")
-                raise e2
         else:
-            raise e
+            logger.warning(f"[MG] _safe_resolve_peer non-fatal error for {chat_id}: {e}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -668,7 +677,16 @@ async def _run_job(jid, uid, bot):
             except: pass
             return
         try:
-            client = await start_clone_bot(_CLIENT.client(acc))
+            client = await asyncio.wait_for(
+                start_clone_bot(_CLIENT.client(acc)),
+                timeout=60
+            )
+        except asyncio.TimeoutError:
+            err_msg = "❌ <b>Merge failed — account connection timed out (60s).</b>\n\nThe session may be expired or Telegram is unreachable. Please check your account in /settings → Accounts."
+            await _db_up(jid, status="error", error="Account connection timed out")
+            try: await bot.send_message(uid, err_msg)
+            except: pass
+            return
         except Exception as conn_err:
             err_msg = f"❌ <b>Merge failed — could not connect account:</b>\n<code>{conn_err}</code>\n\nPlease check your session string in /settings → Accounts."
             await _db_up(jid, status="error", error=str(conn_err)[:300])
