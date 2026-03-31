@@ -813,7 +813,7 @@ async def _build_share_links(bot, user_id, sj, info_msg):
 
         report_lines = [
             f"<b>»  Share Links Generated!</b>",
-            f"",
+            f"\n<blockquote expandable>",
             f"»  <b>Files processed:</b> {total_count}",
             f"🎯 <b>Episode range:</b> {first_ep_num}–{last_ep_num}",
             f"»  <b>Link buttons created:</b> {len(raw_buttons)}",
@@ -839,7 +839,7 @@ async def _build_share_links(bot, user_id, sj, info_msg):
                 miss_preview += f" (+{len(missing_eps)-15} more)"
             report_lines.append(f"»  <b>Missing episodes ({len(missing_eps)}):</b> {miss_preview}")
 
-
+        report_lines.append("</blockquote>")
         report_lines.append(f"")
         report_lines.append(f"<i>Users click any button to receive their episodes from @{bot_usr}.</i>")
 
@@ -911,35 +911,28 @@ async def _build_share_links(bot, user_id, sj, info_msg):
 
                 en_body = (
                     _sc("This ") + story_sz + _sc(" is completed by ") + bot_link +
-                    _sc(". I have tried to make everything correct and have also provided"
-                        " you with a final report containing all details. Some episodes may"
-                        " naturally be missing — nothing can be done about that. But if 10+"
-                        " episodes are missing, you can complain in support. Non-logical or"
-                        " unparsed files will be available in '»  Extra/Skipped files'."
-                        " Some duplicates are shown — either real duplicates, or the uploader"
-                        " uploaded multiple files with the same name. I am not responsible"
-                        " as these files were forwarded via Arya bot and not scraped.")
+                    _sc(". I've tried to ensure accuracy and provided a final report with details. "
+                        "Missing episodes can occur naturally—nothing can be done. "
+                        "If 10+ are missing, contact support. Unparsed files are safely mapped "
+                        "inside buttons. Duplicates may appear if the source had identically "
+                        "named files. I am not responsible for the content as these files are "
+                        "purely forwarded via Arya bot, strictly not scraped.")
                 )
 
                 hi_body = (
-                    f"यह {story_sz} {bot_link} द्वारा पूरी कर दी गई है। मैंने सब कुछ सही करने की"
-                    " कोशिश की है और आपको सभी विवरणों के साथ एक अंतिम रिपोर्ट भी प्रदान की है।"
-                    " कुछ एपिसोड स्वाभाविक रूप से गायब हो सकते हैं — कृपया घबराएं नहीं,"
-                    " उसका कुछ नहीं किया जा सकता। लेकिन अगर 10+ एपिसोड गायब हैं, तो आप"
-                    " सपोर्ट में शिकायत कर सकते हैं। गैर-तार्किक या अनपार्स की गई फ़ाइलें"
-                    " '»  Extra/Skipped files' में उपलब्ध होंगी। कुछ डुप्लिकेट दिखाए गए हैं —"
-                    " या तो वे वास्तविक डुप्लिकेट हैं, या अपलोडर ने एक ही नाम से कई फ़ाइलें"
-                    " अपलोड की हैं। मैं जिम्मेदार नहीं हूँ क्योंकि ये फ़ाइलें आर्या बॉट के"
-                    " माध्यम से अग्रेषित की गई थीं, स्क्रैप नहीं की गई थीं।"
+                    f"यह {story_sz} {bot_link} द्वारा पूरी की गई है। मैंने सटीकता सुनिश्चित करने का "
+                    "प्रयास किया है और अंतिम रिपोर्ट संलग्न है। गायब एपिसोड स्वाभाविक हैं। "
+                    "अगर 10+ गायब हैं, तो सपोर्ट से संपर्क करें। अनपार्स फ़ाइलें सुरक्षित रूप से "
+                    "बटनों में मैप की गई हैं। डुप्लिकेट फ़ाइलें स्रोत की वजह से हो सकती हैं। मैं "
+                    "सामग्री के लिए जिम्मेदार नहीं हूँ क्योंकि ये फ़ाइलें आर्या बॉट के माध्यम से "
+                    "अग्रेषित हैं, बिल्कुल स्क्रैप नहीं की गई हैं।"
                 )
 
                 dm_cap = (
-                    f"<b>Report File</b>\n\n<blockquote>{dm_header}{en_body}</blockquote>"
-                    f"\n\n<blockquote>{hi_body}</blockquote>"
+                    f"<b>Report File</b>\n\n<blockquote expandable>{dm_header}{en_body}\n\n{hi_body}</blockquote>"
                 )
                 ch_cap = (
-                    f"<b>Report File</b>\n\n<blockquote>{ch_header}{en_body}</blockquote>"
-                    f"\n\n<blockquote>{hi_body}</blockquote>"
+                    f"<b>Report File</b>\n\n<blockquote expandable>{ch_header}{en_body}\n\n{hi_body}</blockquote>"
                 )
 
             else:
@@ -953,18 +946,15 @@ async def _build_share_links(bot, user_id, sj, info_msg):
                     + _sc("All currently available files have been posted here. "
                            "New episodes will be added as they arrive. Enjoy and stay tuned!")
                 )
-                dm_cap = f"<b>Status</b>\n\n<blockquote>{dm_ongoing}</blockquote>"
-                ch_cap = f"<b>Status</b>\n\n<blockquote>{ch_ongoing}</blockquote>"
+                dm_cap = f"<b>Status</b>\n\n<blockquote expandable>{dm_ongoing}</blockquote>"
+                ch_cap = f"<b>Status</b>\n\n<blockquote expandable>{ch_ongoing}</blockquote>"
 
             # Send to admin DM — independent of channel
             try:
                 await bot.send_document(
                     user_id, report_bytes,
-                    caption="<b>Report File Generated</b>", parse_mode=__import__("pyrogram.enums", fromlist=["ParseMode"]).ParseMode.HTML,
+                    caption=dm_cap, parse_mode=__import__("pyrogram.enums", fromlist=["ParseMode"]).ParseMode.HTML,
                     file_name=report_bytes.name
-                )
-                await bot.send_message(
-                    user_id, dm_cap, parse_mode=__import__("pyrogram.enums", fromlist=["ParseMode"]).ParseMode.HTML
                 )
             except Exception as dm_err:
                 logger.error(f"[Report] DM send failed: {dm_err}", exc_info=True)
@@ -974,11 +964,8 @@ async def _build_share_links(bot, user_id, sj, info_msg):
                 report_bytes.seek(0)
                 await poster.send_document(
                     sj['target'], report_bytes,
-                    caption="<b>Report File</b>", parse_mode=__import__("pyrogram.enums", fromlist=["ParseMode"]).ParseMode.HTML,
+                    caption=ch_cap, parse_mode=__import__("pyrogram.enums", fromlist=["ParseMode"]).ParseMode.HTML,
                     file_name=report_bytes.name
-                )
-                await poster.send_message(
-                    sj['target'], ch_cap, parse_mode=__import__("pyrogram.enums", fromlist=["ParseMode"]).ParseMode.HTML
                 )
             except Exception as ch_err:
                 logger.error(f"[Report] Channel send failed: {ch_err}", exc_info=True)
