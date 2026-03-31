@@ -12,41 +12,6 @@ from pyrogram.errors.exceptions.bad_request_400 import ChannelInvalid, ChatAdmin
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery, KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove
  
 #===================Run Function===================#
-@Client.on_message(filters.private & filters.command("sysmode"))
-async def sysmode_cmd(bot, message):
-    from config import Config
-    if message.from_user.id not in Config.BOT_OWNER_ID:
-        return await message.reply("Only the owner can use this command.")
-        
-    current = await db.get_sys_mode()
-    
-    if "pc" in message.text.lower():
-        await db.set_sys_mode("pc")
-        await message.reply(
-            "<b>💻 System Mode Set To: LOCAL PC!</b>\n\n"
-            "<i>• Auto-Merger RAM footprint: <b>High</b></i>\n"
-            "<i>• Chunk size per processing: <b>25 Files</b></i>\n"
-            "<i>• Max total merge size: <b>150 GB</b></i>\n\n"
-            "Bot will now use full system resources!"
-        )
-    elif "vps" in message.text.lower():
-        await db.set_sys_mode("vps")
-        await message.reply(
-            "<b>☁️ System Mode Set To: VPS SERVER!</b>\n\n"
-            "<i>• Auto-Merger RAM footprint: <b>Low</b></i>\n"
-            "<i>• Chunk size per processing: <b>5 Files</b></i>\n"
-            "<i>• Max total merge size: <b>6 GB</b></i>\n\n"
-            "Bot will now run safely without Out-Of-Memory crashes!"
-        )
-    else:
-        text = (
-            f"<b>⚙️ Current System Mode: {current.upper()}</b>\n\n"
-            f"Control how much RAM the bot uses for heavy tasks like merging:\n\n"
-            f"• <code>/sysmode vps</code> — Safe, low-RAM mode (5 files max chunk)\n"
-            f"• <code>/sysmode pc</code> — High-Performance mode (25 files max chunk)\n"
-        )
-        await message.reply(text)
-
 
 @Client.on_message(filters.private & filters.command(["menuimage", "setimage", "setmenuimage"]))
 async def main_bot_menuimage(bot, message):

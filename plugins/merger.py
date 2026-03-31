@@ -635,19 +635,11 @@ async def _run_job(jid, uid, bot):
     job = await _db_get(jid)
     if not job: return
 
-    sys_mode = await db.get_sys_mode()
-    if sys_mode == "pc":
-        # Ultra PC Mode: High power, high resources
-        CHUNK_SIZE = 25
-        MAX_TOTAL_GB = 150.0  
-        MAX_CHUNK_GB = 15.0
-        MAX_FILES = 999
-    else:
-        # Standard VPS Mode: Low RAM usage, strict limits
-        CHUNK_SIZE = 5
-        MAX_TOTAL_GB = 6.0
-        MAX_CHUNK_GB = 2.0
-        MAX_FILES = 150
+    # Ultra PC Mode fixed default: High power, high resources
+    CHUNK_SIZE = 25
+    MAX_TOTAL_GB = 150.0  
+    MAX_CHUNK_GB = 15.0
+    MAX_FILES = 999
 
     ev = _mg_paused.get(jid)
     if not ev:
