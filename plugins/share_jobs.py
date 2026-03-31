@@ -592,72 +592,15 @@ async def _build_share_links(bot, user_id, sj, info_msg):
 
 
         all_ep_nums    = sorted(ep_to_msgs.keys())
-        first_ep_num   = all_ep_nums[0]
-        last_ep_num    = all_ep_nums[-1]
+        first_ep_num   = all_ep_nums[0] if all_ep_nums else 0
+        last_ep_num    = all_ep_nums[-1] if all_ep_nums else 0
 
         # Missing episode detection (only meaningful in individual mode)
         missing_eps: list = []
-        if not GROUPED_MODE:
+        if not GROUPED_MODE and all_ep_nums:
             expected_range = set(range(first_ep_num, last_ep_num + 1))
             present_set    = set(all_ep_nums)
             missing_eps    = sorted(expected_range - present_set)
-
-        #  PASS 3: Sequential gap-fill for numberless files 
-        # Files that had no extractable episode number (e.g. "Veeraangadh.mp3")
-        # are assigned to the nearest sequential gap using their chronological
-        # position between neighbouring parsed episodes.
-        gap_filled_eps: list = []
-        if not GROUPED_MODE and unparseable_count > 0 and missing_eps:
-            # Build an ordered list of all messages with their resolved ep (or None)
-            id_to_ep: dict = {m.id: ep for m, ep, _, _ in parsed_msgs}
-            ordered_all = [(msg, id_to_ep.get(msg.id, None)) for msg in all_valid_msgs]
-            missing_set = set(missing_eps)
-            n_all = len(ordered_all)
-            i_all = 0
-            while i_all < n_all and missing_set:
-                if ordered_all[i_all][1] is not None:
-                    i_all += 1
-                    continue
-                # Found a null-run (consecutive numberless messages)
-                run_s = i_all
-                while i_all < n_all and ordered_all[i_all][1] is None:
-                    i_all += 1
-                run_e = i_all  # exclusive
-
-                # Neighbouring resolved episodes
-                prev_ep = None
-                for j in range(run_s - 1, -1, -1):
-                    if ordered_all[j][1] is not None:
-                        prev_ep = ordered_all[j][1]; break
-                next_ep = None
-                for j in range(run_e, n_all):
-                    if ordered_all[j][1] is not None:
-                        next_ep = ordered_all[j][1]; break
-
-                # Starting candidate(s) for the gap fill
-                if prev_ep is not None:
-                    start_candidate = prev_ep + 1
-                elif next_ep is not None:
-                    start_candidate = max(1, next_ep - (run_e - run_s))
-                else:
-                    continue
-
-                # Assign sequentially from start_candidate
-                offset = 0
-                for idx in range(run_s, run_e):
-                    candidate = start_candidate + offset
-                    offset += 1
-                    # Only assign if this ep is actually missing  AND within plausible range
-                    if candidate in missing_set and (next_ep is None or candidate < next_ep):
-                        filled_msg = ordered_all[idx][0]
-                        ep_to_msgs[candidate] = [filled_msg.id]
-                        missing_set.discard(candidate)
-                        gap_filled_eps.append(candidate)
-                        ordered_all[idx] = (filled_msg, candidate)
-
-            missing_eps = sorted(missing_set)
-            # Rebuild all_ep_nums after gap fill
-            all_ep_nums = sorted(ep_to_msgs.keys())
 
         #  BUILD BUCKETS 
         # GROUPED_MODE: each file = 1 button using its own range label
@@ -673,47 +616,62 @@ async def _build_share_links(bot, user_id, sj, info_msg):
                 if mids and mids[0] == msg.id:
                     buckets.append((ep_s, ep_e, [msg.id]))
         else:
-            # Individual mode: dynamic-size buckets
-            # Buckets align to math boundaries (1-10, 11-20, 21-30, …)
-            # so a story starting at ep 21 with batch=10 creates a "21–30" button,
-            # NOT "1-20" (which are nonexistent) — the missing 1-20 simply aren't there.
-            msg_to_end = {}
-            for msg_obj, ep_s, ep_e, is_r in parsed_msgs:
-                msg_to_end[msg_obj.id] = max(ep_e, msg_to_end.get(msg_obj.id, ep_e))
-
+            # Individual mode: dynamic-size buckets using chronological traversal
+            msg_to_ep = {m.id: ep for m, ep, _, _ in parsed_msgs}
+            msg_to_end = {m.id: ep_e for m, _, ep_e, _ in parsed_msgs}
+            
             b_s = None
             b_e = None
             b_mids = []
-            
-            for ep in all_ep_nums:
-                # Initialize first bucket — always start at the math boundary, not at `ep`
-                if b_s is None:
-                    math_start = ((ep - 1) // batch_size) * batch_size + 1
-                    b_s = math_start          # KEY FIX: was max(ep, math_start) — that caused ep=21 to set b_s=21
-                    b_e = math_start + batch_size - 1
+            pending_unparsed = []
 
-                # If episode falls completely outside the bucket's current range, flush
-                if ep > b_e:
-                    if b_mids:              # only append non-empty buckets
-                        buckets.append([b_s, b_e, b_mids])
-                    math_start = ((ep - 1) // batch_size) * batch_size + 1
-                    b_s = math_start
-                    b_e = math_start + batch_size - 1
-                    b_mids = []
+            all_msgs_sorted = sorted(all_valid_msgs, key=lambda x: x.id)
 
-                for mid in ep_to_msgs[ep]:
+            for m in all_msgs_sorted:
+                mid = m.id
+                if mid in msg_to_ep:
+                    ep = msg_to_ep[mid]
+                    math_start = ((ep - 1) // batch_size) * batch_size + 1
+                    math_end   = math_start + batch_size - 1
+                    
+                    if b_s is None:
+                        b_s = math_start
+                        b_e = math_end
+                    elif ep > b_e:
+                        if b_mids:
+                            buckets.append([b_s, b_e, b_mids])
+                        b_s = math_start
+                        b_e = math_end
+                        b_mids = []
+
+                    # Flush any unparsed messages before this bucket started into this bucket
+                    if pending_unparsed:
+                        for umid in pending_unparsed:
+                            if umid not in b_mids: b_mids.append(umid)
+                        pending_unparsed = []
+
                     if mid not in b_mids:
                         b_mids.append(mid)
-                        # Dynamically extend bucket strictly for the span of this specific file
-                        span_e = msg_to_end.get(mid, ep)
-                        if span_e > b_e:
-                            b_e = span_e
+                        
+                    span_e = msg_to_end.get(mid, ep)
+                    if span_e > b_e:
+                        b_e = span_e
+                else:
+                    # Unparseable message -> Embed it natively!
+                    if b_s is None:
+                        pending_unparsed.append(mid)
+                    else:
+                        if mid not in b_mids:
+                            b_mids.append(mid)
 
             if b_s is not None and b_mids:
                 buckets.append([b_s, b_e, b_mids])
+            elif pending_unparsed:
+                buckets.append(["Extra", "Files", pending_unparsed])
+                pending_unparsed = []
 
-            # Cap ONLY last bucket label at actual last ep (cosmetic only)
-            if buckets:
+            # Cap ONLY last bucket label at actual last ep (cosmetic only, if it has numeric ends)
+            if buckets and buckets[-1][0] != "Extra" and last_ep_num:
                 last_b = buckets[-1]
                 buckets[-1] = (last_b[0], min(last_b[1], last_ep_num), last_b[2])
 
@@ -734,24 +692,11 @@ async def _build_share_links(bot, user_id, sj, info_msg):
                 "ep_end":   b_e,
             })
 
-        # Process unparseable/skipped files into a separate button
+        # Calculate unparseable count for the display report
         added_msg_ids = set()
         for mids in ep_to_msgs.values():
             added_msg_ids.update(mids)
-            
-        unparseable_msgs = [m.id for m in all_valid_msgs if m.id not in added_msg_ids]
-        if unparseable_msgs:
-            uuid_str = str(uuid.uuid4()).replace('-', '')[:16]
-            await db.save_share_link(
-                uuid_str, unparseable_msgs, source_chat_id,
-                protect=protect, access_hash=db_access_hash
-            )
-            url = f"https://t.me/{bot_usr}?start={uuid_str}"
-            raw_buttons.append({
-                "btn":      InlineKeyboardButton("»  " + _sc("Extra/Skipped Files"), url=url),
-                "ep_start": "Extra",
-                "ep_end":   "Files",
-            })
+        unparseable_msgs_list = [m.id for m in all_valid_msgs if m.id not in added_msg_ids]
 
 
         #  PHASE 3: Post to target channel 
@@ -833,8 +778,8 @@ async def _build_share_links(bot, user_id, sj, info_msg):
                 miss_preview += f" (+{len(missing_eps)-15} more)"
             report_lines.append(f"»  <b>Missing episodes ({len(missing_eps)}):</b> {miss_preview}")
 
-        if unparseable_msgs:
-            report_lines.append(f"🚫  <b>Unparseable messages skipped ({len(unparseable_msgs)}):</b> Added to 'Extra/Skipped Files'")
+        if unparseable_msgs_list:
+            report_lines.append(f"🚫  <b>Unparseable messages ({len(unparseable_msgs_list)}):</b> Kept at original positions inside buttons.")
 
 
         report_lines.append(f"")
@@ -872,12 +817,12 @@ async def _build_share_links(bot, user_id, sj, info_msg):
             plain_report.append("-" * 50)
             plain_report.append(f"MISSING EPISODES ({len(missing_eps)}):")
             plain_report.append("  " + ", ".join(str(e) for e in missing_eps))
-        if unparseable_msgs:
+        if unparseable_msgs_list:
             plain_report.append("-" * 50)
-            plain_report.append(f"UNPARSEABLE FILES: {len(unparseable_msgs)}")
+            plain_report.append(f"UNPARSEABLE FILES: {len(unparseable_msgs_list)}")
             plain_report.append(f"  These files had no readable episode number in their name.")
-            plain_report.append(f"  They are accessible via the Extra/Skipped Files button.")
-            plain_report.append("  IDs: " + ", ".join(str(m) for m in unparseable_msgs))
+            plain_report.append(f"  They were naturally embedded into the buttons at their original chronological positions.")
+            plain_report.append("  IDs: " + ", ".join(str(m) for m in unparseable_msgs_list))
         plain_report += [
             "=" * 50,
             "Note: Duplicates = multiple files had the same episode number.",
