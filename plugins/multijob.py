@@ -340,27 +340,38 @@ async def _run_multijob(job_id: str, user_id: int, bot=None):
         replacements   = configs.get('replacements', {})
 
         #  Destination progress bar 
+        acc_name = acc.get('name', 'Userbot')
+
         def _mj_prog_text(fwd: int, total: int, status: str = "running") -> str:
-            pct = min(int(fwd * 100 / total), 100) if total > 0 else 0
-            bar = "█" * (pct // 5) + "░" * (20 - pct // 5)
             if status == "done":
-                head = "✅ <b>Multi Job Complete!</b>"
-                body = f"<b>All {fwd} files forwarded successfully.</b>"
+                return (
+                    f"➤ <b>✓ ɩᴜʟᴛɪ ᴊᴏʙ ᴄᴏᴍᴘʟᴇᴛᴇ!</b>\n"
+                    f"➤ <b>ᴀᴄᴄᴏᴜɴᴛ:</b> <code>{acc_name}</code>\n\n"
+                    f"➤ ᴀʟʟ <u>{fwd}</u> ғɪʟᴇѕ ʜᴀᴠᴇ ʙᴇᴇɴ ᴍᴏᴠᴇᴅ ѕᴜᴄᴄᴇѕѕғᴜʟʟʟʸ!\n\n"
+                    f"<i>ᴘᴏᴡᴇʀᴇᴅ ʙʸ ᴀʀʸᴀ ғᴏʀᴡᴀʀᴅ ʙᴏᴛ</i>"
+                )
             elif status == "stopped":
-                head = "⏹ <b>Multi Job Stopped</b>"
-                body = f"<b>Stopped at {fwd} / {total if total else '?'} files.</b>"
+                return (
+                    f"➤ <b>⏹ ᴊᴏʙ ѕᴛᴏᴘᴘᴇᴅ</b>\n"
+                    f"➤ <b>ᴀᴄᴄᴏᴜɴᴛ:</b> <code>{acc_name}</code>\n\n"
+                    f"➤ ғɪʟᴇѕ ѕᴇɴᴛ: <code>{fwd}</code> / <code>{total if total else '?'}</code>\n\n"
+                    f"<i>ᴘᴏᴡᴇʀᴇᴅ ʙʸ ᴀʀʸᴀ ғᴏʀᴡᴀʀᴅ ʙᴏᴛ</i>"
+                )
             elif status == "error":
-                head = "‣  <b>Multi Job Error</b>"
-                body = f"<b>Failed after forwarding {fwd} files.</b>"
+                return (
+                    f"➤ <b>⚠️ ᴊᴏʙ ᴇʀʀᴏʀ</b>\n"
+                    f"➤ <b>ᴀᴄᴄᴏᴜɴᴛ:</b> <code>{acc_name}</code>\n\n"
+                    f"➤ ғɪʟᴇѕ ѕᴇɴᴛ ʙᴇғᴏʀᴇ ᴇʀʀᴏʀ: <code>{fwd}</code>\n\n"
+                    f"<i>ᴘᴏᴡᴇʀᴇᴅ ʙʸ ᴀʀʸᴀ ғᴏʀᴡᴀʀᴅ ʙᴏᴛ</i>"
+                )
             else:
-                head = "📤 <b>Multi Job Running — please wait…</b>"
-                body = f"<b>Files:</b> <code>{fwd}</code> / <code>{total if total else '?'}</code>"
-            return (
-                f"{head}\n\n"
-                f"<code>[{bar}]</code>  <b>{pct}%</b>\n"
-                f"{body}\n\n"
-                f"<i>Powered by Arya Forward Bot</i>"
-            )
+                total_str = str(total) if total else '?'
+                return (
+                    f"<b>➤ {acc_name}</b>\n"
+                    f"➤ ᴛʀаɴѕғᴇʀʀɪɴɢ ғɪʟᴇѕ ᴘʟᴇᴀѕᴇ ᴡᴀɪᴛ...\n\n"
+                    f"➤ <b>ғɪʟᴇѕ ѕᴇɴᴛ:</b> <code>{fwd}</code> / <code>{total_str}</code>\n\n"
+                    f"<i>ᴘᴏᴡᴇʀᴇᴅ ʙʸ ᴀʀʸᴀ ғᴏʀᴡᴀʀᴅ ʙᴏᴛ</i>"
+                )
 
         mj_total = max(0, end_id - int(job.get("start_id") or 1)) if end_id > 0 else 0
         mj_prog_msg_id = job.get("prog_msg_id", None)
