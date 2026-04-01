@@ -406,7 +406,6 @@ async def _ffmpeg_merge(file_list, output_path, metadata=None, mtype="audio", co
 
 
         if not needs_reencode:
-            # Try lossless concat copy first (only safe for audio output or pure video concat)
             cmd = ["ffmpeg","-y","-threads","2","-f","concat","-safe","0","-i",lst]
             if cover and os.path.exists(cover) and mtype == "audio":
                 cmd += ["-i", cover, "-map","0:a","-map","1:0","-c:a","copy",
@@ -415,7 +414,6 @@ async def _ffmpeg_merge(file_list, output_path, metadata=None, mtype="audio", co
                         "-metadata:s:v","comment=Cover (front)",
                         "-max_muxing_queue_size", "4096"]
             elif mtype == "video":
-                # Video concat: add faststart so YouTube can process it
                 cmd += ["-c", "copy", "-movflags", "+faststart", "-max_muxing_queue_size", "4096"]
             else:
                 cmd += ["-c", "copy", "-max_muxing_queue_size", "4096"]
@@ -428,22 +426,30 @@ async def _ffmpeg_merge(file_list, output_path, metadata=None, mtype="audio", co
             ok, err = await _run_cmd(cmd, 7200)
             if ok and os.path.exists(abs_out) and os.path.getsize(abs_out) > 1000:
                 return True, ""
-        # Re-encode path
+        
         cmd2 = ["ffmpeg","-y","-threads","2"]
-        eff_cover = video_cover or cover  # use video_cover if available
+        eff_cover = video_cover or cover
         if make_video and eff_cover and os.path.exists(eff_cover) and mtype == "audio":
             if outro_cover and len([o for o in (outro_cover if isinstance(outro_cover, list) else [outro_cover]*4) if isinstance(o, str) and os.path.exists(o)]) == 4:
                 outros = outro_cover if isinstance(outro_cover, list) else [outro_cover] * 4
                 valid_outros = [o for o in outros if isinstance(o, str) and os.path.exists(o)]
 
-                # ══ Step 1: Merge audio only to get the EXACT real duration ══
                 tmp_audio = output_path + ".tmp_audio.m4a"
                 audio_cmd = ["ffmpeg","-y","-threads","2"]
                 for p in file_list: audio_cmd += ["-i", os.path.abspath(p)]
-                fc = "".join(f"[{i}:a]" for i in range(len(file_list))) + f"concat=n={len(file_list)}:v=0:a=1[a1]"
-                if atempo: fc += f";[a1]{atempo}[a2]"
-                map_lbl = "[a2]" if atempo else "[a1]"
-                audio_cmd += ["-filter_complex", fc, "-map", map_lbl, "-vn","-c:a","aac","-b:a","192k", tmp_audio]
+                
+                if len(file_list) == 1:
+                    fc = f"[0:a]{atempo}[a2]" if atempo else ""
+                    map_lbl = "[a2]" if atempo else "[0:a]"
+                else:
+                    fc = "".join(f"[{i}:a]" for i in range(len(file_list))) + f"concat=n={len(file_list)}:v=0:a=1[a1]"
+                    if atempo: fc += f";[a1]{atempo}[a2]"
+                    map_lbl = "[a2]" if atempo else "[a1]"
+                
+                if fc:
+                    audio_cmd += ["-filter_complex", fc]
+                audio_cmd += ["-map", map_lbl, "-vn","-c:a","aac","-b:a","192k", tmp_audio]
+                
                 a_ok, a_err = await _run_cmd(audio_cmd, 7200)
                 if not a_ok or not os.path.exists(tmp_audio):
                     return False, "Audio merge failed: " + a_err
@@ -452,8 +458,6 @@ async def _ffmpeg_merge(file_list, output_path, metadata=None, mtype="audio", co
                 if real_dur <= 0:
                     real_dur = total_duration / max(speed, 0.1) if total_duration else 3600 * 5
 
-                # ══ Step 2: Evenly space 4 outros across the audio duration ══
-                # Each outro is 5 seconds; place them at 25%, 50%, 75%, and 95% marks
                 outro_positions = [
                     max(0.0, real_dur * 0.25),
                     max(0.0, real_dur * 0.50),
@@ -461,47 +465,17 @@ async def _ffmpeg_merge(file_list, output_path, metadata=None, mtype="audio", co
                     max(0.0, real_dur * 0.95 - 5),
                 ]
 
-                # ══ Step 3: Build overlay filter chain ══
-                # Base: loop cover image for real_dur seconds at 1 fps
-                # Then overlay each outro with 'enable' timing
-                # [0:v] = looped cover  [1:v]..[4:v] = 4 outro images
-                filter_parts = []
-                prev_label = "[0:v]"
-                for i, (outro_path, pos) in enumerate(zip(valid_outros, outro_positions)):
-                    end_t = pos + 5.0
-                    out_label = f"[v{i}]" if i < 3 else "[vout]"
-                    # Scale outro to same 1280x720
-                    filter_parts.append(
-                        f"[{i+1}:v]scale=1280:720:force_original_aspect_ratio=decrease,"
-                        f"pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p[outro{i}];"
-                        f"{prev_label}[outro{i}]overlay=0:0:enable='between(t,{pos:.1f},{end_t:.1f})'{out_label}"
-                    )
-                    prev_label = out_label
-
-                vf_complex = "; ".join(filter_parts)
-                # Main cover scale must match
-                cover_scale = f"[0:v]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p[0:v]"
-
-                # Build full filter_complex
-                full_filter = f"{vf_complex}"
-
-                # Build input list: cover + 4 outro images + audio
-                cmd2 = ["ffmpeg","-y"]
-                cmd2 += ["-loop","1","-framerate","1","-t",str(real_dur),"-i", os.path.abspath(eff_cover)]
+                cmd2 = ["ffmpeg","-y", "-loop","1","-framerate","1","-t",str(real_dur),"-i", os.path.abspath(eff_cover)]
                 for op in valid_outros:
                     cmd2 += ["-loop","1","-framerate","1","-t","5","-i", os.path.abspath(op)]
                 cmd2 += ["-i", tmp_audio]
 
-                # Filter: scale cover, then overlay outros
-                n_outros = len(valid_outros)  # 4
+                n_outros = len(valid_outros)
                 audio_input_idx = n_outros + 1
-                # Simple filter_complex: scale cover, then overlay each outro
-                fc_parts = []
-                # Scale the cover first
-                fc_parts.append(
-                    f"[0:v]scale=1280:720:force_original_aspect_ratio=decrease,"
-                    f"pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p[base]"
-                )
+                fc_parts = [
+                    "[0:v]scale=1280:720:force_original_aspect_ratio=decrease,"
+                    "pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p[base]"
+                ]
                 prev = "[base]"
                 for i, pos in enumerate(outro_positions):
                     end_t = pos + 5.0
@@ -537,16 +511,23 @@ async def _ffmpeg_merge(file_list, output_path, metadata=None, mtype="audio", co
             else:
                 cmd2 += ["-loop", "1", "-framerate", "1", "-i", os.path.abspath(eff_cover)]
         else:
-            cmd2 += ["-loop", "1", "-framerate", "1", "-i", os.path.abspath(eff_cover)] if (make_video and eff_cover and os.path.exists(eff_cover) and mtype == "audio") else []
+            if make_video and eff_cover and os.path.exists(eff_cover) and mtype == "audio":
+                cmd2 += ["-loop", "1", "-framerate", "1", "-i", os.path.abspath(eff_cover)]
 
         if make_video and eff_cover and os.path.exists(eff_cover) and mtype == "audio" and not outro_cover:
             for p in file_list: cmd2 += ["-i", os.path.abspath(p)]
-            fc = "".join(f"[{i+1}:a]" for i in range(len(file_list))) + f"concat=n={len(file_list)}:v=0:a=1[a1]"
-            if atempo: fc += f";[a1]{atempo}[a2]"
-            map_albl = "[a2]" if atempo else "[a1]"
-            fc += ";[0:v]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p[v1]"
+            
+            if len(file_list) == 1:
+                fc = f"[1:a]{atempo}[a2]" if atempo else ""
+                map_albl = "[a2]" if atempo else "[1:a]"
+            else:
+                fc = "".join(f"[{i+1}:a]" for i in range(len(file_list))) + f"concat=n={len(file_list)}:v=0:a=1[a1]"
+                if atempo: fc += f";[a1]{atempo}[a2]"
+                map_albl = "[a2]" if atempo else "[a1]"
+                
+            fc = (fc + ";") if fc else ""
+            fc += "[0:v]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p[v1]"
             cmd2 += ["-filter_complex", fc, "-map", "[v1]", "-map", map_albl]
-            # CRITICAL: -movflags +faststart is REQUIRED for YouTube to be able to process the file.
             cmd2 += [
                 "-c:v","libx264","-preset","superfast","-tune","stillimage",
                 "-c:a","aac","-b:a","192k",
@@ -563,43 +544,49 @@ async def _ffmpeg_merge(file_list, output_path, metadata=None, mtype="audio", co
                          "-c:a","aac","-b:a","128k","-movflags","+faststart","-max_muxing_queue_size","4096"]
             else:
                 for p in file_list: cmd2 += ["-i", os.path.abspath(p)]
-                fc = "".join(f"[{i}:a]" for i in range(len(file_list))) + f"concat=n={len(file_list)}:v=0:a=1[a1]"
-                if atempo: fc += f";[a1]{atempo}[a2]"
-                map_lbl = "[a2]" if atempo else "[a1]"
+                
+                if len(file_list) == 1:
+                    fc = f"[0:a]{atempo}[a2]" if atempo else ""
+                    map_lbl = "[a2]" if atempo else "[0:a]"
+                else:
+                    fc = "".join(f"[{i}:a]" for i in range(len(file_list))) + f"concat=n={len(file_list)}:v=0:a=1[a1]"
+                    if atempo: fc += f";[a1]{atempo}[a2]"
+                    map_lbl = "[a2]" if atempo else "[a1]"
                 
                 if cover and os.path.exists(cover) and not make_video:
                     cmd2 += ["-i", os.path.abspath(cover)]
                     cov_idx = len(file_list)
-                    cmd2 += ["-filter_complex", fc, "-map", map_lbl, "-map", f"{cov_idx}:v",
+                    if fc: fc += ";"
+                    fc += f"[{cov_idx}:v]scale=trunc(iw/2)*2:trunc(ih/2)*2[cv]"
+                    cmd2 += ["-filter_complex", fc, "-map", map_lbl, "-map", "[cv]",
                              "-id3v2_version","3",
                              "-metadata:s:v","title=Album cover",
                              "-metadata:s:v","comment=Cover (front)"]
                 else:
-                    cmd2 += ["-filter_complex", fc, "-map", map_lbl]
+                    if fc: cmd2 += ["-filter_complex", fc]
+                    cmd2 += ["-map", map_lbl]
                     
                 cmd2 += ["-c:a","libmp3lame","-b:a","192k","-ar","48000","-max_muxing_queue_size","4096"]
         
         if metadata:
             for k, v in (metadata or {}).items():
                 if v: cmd2 += ["-metadata", f"{k}={v}"]
-        # CRITICAL: always use the absolute path for output
         abs_output = os.path.abspath(output_path)
         cmd2.append(abs_output)
         ok2, err2 = await _run_cmd(cmd2, 86400)
-        # Verify output at its absolute path
         if ok2 and os.path.exists(abs_output) and os.path.getsize(abs_output) > 100:
             return True, ""
         else:
             return False, err2
-    except asyncio.TimeoutError:
-        return False, "FFmpeg timed out"
-    except Exception as e:
-        return False, str(e)
-    finally:
-        try:
-            if os.path.exists(lst): os.remove(lst)
-            if os.path.exists(vconcat_txt): os.remove(vconcat_txt)
-        except: pass
+        except asyncio.TimeoutError:
+            return False, "FFmpeg timed out"
+        except Exception as e:
+            return False, str(e)
+        finally:
+            try:
+                if os.path.exists(lst): os.remove(lst)
+                if os.path.exists(vconcat_txt): os.remove(vconcat_txt)
+            except: pass
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -667,7 +654,39 @@ async def _run_job(jid, uid, bot):
     client = None
     wdir = f"merge_tmp/{jid}"
     os.makedirs(wdir, exist_ok=True)
+    import html
+    
+    try:
+        await _db_up(jid, status="queued", error="", created_at=time.time())
 
+        # ── Global queue: only 1 merge running at a time ──
+        async with _mg_global_lock:
+            # Re-check status before proceeding
+            fresh = await _db_get(jid)
+            if not fresh or fresh.get("status") in ("stopped", "paused"): return
+            await _db_up(jid, status="scanning", error="")
+            
+            # The entire rest of the function runs sequentially per VPS server to prevent out of memory!
+            await _run_job_core(jid, uid, bot, job, sys_mode, client_task=None, ev=_mg_paused.get(jid))
+            
+    except asyncio.CancelledError:
+        await _db_up(jid, status="stopped")
+    except Exception as e:
+        logger.error(f"[MG {jid}] Exception caught: {e}")
+        await _db_up(jid, status="error", error=str(e)[:500])
+        try: await bot.send_message(uid, f"<b>❌ Error:</b> <code>{html.escape(str(e)[:500])}</code>")
+        except: pass
+    finally:
+        _mg_tasks.pop(jid, None)
+        _mg_paused.pop(jid, None)
+
+
+async def _run_job_core(jid, uid, bot, job, sys_mode, client_task, ev):
+    import html
+    client = None
+    wdir = f"merge_tmp/{jid}"
+    os.makedirs(wdir, exist_ok=True)
+    
     try:
         acc = await db.get_bot(uid, job["account_id"])
         if not acc:
@@ -688,7 +707,7 @@ async def _run_job(jid, uid, bot):
             except: pass
             return
         except Exception as conn_err:
-            err_msg = f"❌ <b>Merge failed — could not connect account:</b>\n<code>{conn_err}</code>\n\nPlease check your session string in /settings → Accounts."
+            err_msg = f"❌ <b>Merge failed — could not connect account:</b>\n<code>{html.escape(str(conn_err)[:300])}</code>\n\nPlease check your session string in /settings → Accounts."
             await _db_up(jid, status="error", error=str(conn_err)[:300])
             try: await bot.send_message(uid, err_msg)
             except: pass
@@ -704,14 +723,6 @@ async def _run_job(jid, uid, bot):
         speed      = float(job.get("speed", 1.0))
         make_video = bool(job.get("make_video", False))
         upload_to_yt = bool(job.get("upload_to_yt", False))
-
-        await _db_up(jid, status="queued", error="", created_at=time.time())
-
-        # ── Global queue: only 1 merge running at a time ──
-        async with _mg_global_lock:
-            fresh = await _db_get(jid)
-            if not fresh or fresh.get("status") in ("stopped", "paused"): return
-            await _db_up(jid, status="scanning", error="")
 
         # ══════════════════════════════════════════════════════════════════
         # PHASE 0 — Pre-download size scan
@@ -1260,16 +1271,7 @@ async def _run_job(jid, uid, bot):
                 f"╰─────────────╯", reply_markup=markup)
         except: pass
 
-    except asyncio.CancelledError:
-        await _db_up(jid, status="stopped")
-    except Exception as e:
-        logger.error(f"[MG {jid}] {e}")
-        await _db_up(jid, status="error", error=str(e)[:500])
-        try: await bot.send_message(uid, f"<b>❌ Error:</b> <code>{e}</code>")
-        except: pass
     finally:
-        _mg_tasks.pop(jid, None)
-        _mg_paused.pop(jid, None)
         try:
             if os.path.exists(wdir):
                 fresh = await _db_get(jid)
