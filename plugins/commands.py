@@ -75,6 +75,11 @@ async def start(client, message):
         await resume_multi_jobs(user.id)
     except Exception:
         pass
+    try:
+        from .merger import resume_merge_jobs
+        await resume_merge_jobs(user.id)
+    except Exception:
+        pass
     btns = await _main_buttons(user.id)
     await client.send_message(
         chat_id=message.chat.id,

@@ -900,11 +900,33 @@ async def _run_job_core(jid, uid, bot, job, sys_mode, client_task, ev):
                 seq_name = f"{global_seq:06d}{ext}"
                 dlp = os.path.join(chunk_dir, seq_name)
 
+                dl_state = {"last_ts": time.time(), "last_bytes": 0}
+                async def _dl_prog(current, total):
+                    now = time.time()
+                    if now - dl_state["last_ts"] >= 3:
+                        el = now - dl_state["last_ts"]
+                        bps = (current - dl_state["last_bytes"]) / el if el > 0 else 0
+                        eta = (total - current) / bps if bps > 0 else 0
+                        await _db_up(jid, dl_eta=eta)
+                        pct = int((current / max(total, 1)) * 100)
+                        try:
+                            if status_msg:
+                                await status_msg.edit_text(
+                                    f"⬇️ {chunk_label} — Downloading {ci+1}/{len(chunk_msgs)}\n"
+                                    f"<code>{_bar(pct, 100)}</code>\n"
+                                    f"⏳ {_sz(current)} / {_sz(total)} • {_spd(bps)}"
+                                )
+                        except: pass
+                        dl_state["last_ts"] = now
+                        dl_state["last_bytes"] = current
+
                 fp = None
                 for att in range(10):  # increased retries
                     try:
                         logger.info(f"[MG] Downloading chunk file {ci+1}/{len(chunk_msgs)}: {msg.id}")
-                        fp = await asyncio.wait_for(client.download_media(msg, file_name=dlp), timeout=900)
+                        dl_state["last_ts"] = time.time()
+                        dl_state["last_bytes"] = 0
+                        fp = await asyncio.wait_for(client.download_media(msg, file_name=dlp, progress=_dl_prog), timeout=900)
                         if fp: break
                     except asyncio.TimeoutError:
                         logger.warning(f"[MG] Timeout downloading {msg.id} (attempt {att+1})")
@@ -1298,6 +1320,21 @@ def _start_task(jid, uid, bot):
     task = asyncio.create_task(_run_job(jid, uid, bot))
     _mg_tasks[jid] = task
     logger.info(f"[MG] Task created for job {jid} (uid={uid})")
+
+async def resume_merge_jobs(user_id: int = None, bot=None):
+    from .test import FwdBot as fallback_bot
+    b = bot or fallback_bot
+    q = {"status": {"$in": ["downloading", "merging", "scanning", "queued", "uploading", "yt_uploading"]}}
+    if user_id: q["user_id"] = user_id
+    jobs = [j async for j in db.db["mergejobs"].find(q)]
+    count = 0
+    for j in jobs:
+        uid = j["user_id"]
+        jid = j["job_id"]
+        _start_task(jid, uid, b)
+        count += 1
+    if count > 0:
+        logger.info(f"[MG] Auto-resumed {count} active merge jobs" + (f" for user {user_id}" if user_id else ""))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
