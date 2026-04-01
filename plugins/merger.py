@@ -270,15 +270,18 @@ def _parse_link(text):
 
 async def _safe_resolve_peer(client, chat_id):
     try:
-        await client.get_chat(chat_id)
+        chat_id = int(chat_id) if str(chat_id).lstrip("-").isdigit() else chat_id
+        try: await client.get_chat(chat_id)
+        except: await client.get_users(chat_id)
     except Exception as e:
         err_str = str(e).upper()
-        if "PEER_ID_INVALID" in err_str or "CHANNEL_INVALID" in err_str or "PEER_ID_NOT_HANDLED" in err_str:
+        if "PEER_ID_INVALID" in err_str or "CHANNEL_INVALID" in err_str or "PEER_ID_NOT_HANDLED" in err_str or "USERNAME_NOT_OCCUPIED" in err_str:
             try:
                 me = await client.get_me()
                 if not getattr(me, 'is_bot', False):
                     async for _ in client.get_dialogs(): pass
-                await client.get_chat(chat_id)
+                try: await client.get_chat(chat_id)
+                except: await client.get_users(chat_id)
             except Exception as e2:
                 logger.warning(f"Failed to resolve {chat_id}: {e2}")
 
@@ -1071,6 +1074,7 @@ async def _run_job(jid, uid, bot):
                 await _db_up(jid, dl_eta=0, mg_eta=0, up_eta=eta, total_eta=eta)
 
         for dest in all_dests:
+            await _safe_resolve_peer(client, dest)
             for att in range(3):
                 try:
                     if mtype == "video":
