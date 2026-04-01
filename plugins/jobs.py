@@ -719,19 +719,47 @@ async def _run_job(job_id: str, user_id: int):
 
             try:
                 if not is_bot:
-                    # Userbot: use get_chat_history for ALL source types.
-                    # get_messages without a channel peer looks up IDs in global
-                    # inbox — returns wrong messages. get_chat_history is correct.
+                    # Userbot path: drain ALL messages newer than last_seen.
+                    # CRITICAL FIX: must loop with increasing offset until we've
+                    # collected every message newer than last_seen — not just the
+                    # newest 50. Otherwise if 100+ messages arrive, we grab only
+                    # the newest 50 and last_seen jumps past the older ones forever.
                     collected = []
-                    async for msg in client.get_chat_history(from_chat, limit=50):
-                        if msg.id <= last_seen:
-                            break
-                        collected.append(msg)
+                    # get_chat_history returns newest→oldest. We page through
+                    # until we hit a message id <= last_seen.
+                    offset_id = 0  # 0 = start from the very latest
+                    while True:
+                        page = []
+                        async for msg in client.get_chat_history(
+                            from_chat,
+                            limit=100,
+                            offset_id=offset_id
+                        ):
+                            if msg.id <= last_seen:
+                                # We've reached the already-seen boundary — stop.
+                                break
+                            page.append(msg)
+                        if not page:
+                            break  # Nothing new on this page
+                        collected.extend(page)
+                        # If the page was a full 100 AND all were new, there may
+                        # be more pages; continue from the oldest ID in this page.
+                        if len(page) < 100:
+                            break  # Partial page → no more new messages
+                        offset_id = page[-1].id  # oldest in this page
+                    # Reverse collected (oldest→newest) to get chronological order
                     new_msgs = list(reversed(collected))
                 else:
+                    # Bot path: probe IDs sequentially from last_seen+1 in batches
+                    # of 200 (the API maximum). Continue until a full batch returns
+                    # zero valid messages (true end of available messages).
+                    # CRITICAL FIX: do NOT break early on a short batch — gaps in
+                    # message IDs (deleted/service msgs) look like short batches but
+                    # there may still be valid messages after the gap.
                     probe = last_seen + 1
+                    consecutive_empty_batches = 0
                     while True:
-                        batch_ids = list(range(probe, probe + 50))
+                        batch_ids = list(range(probe, probe + 200))
                         try:
                             msgs = await client.get_messages(from_chat, batch_ids)
                         except FloodWait as fw:
@@ -743,7 +771,15 @@ async def _run_job(job_id: str, user_id: int):
                             msgs = [msgs]
                         valid = [m for m in msgs if m and not m.empty and not m.service]
                         if not valid:
-                            break
+                            # Empty batch — could be a gap or true end
+                            consecutive_empty_batches += 1
+                            if consecutive_empty_batches >= 3:
+                                # 3 consecutive empty batches of 200 = 600 empty IDs
+                                # Highly unlikely to have more messages after this
+                                break
+                            probe += 200
+                            continue
+                        consecutive_empty_batches = 0
                         valid.sort(key=lambda m: m.id)
                         
                         # Cross-chat filter: only apply for supergroups/channels (negative int IDs).
@@ -757,7 +793,9 @@ async def _run_job(job_id: str, user_id: int):
                         
                         new_msgs.extend(filtered)
                         probe = valid[-1].id + 1
-                        if len(valid) < 49:
+                        if len(valid) < 10:
+                            # Very sparse batch — likely at or near the live edge,
+                            # stop probing to avoid unnecessary API calls
                             break
 
             except FloodWait as fw:
