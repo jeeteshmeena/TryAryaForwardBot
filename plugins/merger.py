@@ -578,15 +578,15 @@ async def _ffmpeg_merge(file_list, output_path, metadata=None, mtype="audio", co
             return True, ""
         else:
             return False, err2
-        except asyncio.TimeoutError:
-            return False, "FFmpeg timed out"
-        except Exception as e:
-            return False, str(e)
-        finally:
-            try:
-                if os.path.exists(lst): os.remove(lst)
-                if os.path.exists(vconcat_txt): os.remove(vconcat_txt)
-            except: pass
+    except asyncio.TimeoutError:
+        return False, "FFmpeg timed out"
+    except Exception as e:
+        return False, str(e)
+    finally:
+        try:
+            if os.path.exists(lst): os.remove(lst)
+            if os.path.exists(vconcat_txt): os.remove(vconcat_txt)
+        except: pass
 
 
 # ══════════════════════════════════════════════════════════════════════════════
