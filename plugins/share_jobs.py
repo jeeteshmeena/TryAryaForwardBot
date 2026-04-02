@@ -782,15 +782,7 @@ async def _build_share_links(bot, user_id, sj, info_msg):
             chunk = raw_buttons[i : i + buttons_per_post]
             first_ep = chunk[0]["ep_start"]
             last_ep  = chunk[-1]["ep_end"]
-            def _bold(t):
-                r = ""
-                for c in str(t):
-                    if 'A' <= c <= 'Z': r += chr(0x1D5D4 + ord(c) - ord('A'))
-                    elif 'a' <= c <= 'z': r += chr(0x1D5EE + ord(c) - ord('a'))
-                    else: r += c
-                return r
-            ep_str = f"{first_ep}" if first_ep == last_ep else f"{first_ep}-{last_ep}"
-            txt = f"{_bold(story.upper())} {_bold('EPS')} {ep_str}"
+            txt = f"<b>{story.upper()} EPS {first_ep} - {last_ep}</b>"
             keyboard = []
             for j in range(0, len(chunk), 2):
                 row = [c["btn"] for c in chunk[j:j + 2]]
