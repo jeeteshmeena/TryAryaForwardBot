@@ -63,9 +63,35 @@ async def _ask(bot, user_id: int, text: str, reply_markup=None, timeout: int = 3
         raise
 
 
+async def _ask_topic(bot, user_id: int, dest_label: str) -> int | None:
+    """Ask user for an optional topic thread ID (for group topics).
+    Returns the thread ID as int, or None if not needed.
+    NOTE: This was the cause of Live Job step 3/7 silently hanging —
+    the function was called but never defined here.
+    """
+    from pyrogram.types import KeyboardButton, ReplyKeyboardMarkup
+    r = await _ask(bot, user_id,
+        f"<b>Topic Thread for {dest_label} (Optional)</b>\n\n"
+        "• Send the <b>Thread ID</b> if you want to post inside a specific group topic\n"
+        "• Send <b>0</b> if this is a regular channel or main group chat (no topic)\n\n"
+        "<i>To find Thread ID: open the topic in Telegram Web → look at the number after "
+        "<code>/topics/</code> in the URL.</i>",
+        reply_markup=ReplyKeyboardMarkup(
+            [[KeyboardButton("0 (No Topic)")], [KeyboardButton("⛔ Cᴀɴᴄᴇʟ")]],
+            resize_keyboard=True, one_time_keyboard=True
+        ))
+    t = r.text.strip() if r and r.text else "0"
+    if "/cancel" in t.lower() or "⛔" in t:
+        return None
+    if t.lstrip("-").isdigit() and int(t) > 0:
+        return int(t)
+    return None
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # DB helpers
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 async def _save_job(job: dict):
     await db.db.jobs.replace_one({"job_id": job["job_id"]}, job, upsert=True)

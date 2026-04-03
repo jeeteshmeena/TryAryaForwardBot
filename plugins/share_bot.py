@@ -382,22 +382,39 @@ async def _process_start(client, message):
                         f"To re-access, simply click the same link button again.{fail_note}</i>")
             await message.reply_text(txt)
 
-        # Issue 3: Increment global delivery counter + send Thank-You message
+        # ── Increment global delivery counter + Enhanced bilingual Thank-You ──
         if bot_id:
             await db.increment_bot_delivery_count(bot_id, total)
-        prev_total = await db.get_bot_delivery_count(bot_id) if bot_id else total
-        grand_total = prev_total  # already incremented above
+        grand_total = (await db.get_bot_delivery_count(bot_id)) if bot_id else total
+
         u_name = message.from_user.first_name or "you"
+        last   = (" " + message.from_user.last_name) if getattr(message.from_user, "last_name", None) else ""
+        full_name = f"{u_name}{last}"
+
         thank_txt = (
-            f"{_get_base_header(message.from_user)}"
-            f"<b>»  {_sc('Thank you for using us!')}</b>\n\n"
-            f"‣  {_sc('Your')} <b>{total}</b> {_sc('files are included,')}"
-            f" {_sc('making a total of')} <b>{grand_total:,}</b> {_sc('files delivered so far')} 🎉\n\n"
-            f"<i>{_sc('Come back anytime — your link buttons never expire!')}\n"
-            f"{_sc('Simply tap the same link button again to re-access your files.')}</i>"
+            f"<a href='tg://user?id={message.from_user.id}'>{full_name}</a> ❣️\n\n"
+            f"<b>» {total} file(s) sent successfully!</b>\n"
+            f"Total delivered by this bot: <b>{grand_total:,}</b> files 🎉\n\n"
+            f"<blockquote expandable>"
+            f"🇬🇧 <b>English</b>\n"
+            f"Thank you for using us! We truly appreciate your trust and love. 🙏\n\n"
+            f"Your files have been delivered. These links <b>never expire</b> — "
+            f"you can tap the same button anytime to re-access your files, no need to ask again!\n\n"
+            f"If you enjoy our service and want us to keep delivering amazing stories, "
+            f"please consider supporting us with a small donation. Every contribution "
+            f"helps us maintain servers, add more stories, and keep this service running for you. ❤️\n\n"
+            f"──────────────────────\n\n"
+            f"🇮🇳 <b>Hindi</b>\n"
+            f"हमारी सेवा का उपयोग करने के लिए आपका बहुत-बहुत धन्यवाद! 🙏\n\n"
+            f"आपकी फाइलें डिलीवर हो गई हैं। ये लिंक <b>कभी expire नहीं होते</b> — "
+            f"आप कभी भी उसी बटन को दबाकर फाइलें दोबारा देख सकते हैं, बिना किसी से पूछे!\n\n"
+            f"अगर आपको हमारी सेवा पसंद आई और आप चाहते हैं कि हम आगे भी "
+            f"इस तरह की stories और content लाते रहें, तो कृपया हमें एक छोटा सा donation देकर "
+            f"support करें। आपका हर योगदान हमें आगे बढ़ने की शक्ति देता है। ❤️"
+            f"</blockquote>"
         )
         donate_btn = InlineKeyboardMarkup([[
-            InlineKeyboardButton("❤️  " + _sc("Support Us"), url="https://razorpay.me/@SusJeetX")
+            InlineKeyboardButton("❤️ Support Us / हमें Support करें", url="https://razorpay.me/@SusJeetX")
         ]])
         try:
             await message.reply_text(thank_txt, reply_markup=donate_btn)
