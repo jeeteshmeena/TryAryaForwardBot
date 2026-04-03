@@ -1767,7 +1767,23 @@ async def _create_flow(bot, uid, mtype="audio"):
                 
                 for i in range(0, len(msg_ids), 200):
                     chunk = msg_ids[i:i + 200]
-                    msgs = await ui_client.get_messages(ch_id, chunk)
+                    while True:
+                        try:
+                            msgs = await ui_client.get_messages(ch_id, chunk)
+                            break
+                        except Exception as e:
+                            from plugins.utils import format_tg_error
+                            err_msg = format_tg_error(e, "Scan Error")
+                            try:
+                                ask_res = await bot.ask(uid, f"{err_msg}\n\n<i>Fix the issue (e.g. ensure bot/clone is Admin), then click Retry!</i>", 
+                                    reply_markup=ReplyKeyboardMarkup([["🔄 Retry Scan"], ["❌ Cancel Process"]], resize_keyboard=True), timeout=600)
+                                if not ask_res.text or any(x in ask_res.text.lower() for x in ['cancel', 'cᴀɴᴄᴇʟ', '⛔']):
+                                    return await bot.send_message(uid, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
+                                await ask_res.delete()
+                                continue
+                            except Exception:
+                                return await bot.send_message(uid, "<b>‣ Scan Error:</b> Timed out waiting for retry.", reply_markup=ReplyKeyboardRemove())
+
                     if not isinstance(msgs, list): msgs = [msgs]
                     for m_ in msgs:
                         if not m_ or m_.empty: continue

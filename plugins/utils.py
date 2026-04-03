@@ -81,3 +81,13 @@ class STS:
             'from_thread': getattr(k, 'from_thread', None),
             'replacements': configs.get('replacements', {})
         }, configs['protect'], button
+
+def format_tg_error(e, context="Scan Error"):
+    err_str = str(e)
+    if "CHANNEL_PRIVATE" in err_str or "USER_BANNED" in err_str or "accessible" in err_str.lower():
+        return f"<b>‣ {context}: Access Denied</b>\n<i>The Clone Client or Bot cannot access the channel. Please ensure it is added as an Admin with correct permissions.</i>\n\n<code>{err_str}</code>"
+    if "CHAT_ADMIN_REQUIRED" in err_str:
+        return f"<b>‣ {context}: Admin Required</b>\n<i>The bot requires Admin privileges to perform this action.</i>\n\n<code>{err_str}</code>"
+    if "FLOOD_WAIT" in err_str or "420" in err_str:
+        return f"<b>‣ {context}: Telegram API Rate Limit</b>\n<i>Too many requests. Please wait a few minutes before trying again.</i>\n\n<code>{err_str}</code>"
+    return f"<b>‣ {context}:</b>\n<code>{err_str}</code>"

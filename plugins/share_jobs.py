@@ -512,28 +512,44 @@ async def _build_share_links(bot, user_id, sj, info_msg):
         all_valid_msgs = []
         total_scanned = 0
 
+        from plugins.utils import format_tg_error
+        from pyrogram.types import ReplyKeyboardMarkup, ReplyKeyboardRemove
+
         if sj.get('is_topic'):
             await safe_edit(f"<i>»  Scanning entire Group Topic {sj['topic_id']}...</i>")
-            try:
-                # Iterate all messages inside the topic
-                async for m in scanner_client.get_discussion_replies(sj['source'], sj['topic_id']):
-                    if m and not m.empty:
-                        all_valid_msgs.append(m)
-                    total_scanned += 1
-                    if total_scanned % 100 == 0:
-                        try: await safe_edit(f"<i>»  Scanned {total_scanned} files from topic...</i>")
-                        except: pass
-                # get_discussion_replies yields newest to oldest by default, so reverse it
-                all_valid_msgs.reverse()
-            except Exception as e:
-                return await safe_edit(f"<b>‣  Topic Scan Error:</b> <code>{e}</code>")
+            while True:
+                try:
+                    # Iterate all messages inside the topic
+                    async for m in scanner_client.get_discussion_replies(sj['source'], sj['topic_id']):
+                        if m and not m.empty:
+                            all_valid_msgs.append(m)
+                        total_scanned += 1
+                        if total_scanned % 100 == 0:
+                            try: await safe_edit(f"<i>»  Scanned {total_scanned} files from topic...</i>")
+                            except: pass
+                    # get_discussion_replies yields newest to oldest by default, so reverse it
+                    all_valid_msgs.reverse()
+                    break
+                except Exception as e:
+                    err_msg = format_tg_error(e, "Topic Scan Error")
+                    await safe_edit(f"{err_msg}\n\n<i>Waiting for your response...</i>")
+                    try:
+                        ask_res = await bot.ask(user_id, f"{err_msg}\n\n<i>Fix the issue, then click Retry to continue!</i>", 
+                            reply_markup=ReplyKeyboardMarkup([["🔄 Retry Scan"], ["❌ Cancel Process"]], resize_keyboard=True), timeout=600)
+                        if not ask_res.text or any(x in ask_res.text.lower() for x in ['cancel', 'cᴀɴᴄᴇʟ', '⛔']):
+                            await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
+                            return
+                        await ask_res.delete()
+                    except Exception:
+                        return await safe_edit("<b>‣ Scan Error:</b> Timed out waiting for retry.")
+
         else:
             await safe_edit(f"<i>»  Scanning and analyzing files {current_id}–{end_ep}...</i>")
             while current_id <= end_ep:
                 chunk_end = min(current_id + SCAN_CHUNK - 1, end_ep)
                 msg_ids   = list(range(current_id, chunk_end + 1))
 
-                for attempt in range(6):
+                while True:
                     try:
                         msgs = await scanner_client.get_messages(sj['source'], msg_ids)
                         if not isinstance(msgs, list): msgs = [msgs]
@@ -550,9 +566,20 @@ async def _build_share_links(bot, user_id, sj, info_msg):
                             await safe_edit(f"<i>»  Flood Wait {wait_secs}s... (scanned {total_scanned})</i>")
                             await asyncio.sleep(wait_secs)
                             continue
-                        return await safe_edit(f"<b>‣  Scan Error:</b> <code>{e}</code>")
-                else:
-                    return await safe_edit("‣  Scan aborted after 6 retries due to FloodWait.")
+                        
+                        err_msg = format_tg_error(e, "Scan Error")
+                        await safe_edit(f"{err_msg}\n\n<i>Waiting for your response...</i>")
+                        try:
+                            ask_res = await bot.ask(user_id, f"{err_msg}\n\n<i>Fix the issue (e.g. ensure bot/clone is Admin), then click Retry!</i>", 
+                                reply_markup=ReplyKeyboardMarkup([["🔄 Retry Scan"], ["❌ Cancel Process"]], resize_keyboard=True), timeout=600)
+                            if not ask_res.text or any(x in ask_res.text.lower() for x in ['cancel', 'cᴀɴᴄᴇʟ', '⛔']):
+                                await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
+                                return
+                            await ask_res.delete()
+                            continue # retry the scan!
+                        except Exception:
+                            return await safe_edit("<b>‣ Scan Error:</b> Timed out waiting for retry.")
+                
                 total_scanned += len(msg_ids)
                 current_id = chunk_end + 1
                 await asyncio.sleep(0.3)
@@ -562,9 +589,7 @@ async def _build_share_links(bot, user_id, sj, info_msg):
 
         all_valid_msgs.sort(key=lambda x: x.id)  # chronological
 
-
         #  Episode extraction helpers (Priority: file_name > caption > audio_title) 
-
 
         _NOISE_RE = [
             # Resolutions MUST have p/i suffix
