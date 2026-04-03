@@ -1174,23 +1174,53 @@ async def _run_job(jid, uid, bot):
 
         for dest in all_dests:
             await _safe_resolve_peer(client, dest)
+            
+        replace_target = job.get("replace_target")
+        if replace_target:
+            dest = replace_target["chat_id"]
+            mid = replace_target["msg_id"]
+            await _safe_resolve_peer(client, dest)
             for att in range(3):
                 try:
+                    from pyrogram.types import InputMediaDocument, InputMediaAudio, InputMediaVideo
                     if mtype == "video":
-                        await client.send_video(chat_id=dest, video=out_path,
-                            caption=caption, file_name=f"{out_name}{out_ext}",
-                            thumb=thumb, supports_streaming=True, progress=_up_prog)
+                        media = InputMediaVideo(out_path, caption=caption, supports_streaming=True, thumb=thumb)
                     else:
-                        kw = {"chat_id":dest,"audio":out_path,"caption":caption,
-                              "file_name":f"{out_name}{out_ext}","thumb":thumb, "progress":_up_prog}
+                        kw = {"media": out_path, "caption": caption, "thumb": thumb}
                         if metadata.get("title"): kw["title"] = metadata["title"]
                         if metadata.get("artist"): kw["performer"] = metadata["artist"]
-                        await client.send_audio(**kw)
+                        media = InputMediaAudio(**kw)
+                        
+                    await client.edit_message_media(chat_id=dest, message_id=mid, media=media)
+                    # Notify DM
+                    if dest != uid:
+                        try: await bot.send_message(uid, f"<b>✅ Channel post successfully replaced!</b>")
+                        except: pass
                     break
                 except FloodWait as fw: await asyncio.sleep(fw.value+2)
                 except Exception as e:
                     if att < 2: await asyncio.sleep(5); continue
-                    logger.warning(f"[MG {jid}] upload {dest}: {e}"); break
+                    logger.warning(f"[MG {jid}] replace_media {dest}:{mid} failed: {e}")
+                    break
+        else:
+            for dest in all_dests:
+                for att in range(3):
+                    try:
+                        if mtype == "video":
+                            await client.send_video(chat_id=dest, video=out_path,
+                                caption=caption, file_name=f"{out_name}{out_ext}",
+                                thumb=thumb, supports_streaming=True, progress=_up_prog)
+                        else:
+                            kw = {"chat_id":dest,"audio":out_path,"caption":caption,
+                                  "file_name":f"{out_name}{out_ext}","thumb":thumb, "progress":_up_prog}
+                            if metadata.get("title"): kw["title"] = metadata["title"]
+                            if metadata.get("artist"): kw["performer"] = metadata["artist"]
+                            await client.send_audio(**kw)
+                        break
+                    except FloodWait as fw: await asyncio.sleep(fw.value+2)
+                    except Exception as e:
+                        if att < 2: await asyncio.sleep(5); continue
+                        logger.warning(f"[MG {jid}] upload {dest}: {e}"); break
 
         up_time = time.time() - up_start
         await _db_up(jid, up_time=up_time)
@@ -1675,15 +1705,34 @@ async def _create_flow(bot, uid, mtype="audio"):
         # Step 4: Destination
         channels = await db.get_user_channels(uid)
         dest_chats = []
+        replace_target = None
         if channels:
             ch_kb = [[f"📢 {ch['title']}"] for ch in channels]
+            ch_kb.append(["🔄 Replace Existing Post"])
             ch_kb.append(["⏭ Skip (DM only)"]); ch_kb.append(["❌ Cancel"])
             msg = await _mg_ask(bot, uid,
                 f"<b>Step 4/7:</b> Destination channel\n<b>Range:</b> {sid}→{eid} ({total} msgs)",
                 reply_markup=ReplyKeyboardMarkup(ch_kb, resize_keyboard=True, one_time_keyboard=True))
             if not msg.text or (getattr(msg, 'text', None) and any(x in msg.text.lower() for x in ['cancel', 'cᴀɴᴄᴇʟ', '⛔'])):
                 return await bot.send_message(uid, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
-            if "Skip" not in msg.text:
+            
+            if "Replace" in msg.text:
+                rep_msg = await _mg_ask(bot, uid,
+                    "<b>Step 4b/7: Send the exact Telegram Link of the message you want to replace:</b>\n"
+                    "<i>(e.g., https://t.me/c/12345/678)</i>",
+                    reply_markup=ReplyKeyboardMarkup([["❌ Cancel"]], resize_keyboard=True, one_time_keyboard=True))
+                if not rep_msg.text or any(x in rep_msg.text.lower() for x in ['cancel', 'cᴀɴᴄᴇʟ', '⛔']):
+                    return await bot.send_message(uid, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
+                link = rep_msg.text.strip()
+                match = re.search(r't\.me/(?:c/)?([^/]+)/(\d+)', link)
+                if not match:
+                    return await bot.send_message(uid, "<b>❌ Invalid Telegram Link. Defaulting to DM.</b>", reply_markup=ReplyKeyboardRemove())
+                else:
+                    c_str, m_str = match.groups()
+                    mid = int(m_str)
+                    r_cid = int("-100" + c_str) if c_str.isdigit() else (c_str if c_str.startswith("@") else f"@{c_str}")
+                    replace_target = {"chat_id": r_cid, "msg_id": mid}
+            elif "Skip" not in msg.text:
                 title = msg.text.replace("📢 ","").strip()
                 ch = next((c for c in channels if c["title"] == title), None)
                 if ch: dest_chats.append(int(ch["chat_id"]))
@@ -1986,7 +2035,7 @@ async def _create_flow(bot, uid, mtype="audio"):
             "job_id": jid, "user_id": uid, "account_id": acc["id"],
             "from_chat": from_chat, "start_id": sid, "end_id": eid,
             "current_id": sid, "output_name": out_name, "merge_type": mtype,
-            "metadata": metadata, "dest_chats": dest_chats,
+            "metadata": metadata, "dest_chats": dest_chats, "replace_target": replace_target,
             "has_cover": bool(cover_path), "has_video_cover": has_video_cover,
             "has_outro_cover": True if outro_cover_path == "4auto" else bool(outro_cover_path),
             "use_4auto_outros": outro_cover_path == "4auto",
