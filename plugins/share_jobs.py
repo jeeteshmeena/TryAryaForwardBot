@@ -1451,6 +1451,7 @@ async def cmd_deep_scan_batch(bot, message):
 
     # Save full corrected report as file
     import datetime
+    import io
     now = datetime.datetime.now()
     report_bytes_out = io.BytesIO()
     full_report_lines = [
