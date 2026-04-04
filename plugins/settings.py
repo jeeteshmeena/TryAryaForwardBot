@@ -594,6 +594,8 @@ async def settings_query(bot, query):
                       except Exception: pass
                   except Exception as _re:
                       logger.warning(f"[MenuImg] relay failed: {_re}")
+                      final_file_id = None
+                      sb_err = str(_re)
                   try: os.remove(dl_path)
                   except Exception: pass
 
@@ -603,7 +605,9 @@ async def settings_query(bot, query):
 
           if not final_file_id:
                await ask.edit_text(
-                   "<b>‣  ERROR:</b> Failed to process media file securely. Ensure the bot token is active.",
+                   f"<b>‣  ERROR:</b> The Delivery Bot failed to cache this media.\n\n"
+                   f"Please open your Delivery Bot (@{bot_info['username'] if 'bot_info' in locals() and bot_info else 'bot'}) and press <b>/start</b> before uploading a menu image. This is required so the bot can process the file.\n\n"
+                   f"<i>Error detail: {sb_err if 'sb_err' in locals() else 'Session failed to start'}</i>",
                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=f"settings#sb_menu_mgr_{b_id}")]])
                )
                return
@@ -1868,6 +1872,8 @@ async def main_buttons(user_id=None):
            InlineKeyboardButton('EN/हि',
                         callback_data='settings#lang')
            ],[
+           InlineKeyboardButton('💻 SʏsMᴏɴ Sᴛᴀᴛs',
+                        callback_data='sysmon#stats'),
            InlineKeyboardButton('Mᴀɪɴ Mᴇɴᴜ Iᴍᴀɢᴇ',
                         callback_data='settings#main_menu_img')
            ],[
