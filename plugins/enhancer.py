@@ -15,6 +15,7 @@ from pyrogram.handlers import MessageHandler, CallbackQueryHandler
 
 import database as db
 from config import Config
+from pyrogram import ContinuePropagation
 
 logger = logging.getLogger(__name__)
 
@@ -56,15 +57,14 @@ async def _enh_input_router(bot, message: Message):
     raise ContinuePropagation
 
 
-async def _enh_ask(bot, user_id: int, prompt_msg, timeout: int = 120):
-    """Send a message and wait for user's next private message."""
+async def _enh_ask(bot, user_id: int, timeout: int = 120):
+    """Wait for user's next private message."""
     loop = asyncio.get_event_loop()
     fut: asyncio.Future = loop.create_future()
     old = _enh_waiting.pop(user_id, None)
     if old and not old.done():
         old.cancel()
     _enh_waiting[user_id] = fut
-    await prompt_msg
     try:
         return await asyncio.wait_for(fut, timeout=timeout)
     except asyncio.TimeoutError:
@@ -147,7 +147,7 @@ async def enhancer_action_cb(bot, update: CallbackQuery):
             "Send /cancel to abort."
         )
         try:
-            resp = await _enh_ask(bot, uid, asyncio.sleep(0), timeout=120)
+            resp = await _enh_ask(bot, uid, timeout=120)
             if not resp:
                 raise asyncio.TimeoutError
             txt = (resp.text or "").strip()
