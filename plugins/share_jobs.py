@@ -1179,7 +1179,8 @@ async def _build_share_links(bot, user_id, sj, info_msg):
                 )
 
                 dm_cap = (
-                    f"<blockquote expandable>{dm_header}{en_body}</blockquote>\n\n<blockquote expandable>{hi_body}</blockquote>"
+                    f"<blockquote expandable>{dm_header}{en_body}</blockquote>\n\n<blockquote expandable>{hi_body}\n\n"
+                    "<i>Note: If some existing files were wrongly marked as missing, you can use /deepscanbatch with this report to auto-correct them!</i></blockquote>"
                 )
                 ch_cap = (
                     f"<blockquote expandable>{ch_header}{en_body}</blockquote>\n\n<blockquote expandable>{hi_body}</blockquote>"
@@ -1195,7 +1196,7 @@ async def _build_share_links(bot, user_id, sj, info_msg):
                 hi_body = ("वर्तमान में उपलब्ध सभी फ़ाइलें यहाँ पोस्ट कर दी गई हैं। "
                            "जैसे ही नए एपिसोड आएंगे, उन्हें जोड़ दिया जाएगा। आनंद लें और जुड़े रहें!")
 
-                dm_cap = f"<blockquote expandable>{dm_header}{en_body}</blockquote>\n\n<blockquote expandable>{hi_body}</blockquote>"
+                dm_cap = f"<blockquote expandable>{dm_header}{en_body}</blockquote>\n\n<blockquote expandable>{hi_body}\n\n<i>Note: If some existing files were wrongly marked as missing, you can use /deepscanbatch with this report to auto-correct them!</i></blockquote>"
                 ch_cap = f"<blockquote expandable>{ch_header}{en_body}</blockquote>\n\n<blockquote expandable>{hi_body}</blockquote>"
 
             # Send to admin DM — independent of channel
@@ -1341,8 +1342,7 @@ async def cmd_deep_scan_batch(bot, message):
     """
     from config import Config
     uid = message.from_user.id
-    if uid not in Config.BOT_OWNER_ID:
-        return await message.reply_text("⛔ Owner only.")
+
 
     help_txt = (
         "<b>»  Deep Scan Self-Correction</b>\n\n"

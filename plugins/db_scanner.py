@@ -232,7 +232,8 @@ async def run_channel_scan(bot, user_id: int, chat_id: int,
                 f"<b>📋 Channel Index Report</b>\n"
                 f"<i>{chat_title}</i>  •  <b>{len(entries):,} files</b>\n\n"
                 f"<i>This index is saved. Future link generations will use it "
-                f"to fix gaps and ambiguous filenames automatically.</i>"
+                f"to fix gaps and ambiguous filenames automatically.</i>\n\n"
+                f"<i>Note: If some files are still completely unparseable, you can forward this report using /deepscanbatch to auto-correct them!</i>"
             )
         )
 
@@ -331,7 +332,7 @@ async def _scan_flow(bot, user_id: int):
                 await bot.send_document(
                     user_id, tmp,
                     file_name=f"arya_index_{title}.txt",
-                    caption=f"<b>📋 Channel Index</b>  •  {n:,} files\n<i>{title}</i>"
+                    caption=f"<b>📋 Channel Index</b>  •  {n:,} files\n<i>{title}</i>\n\n<i>Note: You can forward this report using /deepscanbatch to auto-correct unparseable files!</i>"
                 )
                 try:
                     os.unlink(tmp)
@@ -378,7 +379,7 @@ async def _scan_flow(bot, user_id: int):
                 await bot.send_document(
                     user_id, tmp,
                     file_name=f"arya_index_{title}_updated.txt",
-                    caption=f"<b>✅ Index Updated</b>\n{len(merged):,} files total  •  {len(new_entries)} new"
+                    caption=f"<b>✅ Index Updated</b>\n{len(merged):,} files total  •  {len(new_entries)} new\n\n<i>Note: You can forward this report using /deepscanbatch to auto-correct unparseable files!</i>"
                 )
                 try:
                     os.unlink(tmp)
