@@ -719,74 +719,42 @@ async def settings_query(bot, query):
 
           if sb_client:
               try:
-                  # Step 1 — Main bot copies to a "staging" location the Share Bot can access:
-                  #          forward to the admin's chat using the Share Bot itself.
-                  #          The admin has already chatted with the Share Bot (they set it up),
-                  #          so the Share Bot can send to the admin's chat directly.
-                  #
-                  # CORRECT approach: We download the file_bytes using main bot and re-upload via Share Bot.
-                  # But that's heavy (network). Better: use forward_messages from main bot's DM.
-                  #
-                  # SIMPLEST guaranteed approach: use Share Bot to send the file from its OWN
-                  # saved messages. We do: sb_client.send_* with the main-bot file_id.
-                  # Telegram's CDN file_ids are actually cross-client compatible for send operations
-                  # when the file already exists on the CDN — the server re-uses the file.
-                  # Failed only for "copy_message" from inaccessible chats, not for direct send by file_id.
-                  #
-                  # So: try sb_client.send_* with the main-bot file_id directly.
-                  # If Telegram accepts it (CDN shortcut), great. Otherwise download+re-upload.
+                  # Download via main bot (since Share Bot can't see the admin's DM with main bot)
+                  dl_path = await bot.download_media(resp)
+                  if dl_path:
+                      staged = None
+                      try:
+                          # Have the Share Bot send it to the admin (user_id)!
+                          # Doing this generates a Share-Bot-native file_id.
+                          if media_type == 'animation':
+                              staged = await sb_client.send_animation(user_id, animation=dl_path, caption="[Setting up Fetching Media...]")
+                          elif media_type == 'video':
+                              staged = await sb_client.send_video(user_id, video=dl_path, caption="[Setting up Fetching Media...]")
+                          else:
+                              staged = await sb_client.send_photo(user_id, photo=dl_path, caption="[Setting up Fetching Media...]")
 
-                  sb_me = await sb_client.get_me()
-                  sb_own_chat = sb_me.id   # Share Bot's "Saved Messages"
+                          if staged:
+                              if staged.animation:  final_file_id = staged.animation.file_id
+                              elif staged.video:    final_file_id = staged.video.file_id
+                              elif staged.photo:
+                                  ph2 = staged.photo
+                                  final_file_id = ph2.file_id if hasattr(ph2, 'file_id') else ph2[-1].file_id
 
-                  staged = None
-                  try:
-                      # Try direct send with existing file_id
-                      if media_type == 'animation':
-                          staged = await sb_client.send_animation(sb_own_chat, animation=file_id,
-                                                                   caption="[fetch-media-stage]")
-                      elif media_type == 'video':
-                          staged = await sb_client.send_video(sb_own_chat, video=file_id,
-                                                               caption="[fetch-media-stage]")
-                      else:
-                          staged = await sb_client.send_photo(sb_own_chat, photo=file_id,
-                                                               caption="[fetch-media-stage]")
-                  except Exception as _direct_err:
-                      logger.warning(f"[FetchMedia] Direct file_id send failed ({_direct_err}), downloading...")
-                      # Fallback: download via main bot, re-upload via Share Bot
-                      import io
-                      buf = io.BytesIO()
-                      await bot.download_media(resp, file_name=buf)
-                      buf.seek(0)
-                      buf.name = "fetch_media" + (
-                          ".gif" if media_type == "animation" else
-                          ".mp4" if media_type == "video" else ".jpg"
-                      )
-                      if media_type == 'animation':
-                          staged = await sb_client.send_animation(sb_own_chat, animation=buf,
-                                                                   caption="[fetch-media-stage]")
-                      elif media_type == 'video':
-                          staged = await sb_client.send_video(sb_own_chat, video=buf,
-                                                               caption="[fetch-media-stage]")
-                      else:
-                          staged = await sb_client.send_photo(sb_own_chat, photo=buf,
-                                                               caption="[fetch-media-stage]")
+                              # Clean up staged message explicitly if we can
+                              try: await staged.delete()
+                              except: pass
 
-                  if staged:
-                      if staged.animation:  final_file_id = staged.animation.file_id
-                      elif staged.video:    final_file_id = staged.video.file_id
-                      elif staged.photo:
-                          ph2 = staged.photo
-                          final_file_id = ph2.file_id if hasattr(ph2, 'file_id') else ph2[-1].file_id
-                      # Clean up staged message
-                      try: await staged.delete()
+                              sb_ok = True
+                              sb_status = "✅ via Share Bot"
+                      except Exception as _fe:
+                          logger.warning(f"[FetchMedia] Share Bot staging failed: {_fe}")
+                          sb_status = f"⚠️ Share Bot error ({type(_fe).__name__})"
+
+                      try: os.remove(dl_path)
                       except: pass
-                      sb_ok = True
-                      sb_status = "✅ via Share Bot"
-
-              except Exception as _fe:
-                  logger.warning(f"[FetchMedia] Share Bot capture failed: {_fe}")
-                  sb_status = f"⚠️ Share Bot error ({type(_fe).__name__})"
+              except Exception as _outer_fe:
+                  logger.warning(f"[FetchMedia] Main block failed: {_outer_fe}")
+                  sb_status = f"⚠️ Setup error ({type(_outer_fe).__name__})"
 
           # ── Save to DB ─────────────────────────────────────────────────────
           await db.set_bot_fetching_media(b_id, final_file_id, media_type)
@@ -916,36 +884,76 @@ async def settings_query(bot, query):
           )
           
           import asyncio
-          async def _do_broadcast(main_bot, sb_app, uids, msg_obj, status_msg, back_btn_data):
+          import os
+
+          async def _do_broadcast(main_bot, sb_app, uids, msg_obj, status_msg, back_btn_data, admin_id):
               sent = 0
               failed = 0
               blocked = 0
               total_users = len(uids)
               processed = 0
 
-              for u in uids:
-                  processed += 1
+              # -- Step 1: Stage the message into the Share Bot's context --
+              # We do this by downloading constraints (if media), and uploading via Share Bot to the admin.
+              # This gives the Share Bot a message in its own context that it can then copy_message to everyone.
+              staged_msg_id = None
+              staged_chat_id = admin_id
+              
+              if getattr(msg_obj, "media", None) and sb_app:
+                  dl_path = await main_bot.download_media(msg_obj)
+                  if dl_path:
+                      try:
+                          if msg_obj.animation:
+                              staged = await sb_app.send_animation(admin_id, animation=dl_path, caption=msg_obj.caption or "")
+                          elif getattr(msg_obj, "video", None):
+                              staged = await sb_app.send_video(admin_id, video=dl_path, caption=msg_obj.caption or "")
+                          elif getattr(msg_obj, "photo", None):
+                              staged = await sb_app.send_photo(admin_id, photo=dl_path, caption=msg_obj.caption or "")
+                          elif getattr(msg_obj, "document", None):
+                              staged = await sb_app.send_document(admin_id, document=dl_path, caption=msg_obj.caption or "")
+                          else:
+                              # fallback 
+                              staged = await sb_app.send_message(admin_id, text=msg_obj.text or "Unsupported media")
+                              
+                          if staged:
+                              staged_msg_id = staged.id
+                      except Exception as e:
+                          logger.error(f"[Broadcast Staging] {e}")
+                      try: os.remove(dl_path)
+                      except: pass
+              elif not getattr(msg_obj, "media", None) and sb_app:
+                  # Text only
                   try:
-                      uid_int = int(u)
-                      # Strategy: try Share Bot first (sends from delivery bot name/avatar)
-                      # If Share Bot can't (it has no access to admin DM), fallback to main bot relay
-                      send_ok = False
-                      if sb_app:
-                          try:
-                              # Copy via Share Bot requires the Share Bot to have a cached version.
-                              # We relay: main bot forwards msg to Share Bot saved msgs, then SB copies to user.
-                              # Simpler working strategy: main bot copies to user (since it has the message).
-                              # Share Bot sends a text caption if media, or main bot sends the full thing.
-                              pass  # See below
-                          except Exception:
-                              pass
+                      staged = await sb_app.send_message(admin_id, text=msg_obj.text or "")
+                      if staged:
+                          staged_msg_id = staged.id
+                  except Exception as e:
+                      logger.error(f"[Broadcast Staging] {e}")
 
-                      # Always reliable: main bot copies/forwards the original message to each user
-                      await main_bot.copy_message(
+              # Define our sending strategy
+              async def send_to_user(uid_int):
+                  if staged_msg_id and sb_app:
+                      return await sb_app.copy_message(
+                          chat_id=uid_int,
+                          from_chat_id=staged_chat_id,
+                          message_id=staged_msg_id
+                      )
+                  elif sb_app and not getattr(msg_obj, "media", None):
+                      # Fallback text-only if staging failed
+                      return await sb_app.send_message(chat_id=uid_int, text=msg_obj.text or msg_obj.caption or "Broadcast message")
+                  else:
+                      # Absolute fallback: send from main bot
+                      return await main_bot.copy_message(
                           chat_id=uid_int,
                           from_chat_id=msg_obj.chat.id,
                           message_id=msg_obj.id
                       )
+
+              for u in uids:
+                  processed += 1
+                  try:
+                      uid_int = int(u)
+                      await send_to_user(uid_int)
                       sent += 1
                       send_ok = True
                   except Exception as e:
@@ -992,7 +1000,7 @@ async def settings_query(bot, query):
               except: pass
 
           import asyncio as _aio
-          _aio.create_task(_do_broadcast(bot, sb_client, users, resp, ask, f"settings#sb_view_{b_id}"))
+          _aio.create_task(_do_broadcast(bot, sb_client, users, resp, ask, f"settings#sb_view_{b_id}", user_id))
 
       except asyncio.TimeoutError:
           try:
