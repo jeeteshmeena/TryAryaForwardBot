@@ -957,7 +957,6 @@ async def _run_job(jid, uid, bot):
                     # Telegram CDN serving a cached empty/corrupt file
                     temp_dlp = dlp if att == 0 else dlp.replace(ext, f"_r{att}{ext}")
                     try:
-                        import time
                         target_msg = msg
                         # File references expire after 1 hour. Refresh if retrying or if old!
                         if att > 0 or (time.time() - job.get("phase_start_ts", time.time())) > 2400:
