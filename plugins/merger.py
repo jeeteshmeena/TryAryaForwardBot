@@ -957,7 +957,17 @@ async def _run_job(jid, uid, bot):
                     # Telegram CDN serving a cached empty/corrupt file
                     temp_dlp = dlp if att == 0 else dlp.replace(ext, f"_r{att}{ext}")
                     try:
-                        fp = await client.download_media(msg, file_name=temp_dlp)
+                        import time
+                        target_msg = msg
+                        # File references expire after 1 hour. Refresh if retrying or if old!
+                        if att > 0 or (time.time() - job.get("phase_start_ts", time.time())) > 2400:
+                            try:
+                                fm = await client.get_messages(from_chat, msg.id)
+                                if fm and not getattr(fm, "empty", True):
+                                    target_msg = fm
+                            except: pass
+
+                        fp = await client.download_media(target_msg, file_name=temp_dlp)
                         if fp and os.path.exists(fp):
                             fsz_check = os.path.getsize(fp)
                             if fsz_check > 100:   # ≥100 bytes = real file
