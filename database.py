@@ -119,6 +119,21 @@ class Database:
         else:
             await self._set_share_cfg(**{key: value})
 
+    # AI Image Enhancer Config
+    async def get_enhancer_config(self) -> dict:
+        cfg = await self._share_cfg()
+        return cfg.get('enhancer', {
+            'api_key': '',
+            'enabled': False,
+            'model': 'esrgan',
+            'scale': 2
+        })
+
+    async def update_enhancer_config(self, **kwargs):
+        cfg = await self.get_enhancer_config()
+        cfg.update(kwargs)
+        await self._set_share_cfg(enhancer=cfg)
+
     # ── Per-Bot Config ────────────────────────────────────────────
     async def _bot_cfg(self, bot_id: str) -> dict:
         if not bot_id:

@@ -1878,7 +1878,9 @@ async def main_buttons(user_id=None):
                         callback_data='settings#main_menu_img')
            ],[
            InlineKeyboardButton('Bᴀᴛᴄʜ Lɪɴᴋs Bᴏᴛ Sᴇᴛᴜᴘ',
-                        callback_data='settings#sharebot')
+                        callback_data='settings#sharebot'),
+           InlineKeyboardButton('✨ AI Eɴʜᴀɴᴄᴇʀ',
+                        callback_data='settings#enhancer')
            ],[
            InlineKeyboardButton('❮ Bᴀᴄᴋ Tᴏ Mᴇɴᴜ', callback_data='back')
            ]]

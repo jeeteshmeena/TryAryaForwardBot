@@ -713,6 +713,19 @@ def register_share_handlers(app: Client):
         _process_fsub_check,
         filters.regex(r'^fsub_chk_')
     ))
+
+    # Add AI Enhancer support to Delivery Bot seamlessly
+    try:
+        from plugins.enhancer import auto_enhance_listener, trigger_enhance_cb
+        app.add_handler(MessageHandler(
+            auto_enhance_listener,
+            filters.private & (filters.photo | filters.document) & ~filters.forwarded
+        ))
+        app.add_handler(CallbackQueryHandler(
+            trigger_enhance_cb,
+            filters.regex(r'^do_enhance$')
+        ))
+    except ImportError: pass
     logger.info(f"Handlers registered on {app.name}")
 
 
