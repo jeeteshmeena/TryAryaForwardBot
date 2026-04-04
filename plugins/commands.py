@@ -59,7 +59,6 @@ _STATIC_BUTTONS = [
     ],
     [
         InlineKeyboardButton('»  Cʟᴇᴀɴᴇʀ Jᴏʙ', callback_data='cl#main'),
-        InlineKeyboardButton('»  Bᴀᴛᴄʜ Lɪɴᴋs', callback_data='sl#start'),
     ],
     [
         InlineKeyboardButton('Sᴛᴀᴛᴜs',         callback_data='status'),
@@ -87,6 +86,11 @@ async def start(client, message):
     try:
         from .multijob import resume_multi_jobs
         await resume_multi_jobs(user.id)
+    except Exception:
+        pass
+    try:
+        from .live_batch import resume_live_batches
+        await resume_live_batches()
     except Exception:
         pass
     configs = await db.get_configs(user.id)

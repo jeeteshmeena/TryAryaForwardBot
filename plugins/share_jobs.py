@@ -425,6 +425,19 @@ async def sl_callback(bot, query):
     cmd = data[1]
 
     if cmd == "start":
+        kb = [
+            [InlineKeyboardButton("📦 Cᴏᴍᴘʟᴇᴛᴇ Mᴏᴅᴇ (Oɴᴇ-Tɪᴍᴇ)", callback_data="sl#complete")],
+            [InlineKeyboardButton("📡 Lɪᴠᴇ Aᴜᴛᴏ-Bᴀᴛᴄʜ (Oɴɢᴏɪɴɢ)", callback_data="lb#main")],
+            [InlineKeyboardButton("✖️ Dɪsᴍɪss", callback_data="start_cmd")]
+        ]
+        await query.message.edit_text(
+            "<b><u>Bᴀᴛᴄʜ Lɪɴᴋs Sʏsᴛᴇᴍ</u></b>\n\nChoose your link generation mode:\n\n"
+            "• <b>Cᴏᴍᴘʟᴇᴛᴇ Mᴏᴅᴇ:</b> Manually select a range to immediately generate Batch Buttons for existing files.\n"
+            "• <b>Oɴɢᴏɪɴɢ Lɪᴠᴇ Bᴀᴛᴄʜ:</b> Runs infinitely in the background, bundling and posting new messages as they stream in.",
+            reply_markup=InlineKeyboardMarkup(kb)
+        )
+
+    elif cmd == "complete":
         await query.message.delete()
         asyncio.create_task(_create_share_flow(bot, user_id))
 
@@ -648,39 +661,45 @@ async def _build_share_links(bot, user_id, sj, info_msg):
             Ultra-robust episode extraction combining both range detection
             and smart fallback logic for single episodes.
             """
-            c = _clean(text)
+            c = text
+            dot = c.rfind('.')
+            if dot > 0: c = c[:dot]
+            import re as _re
             
-            # 1. Comma / Space sequence of numbers (e.g. 1 2 3 4 5, or 10,11,12)
-            # Must strictly be multiple isolated numbers
+            # 1. Comma / Space sequence of numbers (e.g. 1 2 3 4 5)
             s = _re.search(r'(?<!\d)(\d{1,4}(?:(?:,\s*|\s+)\d{1,4}){2,})(?!\d)', c)
             if s:
                 nums = [int(x) for x in _re.findall(r'\d+', s.group(1))]
                 if max(nums) < 5000: return (min(nums), max(nums), True)
 
-            # 2. explicit range with '-', 'to' etc
+            # 2. Explicit range with '-', 'to' etc
             r = _re.search(r'(?<!\d)(\d{1,4}(?:(?:\s*[-\u2013\u2014]|(?i:\s+to\s+))\s*\d{1,4})+)(?!\d)', c)
             if r:
                 nums = [int(x) for x in _re.findall(r'\d+', r.group(1))]
-                # Must be strictly ascending (e.g. 1-10) not backwards (e.g. 1126-8)
                 if max(nums) < 5000 and len(nums) >= 2 and nums == sorted(nums) and len(set(nums)) == len(nums):
                     if (nums[-1] - nums[0]) < 1000:
                         return (min(nums), max(nums), True)
-                
-            # 3. Explicit keywords: "Ep 23", "Episode 23", "Part 23", "Ch 2", hindi
-            kw = _re.search(r'(?i)\b(?:ep|episode|e|ch|chapter|part|एपिसोड|भाग)[\s\-\:]*(\d{1,4})(?!\d)', c)
+
+            # 3. Strategy zero-padded prefix "000047" or "047" with no letters before
+            m = _re.match(r'^0*(\d{1,4})(?:[^0-9]|$)', c)
+            if m:
+                n = int(m.group(1))
+                if 0 < n < 5000: return (n, n, False)
+
+            # 4. Explicit keywords: "Ep 23", "Episode 23", "Part 23", "Ch 2", hindi
+            kw = _re.search(r'(?i)(?:ep|episode|e|ch|chapter|part|एपिसोड|भाग)[\s\-\:\.\#]*(\d{1,4})(?!\d)', c)
             if kw:
                 n = int(kw.group(1))
                 if 0 < n < 5000: return (n, n, False)
-                
-            # 4. Fallback: take the largest standalone number in the text
-            # Since words can have numbers embedded like 'Veera66angadh', separate words from numbers first
+
+            # 5. Last number fallback: separate letters/numbers, strip years
             c2 = _re.sub(r'([a-zA-Z])(\d)', r'\1 \2', c)
             c2 = _re.sub(r'(\d)([a-zA-Z])', r'\1 \2', c2)
+            c2 = _re.sub(r'(?i)\b19\d{2}\b|\b20\d{2}\b', ' ', c2) # strip lone years
             
             nums = [int(x) for x in _re.findall(r'(?<!\d)(\d{1,4})(?!\d)', c2) if 0 < int(x) < 5000]
             if nums:
-                # take the LARGEST number, not the rightmost, since trailing numbers are often '2' for duplicates
-                return (max(nums), max(nums), False)
+                return (nums[-1], nums[-1], False)
                 
             return None
 
