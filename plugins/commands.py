@@ -31,11 +31,14 @@ async def _main_buttons(user_id: int):
             InlineKeyboardButton('»  Mᴇʀɢᴇʀ Jᴏʙ',   callback_data='mg#main'),
         ],
         [
+            InlineKeyboardButton('»  Cʟᴇᴀɴᴇʀ Jᴏʙ', callback_data='cl#main'),
             InlineKeyboardButton('»  Cʟᴇᴀɴ MSG',    callback_data='settings#cleanmsg'),
-            InlineKeyboardButton('»  Bᴀᴛᴄʜ Lɪɴᴋs',  callback_data='sl#start'),
         ],
         [
+            InlineKeyboardButton('»  Bᴀᴛᴄʜ Lɪɴᴋs',  callback_data='sl#start'),
             InlineKeyboardButton('Sᴛᴀᴛᴜs',         callback_data='status'),
+        ],
+        [
             InlineKeyboardButton('Aʙᴏᴜᴛ',           callback_data='about'),
         ],
     ]
@@ -52,6 +55,10 @@ _STATIC_BUTTONS = [
     ],
     [
         InlineKeyboardButton('»  Mᴜʟᴛɪ Jᴏʙ',   callback_data='mj#list'),
+        InlineKeyboardButton('»  Bᴀᴛᴄʜ Lɪɴᴋs', callback_data='sl#start'),
+    ],
+    [
+        InlineKeyboardButton('»  Cʟᴇᴀɴᴇʀ Jᴏʙ', callback_data='cl#main'),
         InlineKeyboardButton('»  Bᴀᴛᴄʜ Lɪɴᴋs', callback_data='sl#start'),
     ],
     [
