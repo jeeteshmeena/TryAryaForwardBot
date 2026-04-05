@@ -639,17 +639,22 @@ async def _process_delivery_button(client, query):
         if am == "custom":
             upi_uri = "upi://pay?pa=heyjeetx@naviaxis&pn=Jeetesh%20Meena&cu=INR"
             am_txt = "<code>Any Custom Amount</code>"
+            instruction_txt = (
+                f"<i>Scan the QR Code above, or use the direct deep-link below.\n"
+                f"For Custom Amounts, your Payment App will automatically prompt you to enter the amount you wish to contribute!</i>"
+            )
         else:
             upi_uri = f"upi://pay?pa=heyjeetx@naviaxis&pn=Jeetesh%20Meena&am={am}&cu=INR"
             am_txt = f"<code>₹{am}</code>"
+            instruction_txt = f"<i>Scan the exact ₹{am} QR Code above, or use the direct deep-link below:</i>"
             
         caption = (
-            f"<b>📱 " + _sc("scan or tap to support") + "</b>\n\n"
-            f"<b>‣  " + _sc("amount:") + "</b>  {am_txt}\n"
-            f"<b>‣  " + _sc("upi id:") + "</b>  <code>heyjeetx@naviaxis</code>\n"
-            f"<b>‣  " + _sc("name:") + "</b>  Jeetesh Meena\n\n"
-            f"<i>Scan the QR Code above, or use the direct deep-link below:</i>\n\n"
-            f"🔗 <a href='{upi_uri}'><b>[ " + _sc("tap to open upi app directly") + " ]</b></a>"
+            f"<b>📱 {_sc('scan or tap to support')}</b>\n\n"
+            f"<b>‣  {_sc('amount:')}</b>  {am_txt}\n"
+            f"<b>‣  {_sc('upi id:')}</b>  <code>heyjeetx@naviaxis</code>\n"
+            f"<b>‣  {_sc('name:')}</b>  Jeetesh Meena\n\n"
+            f"{instruction_txt}\n\n"
+            f"🔗 <a href='{upi_uri}'><b>[ {_sc('tap to open upi app directly')} ]</b></a>"
         )
         
         import urllib.parse
