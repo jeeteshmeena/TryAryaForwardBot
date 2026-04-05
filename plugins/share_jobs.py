@@ -55,7 +55,7 @@ def _sc(text: str) -> str:
 
 new_share_job = {}
 
-async def _create_share_flow(bot, user_id):
+async def _create_share_flow(bot, user_id, force_live=False):
     try:
         new_share_job[user_id] = {}
         share_bots = await db.get_share_bots()
@@ -389,16 +389,27 @@ async def _create_share_flow(bot, user_id):
         if bpp < 1: bpp = 10
         new_share_job[user_id]['buttons_per_post'] = bpp
 
-        msg_live = await _ask(bot, user_id, 
-            "<b>❪ STEP 11: LIVE MONITORING ❫</b>\n\nHow many new episodes should arrive before posting a new batch automatically?\n\n<i>Send <code>0</code> or <code>Skip</code> to disable Live Monitoring. Send <code>10</code> to bundle 10 incoming files per batch.</i>", 
-            reply_markup=markup
-        )
-        if getattr(msg_live, 'text', None) and any(x in msg_live.text.lower() for x in ['cancel', 'cᴀɴᴄᴇʟ', '⛔']): return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
-        if getattr(msg_live, "text", None) and any(x in msg_live.text.lower() for x in ["/undo", "undo", "uɴᴅᴏ", "↩️"]):
-            return await bot.send_message(user_id, "<b>‣ Undo: Please restart the Batch Links flow from the menu.</b>", reply_markup=ReplyKeyboardRemove())
-        
-        raw_live = (msg_live.text or msg_live.caption or "0").strip()
-        new_share_job[user_id]['live_threshold'] = int(raw_live) if raw_live.isdigit() else 0
+        if force_live:
+            msg_live = await _ask(bot, user_id, 
+                "<b>❪ STEP 11: LIVE MONITORING THRESHOLD ❫</b>\n\nHow many new episodes should arrive before posting a new batch automatically?\n\n<i>Send a number (e.g. <code>10</code>).</i>", 
+                reply_markup=markup
+            )
+            if getattr(msg_live, 'text', None) and any(x in msg_live.text.lower() for x in ['cancel', 'cᴀɴᴄᴇʟ', '⛔']): return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
+            raw_live = (msg_live.text or msg_live.caption or "10").strip()
+            thresh = int(raw_live) if raw_live.isdigit() else 10
+            if thresh < 1: thresh = 10
+            new_share_job[user_id]['live_threshold'] = thresh
+        else:
+            msg_live = await _ask(bot, user_id, 
+                "<b>❪ STEP 11: LIVE MONITORING ❫</b>\n\nHow many new episodes should arrive before posting a new batch automatically?\n\n<i>Send <code>0</code> or <code>Skip</code> to disable Live Monitoring. Send <code>10</code> to bundle 10 incoming files per batch.</i>", 
+                reply_markup=markup
+            )
+            if getattr(msg_live, 'text', None) and any(x in msg_live.text.lower() for x in ['cancel', 'cᴀɴᴄᴇʟ', '⛔']): return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
+            if getattr(msg_live, "text", None) and any(x in msg_live.text.lower() for x in ["/undo", "undo", "uɴᴅᴏ", "↩️"]):
+                return await bot.send_message(user_id, "<b>‣ Undo: Please restart the Batch Links flow from the menu.</b>", reply_markup=ReplyKeyboardRemove())
+            
+            raw_live = (msg_live.text or msg_live.caption or "0").strip()
+            new_share_job[user_id]['live_threshold'] = int(raw_live) if raw_live.isdigit() else 0
 
         sj = new_share_job[user_id]
         

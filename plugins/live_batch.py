@@ -80,8 +80,8 @@ def _bold_sans(s):
         else: res += c
     return res
 
-async def _post_live_batch(bot, job: dict, chunk_msgs: list):
-    """Generates the aesthetic button block and securely stores appUrls."""
+async def _post_live_batch(sb_client, job: dict, chunk_msgs: list):
+    """Generates the aesthetic button block and securely stores appUrls inside the Target Channel."""
     uid = job["user_id"]
     share_bot_id = job["share_bot_id"]
     target_ch = job["target"]
@@ -91,16 +91,13 @@ async def _post_live_batch(bot, job: dict, chunk_msgs: list):
     if not sb: return False
     bot_usr = sb.get("username")
     
-    # Process episodes and metadata
     raw_buttons = []
     
     for m in chunk_msgs:
-        # Standard extraction matching deepscan rules perfectly
         fname = getattr(m.document or m.audio or m.video or m.voice, "file_name", None) or m.caption or ""
         extracted = _deep_extract_ep(fname)
         ep_val = extracted[0] if extracted else "?"
         
-        # Save securely mapped to Delivery Bot schema
         uuid_str = str(uuid.uuid4()).replace('-', '')[:16]
         await db.save_share_link(uuid_str, [m.id], job["source"], protect=protect, access_hash=None)
         url = f"https://t.me/{bot_usr}?start={uuid_str}"
@@ -110,7 +107,6 @@ async def _post_live_batch(bot, job: dict, chunk_msgs: list):
     first_ep = raw_buttons[0]["ep"]
     last_ep  = raw_buttons[-1]["ep"]
     
-    # Ensure numerical formatting cleanly falls back
     if str(first_ep).isdigit() and str(last_ep).isdigit():
         if int(first_ep) > int(last_ep): first_ep, last_ep = last_ep, first_ep
         
@@ -121,16 +117,14 @@ async def _post_live_batch(bot, job: dict, chunk_msgs: list):
         row = [c["btn"] for c in raw_buttons[j:j + 2]]
         keyboard.append(row)
         
-    # Standard Footer parity exactly matching batch output
     keyboard.append([
         InlineKeyboardButton(_sc("tutorial"), url="https://t.me/StoriesLinkopningguide"),
         InlineKeyboardButton(_sc("support"), url="https://t.me/AryaHelpTG")
     ])
     
-    # Post it
     for attempt in range(5):
         try:
-            await _CLIENT.send_message(
+            await sb_client.send_message(
                 chat_id=target_ch, text=txt,
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
@@ -144,6 +138,12 @@ async def _post_live_batch(bot, job: dict, chunk_msgs: list):
 
 async def _lb_run_job(job_id: str):
     logger.info(f"Starting Live Batch job {job_id}")
+    from plugins.share_bot import share_clients
+    from plugins.test import CLIENT as _FACTORY
+    
+    src_client = None
+    ub_sess = None
+    
     while True:
         ev = _lb_paused.get(job_id)
         if ev and not ev.is_set():
@@ -151,6 +151,9 @@ async def _lb_run_job(job_id: str):
             
         job = await _lb_get_job(job_id)
         if not job or job.get("status") in ("stopped", "failed"):
+            if src_client:
+                try: await src_client.disconnect()
+                except: pass
             break
             
         try:
@@ -160,12 +163,31 @@ async def _lb_run_job(job_id: str):
             last_seen = job.get("last_seen_id", 0)
             buffer_mids = job.get("buffer_mids", [])
             fwd_count = job.get("forwarded", 0)
+            sb_client = share_clients.get(str(job["share_bot_id"]))
+            
+            # Reconnect Userbot if missing or dead
+            if not src_client or not src_client.is_connected:
+                bots = await db.get_bots(job["user_id"])
+                userbot = next((b for b in bots if getattr(b, "is_bot", False) == False), None)
+                if userbot:
+                    ub_sess = userbot["session"]
+                    src_client = _FACTORY().client({"session": ub_sess}, False)
+                    await src_client.connect()
+                else:
+                    logger.error("Live Batch: Missing active Userbot.")
+                    await asyncio.sleep(60)
+                    continue
+            
+            if not sb_client:
+                logger.error("Live Batch: Share Bot is entirely offline.")
+                await asyncio.sleep(60)
+                continue
             
             # Setup Progress Bar
             prog_id = job.get("prog_id")
             if not prog_id:
                 try:
-                    p = await _CLIENT.send_message(target, 
+                    p = await sb_client.send_message(target, 
                         f"📡 <b>Live Job Active — monitoring for new messages…</b>\n\n"
                         f"✅ Forwarded so far: <code>{fwd_count}</code>\n"
                         f"»  Last updated: <code>{time.strftime('%H:%M:%S')}</code>\n\n"
@@ -173,16 +195,14 @@ async def _lb_run_job(job_id: str):
                     )
                     prog_id = p.id
                     await _lb_update_job(job_id, {"prog_id": prog_id})
-                    try: await _CLIENT.pin_chat_message(target, prog_id, disable_notification=True)
+                    try: await sb_client.pin_chat_message(target, prog_id, disable_notification=True)
                     except: pass
                 except: pass
 
             fetched = []
-            
-            # Very carefully extract new messages using batch methodology
             batch_req = list(range(last_seen + 1, last_seen + 201))
             try:
-                msgs = await _CLIENT.get_messages(source, batch_req)
+                msgs = await src_client.get_messages(source, batch_req)
                 if not isinstance(msgs, list): msgs = [msgs]
             except Exception as e:
                 msgs = []
@@ -196,39 +216,32 @@ async def _lb_run_job(job_id: str):
             if valid:
                 last_seen = valid[-1].id
                 
-            # If nothing valid, but there might be a gap, we must still advance `last_seen` if
-            # an empty ID was fetched so we don't get permanently stuck polling deleted messages.
-            # (To be extremely safe, we only advance if the messages request succeeded)
             if not valid and msgs and any(x is not None for x in msgs):
-                # Jump over gaps
                 valid_probe = [m for m in msgs if m and not m.empty]
                 if valid_probe:
                     last_seen = max(last_seen, valid_probe[-1].id)
 
             await _lb_update_job(job_id, {"last_seen_id": last_seen, "buffer_mids": buffer_mids})
 
-            # Check threshold trigger
             if len(buffer_mids) >= thresh:
-                # We reached threshold!
                 chunk_ids = buffer_mids[:thresh]
                 rem_mids  = buffer_mids[thresh:]
                 
-                actual_msgs = await _CLIENT.get_messages(source, chunk_ids)
+                actual_msgs = await src_client.get_messages(source, chunk_ids)
                 if not isinstance(actual_msgs, list): actual_msgs = [actual_msgs]
                 actual_msgs = [m for m in actual_msgs if m and not m.empty]
                 
                 # Execute payload
-                success = await _post_live_batch(_CLIENT, job, actual_msgs)
+                success = await _post_live_batch(sb_client, job, actual_msgs)
                 if success:
                     fwd_count += len(chunk_ids)
                     await _lb_update_job(job_id, {"buffer_mids": rem_mids, "forwarded": fwd_count})
             
-            # Progress Updates
             now_t = time.time()
             up_time = job.get("last_prog_update", 0)
             if prog_id and (now_t - up_time) > 60:
                 try:
-                    await _CLIENT.edit_message_text(target, prog_id,
+                    await sb_client.edit_message_text(target, prog_id,
                         f"📡 <b>Live Job Active — monitoring for new messages…</b>\n\n"
                         f"✅ Forwarded so far: <code>{fwd_count}</code>\n"
                         f"»  Last updated: <code>{time.strftime('%H:%M:%S')}</code>\n\n"
@@ -243,92 +256,19 @@ async def _lb_run_job(job_id: str):
             logger.error(f"Live Batch generic loop error: {e}")
             await asyncio.sleep(20)
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Setups and Ask flow
-# ─────────────────────────────────────────────────────────────────────────────
 @Client.on_callback_query(filters.regex(r"^lb#(main|setup|view|pause|resume|stop|del)"))
 async def _lb_callbacks(bot, update: CallbackQuery):
     uid = update.from_user.id
     data = update.data.split("#")
     action = data[1]
-    
     if action == "setup":
-        await update.message.edit_reply_markup(None)
-        
-        # Share Bot
-        share_bots = await db.get_share_bots()
-        if not share_bots:
-            return await bot.send_message(uid, "<b>❌ No Share Bots available. Add in /settings.</b>")
-            
-        sb_kb = [[f"🤖 @{b['username']}"] for b in share_bots]
-        sb_kb.append(["⛔ Cᴀɴᴄᴇʟ"])
-        
-        msg1 = await _lb_ask(bot, uid, "<b>📡 Live Auto-Batch Link Setup</b>\n\n<b>Phase 1:</b> Select your Share Bot:", reply_markup=ReplyKeyboardMarkup(sb_kb, resize_keyboard=True, one_time_keyboard=True))
-        if not msg1.text or "⛔" in msg1.text: return await bot.send_message(uid, "<i>Cancelled.</i>", reply_markup=ReplyKeyboardRemove())
-        s_usr = msg1.text.replace("🤖 @", "").strip()
-        share_bot = next((b for b in share_bots if b['username'] == s_usr), None)
-        if not share_bot: return await bot.send_message(uid, "Invalid bot.", reply_markup=ReplyKeyboardRemove())
-        
-        # Databases (Source and Target)
-        chans = await db.get_user_channels(uid)
-        ch_kb = [[ch['title']] for ch in chans]
-        ch_kb.append(["⛔ Cᴀɴᴄᴇʟ"])
-        
-        msg2 = await _lb_ask(bot, uid, "<b>Phase 2:</b> Select SOURCE Database Channel:", reply_markup=ReplyKeyboardMarkup(ch_kb, resize_keyboard=True, one_time_keyboard=True))
-        if not msg2.text or "⛔" in msg2.text: return await bot.send_message(uid, "<i>Cancelled.</i>", reply_markup=ReplyKeyboardRemove())
-        src_ch = next((c for c in chans if c["title"] == msg2.text.strip()), None)
-        if not src_ch: return await bot.send_message(uid, "Invalid source.", reply_markup=ReplyKeyboardRemove())
-        
-        msg3 = await _lb_ask(bot, uid, "<b>Phase 3:</b> Select TARGET Public Channel:", reply_markup=ReplyKeyboardMarkup(ch_kb, resize_keyboard=True, one_time_keyboard=True))
-        if not msg3.text or "⛔" in msg3.text: return await bot.send_message(uid, "<i>Cancelled.</i>", reply_markup=ReplyKeyboardRemove())
-        tgt_ch = next((c for c in chans if c["title"] == msg3.text.strip()), None)
-        if not tgt_ch: return await bot.send_message(uid, "Invalid target.", reply_markup=ReplyKeyboardRemove())
-        
-        # Story Name
-        msg4 = await _lb_ask(bot, uid, "<b>Phase 4:</b> Name of the Story/Series? (e.g. `TDMB`)", reply_markup=ReplyKeyboardRemove())
-        if not msg4.text or "⛔" in msg4.text: return await bot.send_message(uid, "<i>Cancelled.</i>", reply_markup=ReplyKeyboardRemove())
-        story = msg4.text.strip()
-        
-        # Threshold
-        msg5 = await _lb_ask(bot, uid, "<b>Phase 5:</b> Threshold limit?\n<i>When exactly how many new files arrive should it combine them and post? (Default: 10)</i>")
-        if not msg5.text or "⛔" in msg5.text: return await bot.send_message(uid, "<i>Cancelled.</i>", reply_markup=ReplyKeyboardRemove())
-        thresh = int(msg5.text.strip()) if msg5.text.strip().isdigit() else 10
-        
-        # Security Protect
-        protect_kb = ReplyKeyboardMarkup([["🔐 Protect (No Forwards)", "🔓 Open (Allow Forwards)"]], resize_keyboard=True, one_time_keyboard=True)
-        msg6 = await _lb_ask(bot, uid, "<b>Phase 6:</b> Should link files be protected?", reply_markup=protect_kb)
-        protect = "Protect" in (msg6.text or "")
-        await bot.send_message(uid, "<b>Scanning database for starting point...</b>", reply_markup=ReplyKeyboardRemove())
-        
-        # Get offset ID globally so it starts tracking accurately NOW
-        last_seen = 0
+        from plugins.share_jobs import _create_share_flow
         try:
-            async for m in _CLIENT.get_chat_history(int(src_ch['chat_id']), limit=1):
-                last_seen = m.id
-        except: pass
-
-        job_id = str(uuid.uuid4())
-        job = {
-            "job_id": job_id, "user_id": uid, "status": "running",
-            "share_bot_id": share_bot["id"],
-            "source": int(src_ch['chat_id']),
-            "target": int(tgt_ch['chat_id']),
-            "story": story,
-            "threshold": thresh,
-            "protect": protect,
-            "last_seen_id": last_seen,
-            "buffer_mids": [],
-            "forwarded": 0
-        }
-        await _lb_save_job(job)
-        
-        _lb_paused[job_id] = asyncio.Event()
-        _lb_paused[job_id].set()
-        _lb_tasks[job_id] = asyncio.create_task(_lb_run_job(job_id))
-        
-        await bot.send_message(uid, f"<b>✅ Live Batch system activated for {story}!</b>\n\nIt is now continuously monitoring the source channel.")
-        update.data = f"lb#main"
-        return await _lb_callbacks(bot, update)
+            await update.message.delete()
+        except:
+            pass
+        asyncio.create_task(_create_share_flow(bot, uid, force_live=True))
+        return True
 
     elif action == "main":
         jobs = await _lb_get_all_jobs(uid)
