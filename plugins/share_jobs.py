@@ -1377,10 +1377,10 @@ def _analyze_scan_report(report_text: str) -> dict:
 
     # Parse header info
     for line in lines[:30]:
-        m = _deepre.search(r'Story\s*:\s*(.+)', line)
-        if m: result["story"] = m.group(1).strip()
-        m = _deepre.search(r'Files processed\s*:\s*(\d+)', line)
-        if m: result["total_files"] = int(m.group(1))
+        m = _deepre.search(r'Story\s*:\s*(.+)|Channel\s*:\s*(.+)', line)
+        if m: result["story"] = m.group(1) or m.group(2) or ""
+        m = _deepre.search(r'Files processed\s*:\s*(\d+)|Files\s*:\s*(\d+)', line)
+        if m: result["total_files"] = int(m.group(1) or m.group(2) or 0)
         m = _deepre.search(r'Episode range\s*:\s*(\d+)\s*[–\-]\s*(\d+)', line)
         if m: result["ep_range"] = (int(m.group(1)), int(m.group(2)))
         m = _deepre.search(r"Truly missing.*?:\s*(.+)", line)
@@ -1388,15 +1388,27 @@ def _analyze_scan_report(report_text: str) -> dict:
             nums = [int(x) for x in _deepre.findall(r'\d+', m.group(1))]
             result["missing"].extend(nums)
 
-    # Parse file entries — look for lines with msg_id + filename patterns
+    # Parse file entries
     for line in lines:
-        # Pattern: "  123456  |  000047_Filename.mp3  |  Ep 47"
-        # or simple: "000047_Story.mp3"
-        m = _deepre.search(r'(\d{5,})\s*[|\-:]\s*([^\|]+?)(?:\s*[|\-:]\s*(.+))?$', line)
-        if m:
-            msg_id = int(m.group(1))
-            fname = m.group(2).strip()
-            parsed_ep_str = (m.group(3) or "").strip()
+        line = line.strip()
+        msg_id = None
+        fname = None
+        parsed_ep_str = ""
+        
+        # Format 1: db_scanner output "    1     15148  document  000047_Filename.mp3  [2.1MB]"
+        m_db = _deepre.search(r'^\d+\s+(\d+)\s+(audio|voice|document|video|\?)\s+(.+?)(?:\s+\[\d.*?\]|\s+↳.*)?$', line)
+        if m_db:
+            msg_id = int(m_db.group(1))
+            fname = m_db.group(3).strip()
+        else:
+            # Format 2: Old share_jobs format "  123456  |  000047_Filename.mp3  |  Ep 47"
+            m_old = _deepre.search(r'(\d{5,})\s*[|\-:]\s*([^\|]+?)(?:\s*[|\-:]\s*(.+))?$', line)
+            if m_old:
+                msg_id = int(m_old.group(1))
+                fname = m_old.group(2).strip()
+                parsed_ep_str = (m_old.group(3) or "").strip()
+
+        if msg_id and fname and fname != '(no name)' and fname != 'FileName / Title':
             suggested = _deep_extract_ep(fname)
             entry = {
                 "msg_id": msg_id,
