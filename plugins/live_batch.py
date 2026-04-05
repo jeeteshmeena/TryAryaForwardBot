@@ -83,59 +83,83 @@ def _bold_sans(s):
 
 async def _post_live_batch(sb_client, job: dict, chunk_msgs: list):
     """Generates the aesthetic button block and securely stores appUrls inside the Target Channel."""
-    uid = job["user_id"]
-    share_bot_id = job["share_bot_id"]
-    target_ch = job["target"]
-    protect = job.get("protect", True)
-    
-    sb = await db.db.bots.find_one({"id": share_bot_id, "user_id": uid})
-    if not sb: return False
-    bot_usr = sb.get("username")
-    
-    raw_buttons = []
-    
-    for m in chunk_msgs:
-        fname = getattr(m.document or m.audio or m.video or m.voice, "file_name", None) or m.caption or ""
-        extracted = _deep_extract_ep(fname)
-        ep_val = extracted[0] if extracted else "?"
+    try:
+        uid = job["user_id"]
+        share_bot_id = job.get("share_bot_id")
+        target_ch = int(job["target"])
+        protect = job.get("protect", True)
         
-        uuid_str = str(uuid.uuid4()).replace('-', '')[:16]
-        await db.save_share_link(uuid_str, [m.id], job["source"], protect=protect, access_hash=None)
-        url = f"https://t.me/{bot_usr}?start={uuid_str}"
+        if not chunk_msgs:
+            logger.warning("Live Batch Post: chunk_msgs is completely empty!")
+            return False
+            
+        bot_usr = ""
+        if share_bot_id == "bot":
+            from bot import BOT_INSTANCE
+            if not BOT_INSTANCE or not getattr(BOT_INSTANCE, "me", None):
+                from plugins.test import Config
+                from pyrogram.types import User
+                # Simple fallback if me is not loaded
+                bot_usr = Config.BOT_USERNAME.replace("@", "") if hasattr(Config, "BOT_USERNAME") else "arya_bot"
+            else:
+                bot_usr = BOT_INSTANCE.me.username
+        else:
+            share_bot_id = int(str(share_bot_id))
+            sb = await db.db.bots.find_one({"id": share_bot_id})
+            if not sb: 
+                logger.warning(f"Live Batch Post Error: Share bot missing from DB (ID: {share_bot_id})")
+                return False
+            bot_usr = sb.get("username", "")
         
-        raw_buttons.append({"btn": InlineKeyboardButton(_sc(f"{ep_val}"), url=url), "ep": ep_val})
+        raw_buttons = []
         
-    first_ep = raw_buttons[0]["ep"]
-    last_ep  = raw_buttons[-1]["ep"]
-    
-    if str(first_ep).isdigit() and str(last_ep).isdigit():
-        if int(first_ep) > int(last_ep): first_ep, last_ep = last_ep, first_ep
+        for m in chunk_msgs:
+            fname = getattr(m.document or m.audio or m.video or m.voice, "file_name", None) or m.caption or ""
+            extracted = _deep_extract_ep(fname)
+            ep_val = extracted[0] if extracted else "?"
+            
+            uuid_str = str(uuid.uuid4()).replace('-', '')[:16]
+            await db.save_share_link(uuid_str, [m.id], job["source"], protect=protect, access_hash=None)
+            url = f"https://t.me/{bot_usr}?start={uuid_str}"
+            
+            raw_buttons.append({"btn": InlineKeyboardButton(_sc(f"{ep_val}"), url=url), "ep": ep_val})
+            
+        first_ep = raw_buttons[0]["ep"]
+        last_ep  = raw_buttons[-1]["ep"]
         
-    txt = f"{_bold_sans(job['story'])} 𝗘𝗣𝗦 {first_ep} - {last_ep}"
-    
-    keyboard = []
-    for j in range(0, len(raw_buttons), 2):
-        row = [c["btn"] for c in raw_buttons[j:j + 2]]
-        keyboard.append(row)
+        if str(first_ep).isdigit() and str(last_ep).isdigit():
+            if int(first_ep) > int(last_ep): first_ep, last_ep = last_ep, first_ep
+            
+        txt = f"{_bold_sans(job['story'])} 𝗘𝗣𝗦 {first_ep} - {last_ep}"
         
-    keyboard.append([
-        InlineKeyboardButton(_sc("tutorial"), url="https://t.me/StoriesLinkopningguide"),
-        InlineKeyboardButton(_sc("support"), url="https://t.me/AryaHelpTG")
-    ])
-    
-    for attempt in range(5):
-        try:
-            await sb_client.send_message(
-                chat_id=target_ch, text=txt,
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-            return True
-        except FloodWait as fw:
-            await asyncio.sleep(fw.value + 2)
-        except Exception as e:
-            logger.warning(f"Live Batch Post Error: {e}")
-            await asyncio.sleep(5)
-    return False
+        keyboard = []
+        for j in range(0, len(raw_buttons), 2):
+            row = [c["btn"] for c in raw_buttons[j:j + 2]]
+            keyboard.append(row)
+            
+        keyboard.append([
+            InlineKeyboardButton(_sc("tutorial"), url="https://t.me/StoriesLinkopningguide"),
+            InlineKeyboardButton(_sc("support"), url="https://t.me/AryaHelpTG")
+        ])
+        
+        for attempt in range(5):
+            try:
+                await sb_client.send_message(
+                    chat_id=target_ch, text=txt,
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
+                return True
+            except FloodWait as fw:
+                await asyncio.sleep(fw.value + 2)
+            except Exception as tg_err:
+                logger.warning(f"Live Batch Post TG Send Error: {tg_err}")
+                await asyncio.sleep(5)
+                
+        return False
+    except Exception as grand_err:
+        import traceback
+        logger.error(f"FATAL Exception in _post_live_batch: {traceback.format_exc()}")
+        return False
 
 async def _lb_run_job(job_id: str):
     logger.info(f"Starting Live Batch job {job_id}")
@@ -197,8 +221,8 @@ async def _lb_run_job(job_id: str):
             if not prog_id:
                 try:
                     p = await sb_client.send_message(target, 
-                        f"📡 <b>Live Job Active — monitoring for new messages…</b>\n\n"
-                        f"✅ Forwarded so far: <code>{fwd_count}</code>\n"
+                        f"📡 <b>Bᴀᴛᴄʜ Lɪɴᴋs Lɪᴠᴇ Aᴜᴛᴏ-Gᴇɴᴇʀᴀᴛᴏʀ</b>\n\n"
+                        f"✅ Auto-Generated Blocks: <code>{fwd_count}</code>\n"
                         f"»  Last updated: <code>{time.strftime('%H:%M:%S')}</code>\n\n"
                         f"<i>This message updates every 60s. Powered by Arya Forward Bot</i>"
                     )
@@ -279,8 +303,8 @@ async def _lb_run_job(job_id: str):
             if prog_id and (now_t - up_time) > 60:
                 try:
                     await sb_client.edit_message_text(target, prog_id,
-                        f"📡 <b>Live Job Active — monitoring for new messages…</b>\n\n"
-                        f"✅ Forwarded so far: <code>{fwd_count}</code>\n"
+                        f"📡 <b>Bᴀᴛᴄʜ Lɪɴᴋs Lɪᴠᴇ Aᴜᴛᴏ-Gᴇɴᴇʀᴀᴛᴏʀ</b>\n\n"
+                        f"✅ Auto-Generated Blocks: <code>{fwd_count}</code>\n"
                         f"»  Last updated: <code>{time.strftime('%H:%M:%S')}</code>\n\n"
                         f"<i>This message updates every 60s. Powered by Arya Forward Bot</i>"
                     )
