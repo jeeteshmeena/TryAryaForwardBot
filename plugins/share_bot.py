@@ -644,19 +644,20 @@ async def _process_delivery_button(client, query):
             am_txt = f"<code>₹{am}</code>"
             
         caption = (
-            f"<b>📱 " + _sc("scan to support") + "</b>\n\n"
+            f"<b>📱 " + _sc("scan or tap to support") + "</b>\n\n"
             f"<b>‣  " + _sc("amount:") + "</b>  {am_txt}\n"
             f"<b>‣  " + _sc("upi id:") + "</b>  <code>heyjeetx@naviaxis</code>\n"
             f"<b>‣  " + _sc("name:") + "</b>  Jeetesh Meena\n\n"
-            f"<i>Open your camera or any UPI App (GPay, PhonePe, Paytm) to scan this QR code. You can also tap the button below to directly open your installed payment app!</i>"
+            f"<i>Scan the QR Code above, or use the direct deep-link below:</i>\n\n"
+            f"🔗 <a href='{upi_uri}'><b>[ " + _sc("tap to open upi app directly") + " ]</b></a>"
         )
         
         import urllib.parse
         encoded_uri = urllib.parse.quote(upi_uri)
-        qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=500x500&data={encoded_uri}"
+        qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=500x500&margin=2&data={encoded_uri}"
         
+        # Only put standard HTTP links in Inline Buttons
         buttons = [
-            [InlineKeyboardButton("💳 " + _sc("open upi app to pay"), url=upi_uri)],
             [InlineKeyboardButton("🌍 " + _sc("pay via razorpay instead"), url="https://razorpay.me/@SusJeetX")]
         ]
         
