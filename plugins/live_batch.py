@@ -169,7 +169,7 @@ async def _lb_run_job(job_id: str):
             if not src_client or not getattr(src_client, "is_connected", False):
                 acc_id = job.get("account_id", "bot")
                 if acc_id == "bot":
-                    src_client = _CLIENT
+                    src_client = sb_client
                 else:
                     bots = await db.get_bots(job["user_id"])
                     acc_bot = next((b for b in bots if str(b.get("id")) == str(acc_id)), None)
@@ -184,7 +184,7 @@ async def _lb_run_job(job_id: str):
                             continue
                     else:
                         # Fallback to main bot if specified account disappears
-                        src_client = _CLIENT
+                        src_client = sb_client
             
             if not sb_client:
                 logger.error("Live Batch: Share Bot is entirely offline.")
@@ -208,6 +208,7 @@ async def _lb_run_job(job_id: str):
                 except: pass
 
             fetched = []
+            batch_req = []
             
             try:
                 # Find the latest message ID in the channel
