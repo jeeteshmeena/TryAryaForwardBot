@@ -208,6 +208,19 @@ class Database:
         doc = await self.share_config.find_one({'_id': f'bot_{bot_id}'})
         return (doc or {}).get('total_delivered', 0)
 
+    # Per-bot user tracking
+    async def add_share_bot_user(self, bot_id: str, user_id: int):
+        """Track that this user has used this share bot."""
+        if not bot_id: return
+        await self.col.update_one(
+            {'id': user_id},
+            {
+                '$addToSet': {'used_share_bots': bot_id},
+                '$set': {'id': user_id}  # ensure document structure
+            },
+            upsert=True
+        )
+
     # Per-bot fetching media (GIF/image/video shown while delivering files)
     async def get_bot_fetching_media(self, bot_id: str) -> dict:
         """Return {'file_id': ..., 'media_type': 'photo'|'animation'|'video'} or {}."""

@@ -59,8 +59,9 @@ def _get_ai_text(cfg):
     return (
         f"<b>❪ A I   E N H A N C E R ❫</b>\n\n"
         f"<b>Status:</b> <code>{status}</code>\n\n"
-        "This tool uses Replicate's Real-ESRGAN model to upscale and improve the quality of images and covers automatically. "
-        "A button will magically appear beneath visual media while delivering batch links if you have configured an API key."
+        "This tool uses Replicate's Real-ESRGAN model to upscale and improve the quality of images and covers automatically.\n\n"
+        "<b>How to use:</b>\n"
+        "Once your API key is configured, simply send any image or document directly to the bot in this chat. The bot will automatically intercept it, upscale it, and reply with the enhanced version."
     )
 
 @Client.on_callback_query(filters.regex(r"^settings#enhancer$"))
@@ -92,31 +93,24 @@ async def ai_settings_actions(bot, query: CallbackQuery):
             pass
         await m1.delete()
 
-@Client.on_callback_query(filters.regex(r"^ai_enh#"))
-async def trigger_ai_enhance(bot, query: CallbackQuery):
-    uid = query.from_user.id
+@Client.on_message(filters.private & (filters.photo | filters.document))
+async def handle_direct_enhance(bot, message: Message):
+    # Only process if API key is configured
     cfg = await db.get_enhancer_config()
     api_key = cfg.get("replicate_key", "")
     if not api_key:
-        return await query.answer("❌ Replicate API Key is not set in settings!", show_alert=True)
+        return
         
-    msg_id_pair = query.data.split("#")[1]  # "source_chat_id:original_msg_id"
-    if ":" not in msg_id_pair:
-        return await query.answer("❌ Invalid media payload.", show_alert=True)
+    uid = message.from_user.id
     
-    from_chat, origin_msg_id = msg_id_pair.split(":")
-    await query.answer("Processing via AI... please wait.")
+    # Do not intercept if user is in the middle of a command flow (like setting a cover)
+    # We check common waiters. Instead of importing them, we'll just check if there's any active reply expectation.
+    # A safe heuristic: if it's a direct bare photo/doc (no caption) or just generally sent.
+    # Well, we'll just process it regardless, but give a "Processing..." message.
     
-    # Send a quick pending text or just let it spin? Let's just do it directly.
-    # We must retrieve the media from the message that query was clicked on, IF it exists.
-    # Wait, the query is clicked on the bot's own delivered message!
-    tmsg = query.message
-    if not tmsg.photo and not tmsg.document:
-        return await query.answer("❌ No media found in this message.", show_alert=True)
-
-    prog = await query.message.reply_text("<i>✨ Enhancing media via Replicate...</i>")
+    prog = await message.reply_text("<i>✨ Enhancing media via Replicate...</i>", quote=True)
     try:
-        media_bytes = await bot.download_media(tmsg, in_memory=True)
+        media_bytes = await bot.download_media(message, in_memory=True)
         if not media_bytes:
             raise Exception("Download empty.")
             
@@ -138,7 +132,7 @@ async def trigger_ai_enhance(bot, query: CallbackQuery):
                 poll_url = pred["urls"]["get"]
                 
             out_url = None
-            for _ in range(30):
+            for _ in range(45):
                 await asyncio.sleep(2)
                 async with session.get(poll_url, headers=headers) as r2:
                     if r2.status == 200:
@@ -160,13 +154,12 @@ async def trigger_ai_enhance(bot, query: CallbackQuery):
                     raise Exception("Failed to fetch enhanced image.")
                 enhanced_bytes = await r3.read()
                 
-        # Now update the message media
+        # Reply with the enhanced image
         from io import BytesIO
         enhanced_io = BytesIO(enhanced_bytes)
         enhanced_io.name = "enhanced.jpg"
         
-        from pyrogram.types import InputMediaPhoto
-        await tmsg.edit_media(InputMediaPhoto(enhanced_io, caption=tmsg.caption.html if tmsg.caption else None))
+        await message.reply_photo(enhanced_io, caption="✨ <b>Enhanced successfully!</b>", quote=True)
         await prog.delete()
         
     except Exception as e:

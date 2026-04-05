@@ -337,126 +337,110 @@ async def _process_start(client, message):
                  await db.get_share_text("custom_caption", "")
     formatted_cap = format_msg(cap_tpl, message.from_user) if cap_tpl else None
 
-    ai_cfg = await db.get_enhancer_config()
-    from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    for msg_id in msg_ids:
+        if dl_id not in active_downloads:
+            return  # cancel handler already edited the status
+        try:
+            kwargs = {
+                "chat_id": user_id,
+                "from_chat_id": source_chat,
+                "message_id": msg_id,
+                "protect_content": protect_flag,
+            }
+            if formatted_cap:
+                kwargs["caption"] = formatted_cap
+            sent = await client.copy_message(**kwargs)
+            sent_ids.append(sent.id)
+                        
+        except Exception as copy_err:
+            logger.warning(f"copy_message failed for msg {msg_id}: {copy_err}")
+            fail_count += 1
+        await asyncio.sleep(0.3)
 
+    active_downloads.discard(dl_id)
     try:
-        for msg_id in msg_ids:
-            if dl_id not in active_downloads:
-                return  # cancel handler already edited the status
-            try:
-                kwargs = {
-                    "chat_id": user_id,
-                    "from_chat_id": source_chat,
-                    "message_id": msg_id,
-                    "protect_content": protect_flag,
-                }
-                if formatted_cap:
-                    kwargs["caption"] = formatted_cap
-                sent = await client.copy_message(**kwargs)
-                sent_ids.append(sent.id)
-                
-                # Check for AI Enhancer Injection on Photos/Docs
-                if getattr(sent, "photo", None) or getattr(sent, "document", None):
-                    if ai_cfg.get("replicate_key"):
-                        try:
-                            enh_mk = InlineKeyboardMarkup([[InlineKeyboardButton("A I  E ɴ ʜ ᴀ ɴ ᴄ ᴇ ʀ", callback_data=f"ai_enh#{source_chat}:{msg_id}")]])
-                            if sent.reply_markup:
-                                enh_mk.inline_keyboard = sent.reply_markup.inline_keyboard + enh_mk.inline_keyboard
-                            await client.edit_message_reply_markup(user_id, sent.id, reply_markup=enh_mk)
-                        except Exception as mk_err:
-                            pass
-                            
-            except Exception as copy_err:
-                logger.warning(f"copy_message failed for msg {msg_id}: {copy_err}")
-                fail_count += 1
-            await asyncio.sleep(0.3)
+        await sts.delete()
+    except Exception:
+        pass
 
-        active_downloads.discard(dl_id)
-        try:
-            await sts.delete()
-        except Exception:
-            pass
-
-        total = len(sent_ids)
-        if total == 0:
-            await message.reply_text(
-                "<b>‣  Dᴇʟɪᴠᴇʀʏ Fᴀɪʟᴇᴅ</b>\n\n"
-                "Could not copy any files. "
-                "Ensure the Share Bot is an <b>admin</b> in the Database Channel."
-            )
-            return
-
-        fail_note = f"\n<i>({fail_count} file(s) could not be copied)</i>" if fail_count else ""
-
-        if auto_delete_mins > 0:
-            hrs    = auto_delete_mins // 60
-            mins_r = auto_delete_mins % 60
-            del_str = (f"{hrs}h {mins_r}m" if hrs and mins_r
-                       else (f"{hrs} hours" if hrs else f"{auto_delete_mins} minutes"))
-            del_tpl = (await db.get_share_bot_text(bot_id, "delete_msg") if bot_id else "") or \
-                      await db.get_share_text("delete_msg", "")
-            if del_tpl:
-                txt = format_msg(del_tpl, message.from_user).replace("{time}", del_str)
-            else:
-                txt = (
-                    f"<i>‣  Important: {total} file(s) delivered! Due to copyright, all messages "
-                    f"will auto-delete after {del_str}. "
-                    f"To re-access, simply click the same link button again.{fail_note}</i>"
-                )
-            notice = await message.reply_text(txt)
-            asyncio.create_task(
-                delete_later(client, user_id, sent_ids, notice.id, auto_delete_mins * 60)
-            )
-        else:
-            suc_tpl = (await db.get_share_bot_text(bot_id, "success_msg") if bot_id else "") or \
-                      await db.get_share_text("success_msg", "")
-            txt = (format_msg(suc_tpl, message.from_user) if suc_tpl
-                   else f"<i>‣  Important: {total} file(s) delivered! Due to copyright, all messages "
-                        f"will auto-delete after 3 hours. "
-                        f"To re-access, simply click the same link button again.{fail_note}</i>")
-            await message.reply_text(txt)
-
-        # ── Increment global delivery counter + Enhanced bilingual Thank-You ──
-        if bot_id:
-            await db.increment_bot_delivery_count(bot_id, total)
-        grand_total = (await db.get_bot_delivery_count(bot_id)) if bot_id else total
-
-        u_name = message.from_user.first_name or "you"
-        last   = (" " + message.from_user.last_name) if getattr(message.from_user, "last_name", None) else ""
-        full_name = f"{u_name}{last}"
-        
-        b_name = client.me.first_name if getattr(client, "me", None) else "this bot"
-
-        thank_txt = (
-            f"<b>»</b> <a href='tg://user?id={message.from_user.id}'>{full_name}</a>\n\n"
-            f"<b>‣ {total} file(s) sent successfully!</b>\n"
-            f"<b>‣</b> Total delivered by {b_name}: <b>{grand_total:,}</b> files\n\n"
-            f"<blockquote expandable>"
-            f"Thank you for using our service! Your files have been successfully delivered. "
-            f"These links are permanent and never expire — you can simply tap the same button anytime "
-            f"to re-access your files instantly.\n\n"
-            f"If you enjoy our platform and want us to keep delivering amazing stories, "
-            f"please consider supporting us with a small donation. Every contribution helps us maintain "
-            f"our servers and expand our library."
-            f"</blockquote>"
-            f"<blockquote expandable>"
-            f"हमारी सेवा का उपयोग करने के लिए आपका धन्यवाद! आपकी फाइलें सुगमता से डिलीवर हो गई हैं। "
-            f"ये लिंक कभी expire नहीं होते — आप भविष्य में कभी भी उसी बटन पर क्लिक करके अपनी फाइलें "
-            f"दोबारा प्राप्त कर सकते हैं।\n\n"
-            f"अगर आपको हमारी सेवा पसंद आई है और आप चाहते हैं कि हम निरंतर उत्कृष्ट कहानियाँ "
-            f"लाते रहें, तो कृपया हमें donation देकर support करें। आपका सहयोग हमारे सर्वर "
-            f"और सेवाओं को बेहतर बनाने में अत्यंत सहायक है।"
-            f"</blockquote>"
+    total = len(sent_ids)
+    if total == 0:
+        await message.reply_text(
+            "<b>‣  Dᴇʟɪᴠᴇʀʏ Fᴀɪʟᴇᴅ</b>\n\n"
+            "Could not copy any files. "
+            "Ensure the Share Bot is an <b>admin</b> in the Database Channel."
         )
-        donate_btn = InlineKeyboardMarkup([[
-            InlineKeyboardButton("»  " + _sc("Support Us") + " / हमें Support करें  «", url="https://razorpay.me/@SusJeetX")
-        ]])
-        try:
-            await message.reply_text(thank_txt, reply_markup=donate_btn)
-        except Exception as _te:
-            logger.warning(f"[ThankYou] send failed: {_te}")
+        return
 
+    fail_note = f"\n<i>({fail_count} file(s) could not be copied)</i>" if fail_count else ""
+
+    if auto_delete_mins > 0:
+        hrs    = auto_delete_mins // 60
+        mins_r = auto_delete_mins % 60
+        del_str = (f"{hrs}h {mins_r}m" if hrs and mins_r
+                   else (f"{hrs} hours" if hrs else f"{auto_delete_mins} minutes"))
+        del_tpl = (await db.get_share_bot_text(bot_id, "delete_msg") if bot_id else "") or \
+                  await db.get_share_text("delete_msg", "")
+        if del_tpl:
+            txt = format_msg(del_tpl, message.from_user).replace("{time}", del_str)
+        else:
+            txt = (
+                f"<i>‣  Important: {total} file(s) delivered! Due to copyright, all messages "
+                f"will auto-delete after {del_str}. "
+                f"To re-access, simply click the same link button again.{fail_note}</i>"
+            )
+        notice = await message.reply_text(txt)
+        asyncio.create_task(
+            delete_later(client, user_id, sent_ids, notice.id, auto_delete_mins * 60)
+        )
+    else:
+        suc_tpl = (await db.get_share_bot_text(bot_id, "success_msg") if bot_id else "") or \
+                  await db.get_share_text("success_msg", "")
+        txt = (format_msg(suc_tpl, message.from_user) if suc_tpl
+               else f"<i>‣  Important: {total} file(s) delivered! Due to copyright, all messages "
+                    f"will auto-delete after 3 hours. "
+                    f"To re-access, simply click the same link button again.{fail_note}</i>")
+        await message.reply_text(txt)
+
+    # ── Increment global delivery counter + Enhanced bilingual Thank-You ──
+    if bot_id:
+        await db.increment_bot_delivery_count(bot_id, total)
+    grand_total = (await db.get_bot_delivery_count(bot_id)) if bot_id else total
+
+    u_name = message.from_user.first_name or "you"
+    last   = (" " + message.from_user.last_name) if getattr(message.from_user, "last_name", None) else ""
+    full_name = f"{u_name}{last}"
+    
+    b_name = client.me.first_name if getattr(client, "me", None) else "this bot"
+
+    thank_txt = (
+        f"<b>»</b> <a href='tg://user?id={message.from_user.id}'>{full_name}</a>\n\n"
+        f"<b>‣ {total} file(s) sent successfully!</b>\n"
+        f"<b>‣</b> Total delivered by {b_name}: <b>{grand_total:,}</b> files\n\n"
+        f"<blockquote expandable>"
+        f"Thank you for using our service! Your files have been successfully delivered. "
+        f"These links are permanent and never expire — you can simply tap the same button anytime "
+        f"to re-access your files instantly.\n\n"
+        f"If you enjoy our platform and want us to keep delivering amazing stories, "
+        f"please consider supporting us with a small donation. Every contribution helps us maintain "
+        f"our servers and expand our library."
+        f"</blockquote>"
+        f"<blockquote expandable>"
+        f"हमारी सेवा का उपयोग करने के लिए आपका धन्यवाद! आपकी फाइलें सुगमता से डिलीवर हो गई हैं। "
+        f"ये लिंक कभी expire नहीं होते — आप भविष्य में कभी भी उसी बटन पर क्लिक करके अपनी फाइलें "
+        f"दोबारा प्राप्त कर सकते हैं।\n\n"
+        f"अगर आपको हमारी सेवा पसंद आई है और आप चाहते हैं कि हम निरंतर उत्कृष्ट कहानियाँ "
+        f"लाते रहें, तो कृपया हमें donation देकर support करें। आपका सहयोग हमारे सर्वर "
+        f"और सेवाओं को बेहतर बनाने में अत्यंत सहायक है।"
+        f"</blockquote>"
+    )
+    donate_btn = InlineKeyboardMarkup([[
+        InlineKeyboardButton("»  " + _sc("Support Us") + " / हमें Support करें  «", url="https://razorpay.me/@SusJeetX")
+    ]])
+    try:
+        await message.reply_text(thank_txt, reply_markup=donate_btn)
+    except Exception as _te:
+        logger.warning(f"[ThankYou] send failed: {_te}")
     except Exception as e:
         active_downloads.discard(dl_id)
         try:
@@ -467,7 +451,6 @@ async def _process_start(client, message):
             f"<b>‣  Dᴇʟɪᴠᴇʀʏ Eʀʀᴏʀ:</b> <code>{e}</code>\n\n"
             "<i>The Share Bot must be an admin in the Database Channel to deliver files.</i>"
         )
-
 
 async def _send_welcome(client, message, bot_id: str = None):
     """Send the welcome message + Help/About buttons."""
