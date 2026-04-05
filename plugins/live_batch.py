@@ -104,8 +104,9 @@ async def _post_live_batch(sb_client, job: dict, chunk_msgs: list):
             else:
                 bot_usr = BOT_INSTANCE.me.username
         else:
-            share_bot_id = int(str(share_bot_id))
-            sb = await db.db.bots.find_one({"id": share_bot_id})
+            share_bot_id = str(share_bot_id)
+            share_bots = await db.get_share_bots()
+            sb = next((b for b in share_bots if str(b['id']) == share_bot_id), None)
             if not sb: 
                 logger.warning(f"Live Batch Post Error: Share bot missing from DB (ID: {share_bot_id})")
                 return False
