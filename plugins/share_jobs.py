@@ -389,10 +389,22 @@ async def _create_share_flow(bot, user_id):
         if bpp < 1: bpp = 10
         new_share_job[user_id]['buttons_per_post'] = bpp
 
+        msg_live = await _ask(bot, user_id, 
+            "<b>❪ STEP 11: LIVE MONITORING ❫</b>\n\nHow many new episodes should arrive before posting a new batch automatically?\n\n<i>Send <code>0</code> or <code>Skip</code> to disable Live Monitoring. Send <code>10</code> to bundle 10 incoming files per batch.</i>", 
+            reply_markup=markup
+        )
+        if getattr(msg_live, 'text', None) and any(x in msg_live.text.lower() for x in ['cancel', 'cᴀɴᴄᴇʟ', '⛔']): return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
+        if getattr(msg_live, "text", None) and any(x in msg_live.text.lower() for x in ["/undo", "undo", "uɴᴅᴏ", "↩️"]):
+            return await bot.send_message(user_id, "<b>‣ Undo: Please restart the Batch Links flow from the menu.</b>", reply_markup=ReplyKeyboardRemove())
+        
+        raw_live = (msg_live.text or msg_live.caption or "0").strip()
+        new_share_job[user_id]['live_threshold'] = int(raw_live) if raw_live.isdigit() else 0
+
         sj = new_share_job[user_id]
         
         is_tp = sj.get('is_topic')
         sub_str = f"<b>Topic ID:</b> {sj.get('topic_id', 'N/A')}\n" if is_tp else f"<b>Msg ID Range:</b> {sj['start_id']} → {sj['end_id']}\n"
+        live_str = f"<b>Live Monitor:</b> {sj['live_threshold']} eps per batch\n" if sj['live_threshold'] > 0 else f"<b>Live Monitor:</b> <code>Disabled</code>\n"
 
         markup_conf = ReplyKeyboardMarkup([["Gᴇɴᴇʀᴀᴛᴇ & Pᴏsᴛ Lɪɴᴋs"], ["‣  Cancel"]], resize_keyboard=True, one_time_keyboard=True)
         conf_msg = await _ask(bot, user_id,
@@ -404,6 +416,7 @@ async def _create_share_flow(bot, user_id):
             f"{sub_str}"
             f"<b>Episodes/Button:</b> {sj['batch_size']}\n"
             f"<b>Buttons/Post:</b> {sj['buttons_per_post']}\n"
+            f"{live_str}"
             f"\n<i>»  Smart Parse active: Auto-groups duplicate eps smoothly.</i>",
             reply_markup=markup_conf
         )
@@ -1241,6 +1254,31 @@ async def _build_share_links(bot, user_id, sj, info_msg):
 
         except Exception as rep_err:
             logger.error(f"[Report] Could not prepare report: {rep_err}", exc_info=True)
+
+        if sj.get('live_threshold', 0) > 0:
+            try:
+                import uuid, asyncio
+                from plugins.live_batch import _lb_save_job, _lb_paused, _lb_tasks, _lb_run_job
+                job_id = str(uuid.uuid4())
+                ljob = {
+                    "job_id": job_id, "user_id": user_id, "status": "running",
+                    "share_bot_id": selected_bot_id,
+                    "source": sj['source'],
+                    "target": sj['target'],
+                    "story": sj['story'],
+                    "threshold": sj['live_threshold'],
+                    "protect": True,
+                    "last_seen_id": sj.get('end_id'),
+                    "buffer_mids": [],
+                    "forwarded": 0
+                }
+                await _lb_save_job(ljob)
+                _lb_paused[job_id] = asyncio.Event()
+                _lb_paused[job_id].set()
+                _lb_tasks[job_id] = asyncio.create_task(_lb_run_job(job_id))
+                await bot.send_message(user_id, f"<b>✅ Live Batch Monitoring automatically activated for {sj['story']}!</b>\nMonitoring for new files arriving after Msg ID <code>{sj.get('end_id')}</code>.")
+            except Exception as lb_err:
+                logger.error(f"Live Batch Kickoff error: {lb_err}", exc_info=True)
 
     except Exception as e:
         import traceback

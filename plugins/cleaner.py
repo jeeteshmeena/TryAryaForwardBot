@@ -402,99 +402,13 @@ async def _cl_callbacks(bot, update: CallbackQuery):
         return await _cl_callbacks(bot, update)
 
     elif action == "new":
-        await update.message.edit_reply_markup(None)
-        
-        # Step 1: Account
-        accounts = await db.get_bots(uid)
-        if not accounts:
-            return await bot.send_message(uid, "<b>❌ No accounts found. Add one in /settings.</b>")
-            
-        kb = [[f"{'🤖' if a.get('is_bot',True) else '👤'} {a['name']}"] for a in accounts]
-        kb.append(["❌ Cancel"])
-        m1 = await _cl_ask(bot, uid, "<b>🧹 New Cleaner Job</b>\n\n<b>Step 1/6:</b> Select account to read from:", 
-                           reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True, one_time_keyboard=True))
-        if not m1.text or any(x in m1.text.lower() for x in ['cancel', 'cᴀɴᴄᴇʟ', '⛔']):
-            return await bot.send_message(uid, "<i>Process Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
-            
-        sel_name = m1.text.split(" ", 1)[1] if " " in m1.text else m1.text
-        acc = next((a for a in accounts if a["name"] == sel_name), None)
-        if not acc: return await bot.send_message(uid, "<b>❌ Invalid account.</b>", reply_markup=ReplyKeyboardRemove())
-        acc_id = acc["session_string"] if not acc.get('is_bot') else acc["bot_token"]
-
-        # Step 2: Start link
-        m2 = await _cl_ask(bot, uid, "<b>Step 2/6:</b> Send <b>start message link</b> of the files to clean:", reply_markup=ReplyKeyboardRemove())
-        if not m2.text or any(x in m2.text.lower() for x in ['cancel', 'cᴀɴᴄᴇʟ', '⛔']): return await bot.send_message(uid, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
-        from_chat, sid = _parse_link(m2.text)
-        
-        # Step 3: End link
-        m3 = await _cl_ask(bot, uid, "<b>Step 3/6:</b> Send <b>end message link</b>:")
-        if not m3.text or any(x in m3.text.lower() for x in ['cancel', 'cᴀɴᴄᴇʟ', '⛔']): return await bot.send_message(uid, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
-        _, eid = _parse_link(m3.text)
-        if sid > eid: sid, eid = eid, sid
-
-        # Step 4: Destination
-        channels = await db.get_user_channels(uid)
-        dest_chat = None
-        if channels:
-            ch_kb = [[f"📢 {ch['title']}"] for ch in channels]
-            ch_kb.append(["⏭ Skip (DM only)"]); ch_kb.append(["❌ Cancel"])
-            m4 = await _cl_ask(bot, uid, f"<b>Step 4/6:</b> Select destination channel:", 
-                               reply_markup=ReplyKeyboardMarkup(ch_kb, resize_keyboard=True, one_time_keyboard=True))
-            if not m4.text or any(x in m4.text.lower() for x in ['cancel', 'cᴀɴᴄᴇʟ', '⛔']): return await bot.send_message(uid, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
-            if "Skip" not in m4.text:
-                title = m4.text.replace("📢 ","").strip()
-                ch = next((c for c in channels if c["title"] == title), None)
-                if ch: dest_chat = int(ch["chat_id"])
-        if not dest_chat:
-            await bot.send_message(uid, "<b>Step 4/6:</b> Sending to DM.", reply_markup=ReplyKeyboardRemove())
-            dest_chat = uid
-
-        # Step 5: Base Name
-        m5 = await _cl_ask(bot, uid, "<b>Step 5/7:</b> Send <b>Base Name</b> for the files\n<i>(e.g., Send `Saaya` -> outputs `Saaya 1.mp3`)</i>", reply_markup=ReplyKeyboardRemove())
-        if not m5.text or any(x in m5.text.lower() for x in ['cancel', 'cᴀɴᴄᴇʟ', '⛔']): return await bot.send_message(uid, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
-        base_name = re.sub(r'[<>:"/\\|?*]', '_', m5.text.strip())
-
-        # Step 6: Advanced Metadata
-        m6 = await _cl_ask(bot, uid, "<b>Step 6/7:</b> Advanced Metadata Configuration.\nSend details in format: <code>Artist | Year | Album | Genre</code>\n\n<i>Or click Skip to use global defaults.</i>", reply_markup=ReplyKeyboardMarkup([["Skip", "⛔ Cᴀɴᴄᴇʟ"]], resize_keyboard=True, one_time_keyboard=True))
-        if not m6.text or any(x in m6.text.lower() for x in ['cancel', 'cᴀɴᴄᴇʟ', '⛔']): return await bot.send_message(uid, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
-        
-        df = await _cl_get_defaults(uid)
-        adv_artist = df.get('artist', 'Arya Audio')
-        adv_year = df.get('year', '')
-        adv_album = getattr(df, 'get', lambda x,y:y)('album', '')
-        
-        if "Skip" not in m6.text:
-            parts = [p.strip() for p in m6.text.split('|')]
-            if len(parts) > 0 and parts[0]: adv_artist = parts[0]
-            if len(parts) > 1 and parts[1]: adv_year   = parts[1]
-            if len(parts) > 2 and parts[2]: adv_album  = parts[2]
-
-        # Step 7: Start Num
-        m7 = await _cl_ask(bot, uid, "<b>Step 7/7:</b> Send <b>Starting Number</b> (e.g., `1` or `201`)", reply_markup=ReplyKeyboardRemove())
-        if not m7.text or any(x in m7.text.lower() for x in ['cancel', 'cᴀɴᴄᴇʟ', '⛔']): return await bot.send_message(uid, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
-        start_num = int(m7.text.strip() if m7.text.strip().isdigit() else 1)
-
-        job_id = str(uuid.uuid4())
-        job = {
-            "job_id": job_id, "user_id": uid, "status": "queued",
-            "from_chat": from_chat, "dest_chat": dest_chat,
-            "start_id": sid, "end_id": eid,
-            "total_files": (eid - sid) + 1, "files_done": 0,
-            "base_name": base_name, "starting_number": start_num,
-            "artist": adv_artist,
-            "year": adv_year,
-            "album": adv_album,
-            "cover_file_id": df.get('cover', ''),
-            "account_id": acc.get("id") or acc_id
-        }
-        await _cl_save_job(job)
-        
-        _cl_paused[job_id] = asyncio.Event()
-        _cl_paused[job_id].set()
-        _cl_tasks[job_id] = asyncio.create_task(_cl_run_job(job_id))
-        
-        update.data = f"cl#view#{job_id}"
-        return await _cl_callbacks(bot, update)
+        from pyrogram.types import ReplyKeyboardRemove
+        try:
+            await update.message.delete()
+        except:
+            pass
+        asyncio.create_task(_create_cl_flow(bot, uid))
+        return True
 
     elif action == "view":
         jid = data[2]
@@ -554,3 +468,156 @@ async def _cl_callbacks(bot, update: CallbackQuery):
         update.data = "cl#main"
         return await _cl_callbacks(bot, update)
 
+
+async def _create_cl_flow(bot, user_id):
+    old = _cl_waiter.pop(user_id, None)
+    if old and not old.done(): old.cancel()
+
+    CANCEL_BTN = KeyboardButton("⛔ Cᴀɴᴄᴇʟ")
+    UNDO_BTN   = KeyboardButton("↩️ Uɴᴅᴏ")
+
+    def _cancel(txt): return txt.strip().startswith("/cancel") or "⛔" in txt or "Cᴀɴᴄᴇʟ" in txt
+    def _undo(txt):   return txt.strip().startswith("/undo") or "↩️" in txt or "Uɴᴅᴏ" in txt
+
+    # ── Step 1: Account ───────────────────────────────────────────
+    accounts = await db.get_bots(user_id)
+    if not accounts:
+        return await bot.send_message(user_id, "<b>❌ No accounts found. Add one in /settings.</b>")
+
+    def _acc_label(a):
+        kind = "Bot" if a.get("is_bot", True) else "Userbot"
+        name = a.get("username") or a.get("name", "Unknown")
+        return f"{kind}: {name} [{a['id']}]"
+
+    acc_btns = [[KeyboardButton(_acc_label(a))] for a in accounts]
+    acc_btns.append([CANCEL_BTN])
+    
+    r_acc = await _cl_ask(bot, user_id, "<b>🧹 Create Cleaner Job — Step 1/7</b>\n\nChoose the <b>account</b> to read from:", 
+                          reply_markup=ReplyKeyboardMarkup(acc_btns, resize_keyboard=True, one_time_keyboard=True))
+    if _cancel(r_acc.text): return await bot.send_message(user_id, "<i>Process Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+
+    acc_id = None
+    if "[" in r_acc.text and "]" in r_acc.text:
+        try: acc_id = int(r_acc.text.split('[')[-1].split(']')[0])
+        except Exception: pass
+    sel_acc = (await db.get_bot(user_id, acc_id)) if acc_id else accounts[0]
+    
+    # ── Step 2: Start link ───────────────────────────────────────
+    r_start = await _cl_ask(bot, user_id, "<b>»  Step 2/7</b>\n\nSend the <b>Start Message Link</b>:", reply_markup=ReplyKeyboardRemove())
+    if _cancel(r_start.text): return await bot.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+    if _undo(r_start.text): return await bot.send_message(user_id, "<b>Undo not supported at first logic step. Use Cancel.</b>", reply_markup=ReplyKeyboardRemove())
+    from_chat, sid = _parse_link(r_start.text)
+
+    # ── Step 3: End link ─────────────────────────────────────────
+    markup_b = ReplyKeyboardMarkup([[UNDO_BTN, CANCEL_BTN]], resize_keyboard=True, one_time_keyboard=True)
+    r_end = await _cl_ask(bot, user_id, "<b>»  Step 3/7</b>\n\nSend the <b>End Message Link</b>:", reply_markup=markup_b)
+    if _cancel(r_end.text): return await bot.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+    if _undo(r_end.text):
+        r_start = await _cl_ask(bot, user_id, "<b>»  Step 2/7 (REDO)</b>\n\nSend the <b>Start Message Link</b>:", reply_markup=ReplyKeyboardRemove())
+        if _cancel(r_start.text): return await bot.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+        from_chat, sid = _parse_link(r_start.text)
+        r_end = await _cl_ask(bot, user_id, "<b>»  Step 3/7</b>\n\nSend the <b>End Message Link</b>:", reply_markup=markup_b)
+        if _cancel(r_end.text): return await bot.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+
+    _, eid = _parse_link(r_end.text)
+    if sid > eid: sid, eid = eid, sid
+
+    # ── Step 4: Destination ──────────────────────────────────────
+    channels = await db.get_user_channels(user_id)
+    dest_chat = None
+    if channels:
+        ch_kb = [[KeyboardButton(f"📢 {ch['title']}")] for ch in channels]
+        ch_kb.append([KeyboardButton("⏭ Skip (DM only)")])
+        ch_kb.append([UNDO_BTN, CANCEL_BTN])
+        r_dest = await _cl_ask(bot, user_id, "<b>»  Step 4/7</b>\n\nSelect destination channel:", reply_markup=ReplyKeyboardMarkup(ch_kb, resize_keyboard=True, one_time_keyboard=True))
+        if _cancel(r_dest.text): return await bot.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+        if _undo(r_dest.text):
+            r_end = await _cl_ask(bot, user_id, "<b>»  Step 3/7 (REDO)</b>\n\nSend the <b>End Message Link</b>:", reply_markup=markup_b)
+            if _cancel(r_end.text): return await bot.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+            _, eid = _parse_link(r_end.text)
+            if sid > eid: sid, eid = eid, sid
+            r_dest = await _cl_ask(bot, user_id, "<b>»  Step 4/7</b>\n\nSelect destination channel:", reply_markup=ReplyKeyboardMarkup(ch_kb, resize_keyboard=True, one_time_keyboard=True))
+            if _cancel(r_dest.text): return await bot.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+        
+        if "Skip" not in r_dest.text:
+            title = r_dest.text.replace("📢 ","").strip()
+            ch = next((c for c in channels if c["title"] == title), None)
+            if ch: dest_chat = int(ch["chat_id"])
+    if not dest_chat:
+        dest_chat = user_id
+
+    # ── Step 5: Base Name ────────────────────────────────────────
+    r_base = await _cl_ask(bot, user_id, "<b>»  Step 5/7</b>\n\nSend <b>Base Name</b> for the files\n<i>(e.g., Send `Saaya` -> outputs `Saaya 1.mp3`)</i>", reply_markup=markup_b)
+    if _cancel(r_base.text): return await bot.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+    if _undo(r_base.text):
+        return await bot.send_message(user_id, "<b>‣ Please restart the flow to undo further back.</b>", reply_markup=ReplyKeyboardRemove())
+    base_name = re.sub(r'[<>:"/\\|?*]', '_', r_base.text.strip())
+
+    # ── Step 6: Advanced Metadata ────────────────────────────────
+    markup_m = ReplyKeyboardMarkup([["⏭ Skip (Use Defaults)"], [UNDO_BTN, CANCEL_BTN]], resize_keyboard=True, one_time_keyboard=True)
+    r_meta = await _cl_ask(bot, user_id, "<b>»  Step 6/7</b>\n\nAdvanced Metadata Configuration.\nSend details in format: <code>Artist | Year | Album | Genre</code>\n\n<i>Or click Skip to use global defaults.</i>", reply_markup=markup_m)
+    if _cancel(r_meta.text): return await bot.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+    if _undo(r_meta.text):
+        r_base = await _cl_ask(bot, user_id, "<b>»  Step 5/7 (REDO)</b>\n\nSend <b>Base Name</b>:", reply_markup=markup_b)
+        if _cancel(r_base.text): return await bot.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+        base_name = re.sub(r'[<>:"/\\|?*]', '_', r_base.text.strip())
+        r_meta = await _cl_ask(bot, user_id, "<b>»  Step 6/7</b>\n\nAdvanced Metadata Configuration.\nSend: <code>Artist | Year | Album | Genre</code>", reply_markup=markup_m)
+        if _cancel(r_meta.text): return await bot.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+
+    df = await _cl_get_defaults(user_id)
+    adv_artist = df.get('artist', 'Arya Audio')
+    adv_year = df.get('year', '')
+    adv_album = getattr(df, 'get', lambda x,y:y)('album', '')
+    
+    if "Skip" not in r_meta.text:
+        parts = [p.strip() for p in r_meta.text.split('|')]
+        if len(parts) > 0 and parts[0]: adv_artist = parts[0]
+        if len(parts) > 1 and parts[1]: adv_year   = parts[1]
+        if len(parts) > 2 and parts[2]: adv_album  = parts[2]
+
+    # ── Step 7: Starting Number ──────────────────────────────────
+    r_num = await _cl_ask(bot, user_id, "<b>»  Step 7/7</b>\n\nSend <b>Starting Number</b> (e.g. `1` or `201`)", reply_markup=markup_b)
+    if _cancel(r_num.text): return await bot.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+    if _undo(r_num.text):
+        r_meta = await _cl_ask(bot, user_id, "<b>»  Step 6/7 (REDO)</b>\n\nAdvanced Metadata Configuration:", reply_markup=markup_m)
+        if _cancel(r_meta.text): return await bot.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+        if "Skip" not in r_meta.text:
+            parts = [p.strip() for p in r_meta.text.split('|')]
+            if len(parts) > 0 and parts[0]: adv_artist = parts[0]
+            if len(parts) > 1 and parts[1]: adv_year   = parts[1]
+            if len(parts) > 2 and parts[2]: adv_album  = parts[2]
+        r_num = await _cl_ask(bot, user_id, "<b>»  Step 7/7</b>\n\nSend <b>Starting Number</b>:", reply_markup=markup_b)
+        if _cancel(r_num.text): return await bot.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+
+    start_num = int(r_num.text.strip() if r_num.text.strip().isdigit() else 1)
+
+    job_id = str(uuid.uuid4())
+    job = {
+        "job_id": job_id, "user_id": user_id, "status": "queued",
+        "from_chat": from_chat, "dest_chat": dest_chat,
+        "start_id": sid, "end_id": eid,
+        "total_files": (eid - sid) + 1, "files_done": 0,
+        "base_name": base_name, "starting_number": start_num,
+        "artist": adv_artist,
+        "year": adv_year,
+        "album": adv_album,
+        "cover_file_id": df.get('cover', ''),
+        "account_id": sel_acc.get("id") or acc_id,
+        "is_bot": sel_acc.get('is_bot', True),
+        "created_at": _ist_now().strftime('%Y-%m-%d %H:%M:%S'),
+        "target_title": "DM" if dest_chat == user_id else getattr(ch, "title", "Channel") if dest_chat else "DM",
+        "metadata": {"artist": adv_artist, "year": adv_year, "album": adv_album}
+    }
+    await _cl_save_job(job)
+    await bot.send_message(user_id, f"<b>✅ Cleaner Job Queued!</b>\nName: <code>{base_name}</code>\nMetadata: Art: {adv_artist} | Yr: {adv_year}", reply_markup=ReplyKeyboardRemove())
+    
+    _cl_paused[job_id] = asyncio.Event()
+    _cl_paused[job_id].set()
+    _cl_tasks[job_id] = asyncio.create_task(_cl_run_job(job_id))
+    
+    class FakeUpdate: pass
+    fake = FakeUpdate()
+    fake.from_user = type('obj', (object,), {'id': user_id})()
+    fake.message = None
+    fake.data = f"cl#view#{job_id}"
+    await _cl_callbacks(bot, fake)

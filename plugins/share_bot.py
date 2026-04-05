@@ -337,6 +337,9 @@ async def _process_start(client, message):
                  await db.get_share_text("custom_caption", "")
     formatted_cap = format_msg(cap_tpl, message.from_user) if cap_tpl else None
 
+    ai_cfg = await db.get_enhancer_config()
+    from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
     try:
         for msg_id in msg_ids:
             if dl_id not in active_downloads:
@@ -352,6 +355,18 @@ async def _process_start(client, message):
                     kwargs["caption"] = formatted_cap
                 sent = await client.copy_message(**kwargs)
                 sent_ids.append(sent.id)
+                
+                # Check for AI Enhancer Injection on Photos/Docs
+                if getattr(sent, "photo", None) or getattr(sent, "document", None):
+                    if ai_cfg.get("replicate_key"):
+                        try:
+                            enh_mk = InlineKeyboardMarkup([[InlineKeyboardButton("A I  E ɴ ʜ ᴀ ɴ ᴄ ᴇ ʀ", callback_data=f"ai_enh#{source_chat}:{msg_id}")]])
+                            if sent.reply_markup:
+                                enh_mk.inline_keyboard = sent.reply_markup.inline_keyboard + enh_mk.inline_keyboard
+                            await client.edit_message_reply_markup(user_id, sent.id, reply_markup=enh_mk)
+                        except Exception as mk_err:
+                            pass
+                            
             except Exception as copy_err:
                 logger.warning(f"copy_message failed for msg {msg_id}: {copy_err}")
                 fail_count += 1
