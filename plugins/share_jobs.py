@@ -1273,6 +1273,7 @@ async def _build_share_links(bot, user_id, sj, info_msg):
                 ljob = {
                     "job_id": job_id, "user_id": user_id, "status": "running",
                     "share_bot_id": selected_bot_id,
+                    "account_id": sj.get('account_id', 'bot'),
                     "source": sj['source'],
                     "target": sj['target'],
                     "story": sj['story'],

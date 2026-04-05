@@ -165,18 +165,26 @@ async def _lb_run_job(job_id: str):
             fwd_count = job.get("forwarded", 0)
             sb_client = share_clients.get(str(job["share_bot_id"]))
             
-            # Reconnect Userbot if missing or dead
-            if not src_client or not src_client.is_connected:
-                bots = await db.get_bots(job["user_id"])
-                userbot = next((b for b in bots if getattr(b, "is_bot", False) == False), None)
-                if userbot:
-                    ub_sess = userbot["session"]
-                    src_client = _FACTORY().client({"session": ub_sess}, False)
-                    await src_client.connect()
+            # Reconnect Source Client 
+            if not src_client or not getattr(src_client, "is_connected", False):
+                acc_id = job.get("account_id", "bot")
+                if acc_id == "bot":
+                    src_client = _CLIENT
                 else:
-                    logger.error("Live Batch: Missing active Userbot.")
-                    await asyncio.sleep(60)
-                    continue
+                    bots = await db.get_bots(job["user_id"])
+                    acc_bot = next((b for b in bots if str(b.get("id")) == str(acc_id)), None)
+                    if acc_bot and not acc_bot.get("is_bot", False):
+                        ub_sess = acc_bot["session"]
+                        src_client = _FACTORY().client({"session": ub_sess}, False)
+                        try:
+                            await src_client.connect()
+                        except Exception as e:
+                            logger.error(f"Live Batch: Failed to connect user account: {e}")
+                            await asyncio.sleep(60)
+                            continue
+                    else:
+                        # Fallback to main bot if specified account disappears
+                        src_client = _CLIENT
             
             if not sb_client:
                 logger.error("Live Batch: Share Bot is entirely offline.")
@@ -200,26 +208,46 @@ async def _lb_run_job(job_id: str):
                 except: pass
 
             fetched = []
-            batch_req = list(range(last_seen + 1, last_seen + 201))
+            
             try:
+                # Find the latest message ID in the channel
+                latest_m = None
+                async for m in src_client.get_chat_history(source, limit=1):
+                    latest_m = m
+                    break
+                    
+                if not latest_m:
+                    await asyncio.sleep(20)
+                    continue
+                    
+                latest_id = latest_m.id
+                
+                if latest_id <= last_seen:
+                    await asyncio.sleep(20)
+                    continue
+                    
+                # We have new messages! Fetch them in chunks up to latest_id
+                batch_req = []
+                for mid in range(last_seen + 1, min(last_seen + 201, latest_id + 1)):
+                    batch_req.append(mid)
+                    
                 msgs = await src_client.get_messages(source, batch_req)
                 if not isinstance(msgs, list): msgs = [msgs]
+                
             except Exception as e:
+                logger.error(f"Live Batch get_messages error: {e}")
                 msgs = []
                 
-            valid = [m for m in msgs if m and not m.empty and not m.service and (m.audio or m.voice or m.document or m.video)]
+            valid = [m for m in msgs if m and not m.empty and not m.service and getattr(m, 'media', None)]
             valid.sort(key=lambda m: m.id)
             
             for m in valid:
                 buffer_mids.append(m.id)
                 
-            if valid:
-                last_seen = valid[-1].id
-                
-            if not valid and msgs and any(x is not None for x in msgs):
-                valid_probe = [m for m in msgs if m and not m.empty]
-                if valid_probe:
-                    last_seen = max(last_seen, valid_probe[-1].id)
+            # Always advance last_seen up to the end of what we requested!
+            # Since we only request up to latest_id, we know any empty messages before our requested max are genuinely deleted or missing.
+            if batch_req:
+                last_seen = batch_req[-1]
 
             await _lb_update_job(job_id, {"last_seen_id": last_seen, "buffer_mids": buffer_mids})
 
