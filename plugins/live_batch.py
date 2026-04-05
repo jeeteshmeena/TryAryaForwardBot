@@ -112,27 +112,57 @@ async def _post_live_batch(sb_client, job: dict, chunk_msgs: list):
                 return False
             bot_usr = sb.get("username", "")
         
-        raw_buttons = []
+        batch_size = int(job.get("batch_size", 10))
         
-        for m in chunk_msgs:
-            fname = getattr(m.document or m.audio or m.video or m.voice, "file_name", None) or m.caption or ""
-            extracted = _deep_extract_ep(fname)
-            ep_val = extracted[0] if extracted else "?"
+        # --- BUCKET GROUPING ---
+        buckets = []
+        for i in range(0, len(chunk_msgs), batch_size):
+            buckets.append(chunk_msgs[i : i + batch_size])
+            
+        raw_buttons = []
+        for bucket in buckets:
+            mids = [m.id for m in bucket]
+            
+            # Extract numbers logically for the label
+            eps = []
+            for m in bucket:
+                fname = getattr(getattr(m, 'document', None) or getattr(m, 'audio', None) or getattr(m, 'video', None) or getattr(m, 'voice', None), "file_name", None) or m.caption or ""
+                extracted = _deep_extract_ep(fname)
+                if extracted:
+                    eps.append(int(extracted[0]))
+            
+            if eps:
+                b_s = min(eps)
+                b_e = max(eps)
+                btn_text = str(b_s) if b_s == b_e else f"{b_s}–{b_e}"
+            else:
+                # Absolute fallback if no numeric episodes are detected
+                b_s, b_e = "?", "?"
+                btn_text = "Fɪʟᴇs"
             
             uuid_str = str(uuid.uuid4()).replace('-', '')[:16]
-            await db.save_share_link(uuid_str, [m.id], job["source"], protect=protect, access_hash=None)
+            await db.save_share_link(uuid_str, mids, job["source"], protect=protect, access_hash=None)
             url = f"https://t.me/{bot_usr}?start={uuid_str}"
             
-            raw_buttons.append({"btn": InlineKeyboardButton(_sc(f"{ep_val}"), url=url), "ep": ep_val})
+            raw_buttons.append({
+                "btn": InlineKeyboardButton(_sc(btn_text), url=url),
+                "ep_start": b_s,
+                "ep_end": b_e
+            })
             
-        first_ep = raw_buttons[0]["ep"]
-        last_ep  = raw_buttons[-1]["ep"]
+        # Extract globals for Post Label
+        valid_starts = [b["ep_start"] for b in raw_buttons if str(b["ep_start"]).isdigit()]
+        valid_ends   = [b["ep_end"] for b in raw_buttons if str(b["ep_end"]).isdigit()]
         
-        if str(first_ep).isdigit() and str(last_ep).isdigit():
-            if int(first_ep) > int(last_ep): first_ep, last_ep = last_ep, first_ep
-            
+        first_ep = min(valid_starts) if valid_starts else "?"
+        last_ep  = max(valid_ends) if valid_ends else "?"
+        
         txt = f"{_bold_sans(job['story'])} 𝗘𝗣𝗦 {first_ep} - {last_ep}"
         
+        buttons_per_post = int(job.get("buttons_per_post", 10))
+        
+        # For simplicity in Live mode, we send a single merged block if possible.
+        # But if it exceeds telegram limits (or buttons_per_post logic), we can just chunk keyboard row layout.
         keyboard = []
         for j in range(0, len(raw_buttons), 2):
             row = [c["btn"] for c in raw_buttons[j:j + 2]]
@@ -248,9 +278,13 @@ async def _lb_run_job(job_id: str):
                 
             except Exception as e:
                 logger.error(f"Live Batch get_messages error: {e}")
-                msgs = []
-                
-            valid = [m for m in msgs if m and not m.empty and getattr(m, 'media', None) and not m.service]
+            valid = []
+            for m in msgs:
+                if m and not getattr(m, 'empty', True) and not getattr(m, 'service', False):
+                    # Only accept real files/media, completely ignore pure text messages (even if they have WebPage previews)
+                    has_media = bool(getattr(m, 'audio', None) or getattr(m, 'document', None) or getattr(m, 'video', None) or getattr(m, 'voice', None) or getattr(m, 'photo', None))
+                    if has_media:
+                        valid.append(m)
             valid.sort(key=lambda m: m.id)
             
             raw_exists = [m for m in msgs if m and not getattr(m, 'empty', True)]
