@@ -12,8 +12,12 @@ logging.config.fileConfig('logging.conf')
 logging.getLogger().setLevel(logging.INFO)
 logging.getLogger("pyrogram").setLevel(logging.ERROR)
 
+BOT_INSTANCE = None
+
 class Bot(Client): 
     def __init__(self):
+        global BOT_INSTANCE
+        BOT_INSTANCE = self
         super().__init__(
             Config.BOT_SESSION,
             api_hash=Config.API_HASH,

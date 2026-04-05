@@ -20,6 +20,7 @@ from pyrogram.errors import FloodWait
 from database import db
 from plugins.test import CLIENT
 from plugins.share_jobs import _deep_extract_ep, _sc
+from bot import BOT_INSTANCE
 
 logger = logging.getLogger(__name__)
 _CLIENT = CLIENT()
@@ -169,7 +170,7 @@ async def _lb_run_job(job_id: str):
             if not src_client or not getattr(src_client, "is_connected", False):
                 acc_id = job.get("account_id", "bot")
                 if acc_id == "bot":
-                    src_client = sb_client
+                    src_client = BOT_INSTANCE
                 else:
                     bots = await db.get_bots(job["user_id"])
                     acc_bot = next((b for b in bots if str(b.get("id")) == str(acc_id)), None)
@@ -184,7 +185,7 @@ async def _lb_run_job(job_id: str):
                             continue
                     else:
                         # Fallback to main bot if specified account disappears
-                        src_client = sb_client
+                        src_client = BOT_INSTANCE
             
             if not sb_client:
                 logger.error("Live Batch: Share Bot is entirely offline.")
@@ -252,9 +253,15 @@ async def _lb_run_job(job_id: str):
 
             await _lb_update_job(job_id, {"last_seen_id": last_seen, "buffer_mids": buffer_mids})
 
-            if len(buffer_mids) >= thresh:
-                chunk_ids = buffer_mids[:thresh]
-                rem_mids  = buffer_mids[thresh:]
+            force = job.get("force_flush")
+            if len(buffer_mids) >= thresh or (force and buffer_mids):
+                if force: await _lb_update_job(job_id, {"force_flush": False})
+                
+                post_limit = len(buffer_mids) if force else thresh
+                if post_limit > 100: post_limit = 100 # Safety for telegram API
+                
+                chunk_ids = buffer_mids[:post_limit]
+                rem_mids  = buffer_mids[post_limit:]
                 
                 actual_msgs = await src_client.get_messages(source, chunk_ids)
                 if not isinstance(actual_msgs, list): actual_msgs = [actual_msgs]
@@ -339,13 +346,16 @@ async def _lb_callbacks(bot, update: CallbackQuery):
                 InlineKeyboardButton("⏹ Sᴛᴏᴘ", callback_data=f"lb#stop#{jid}")
             ])
         
+        buf = len(job.get("buffer_mids", []))
+        trgt = job.get("threshold", 10)
+        
+        if buf > 0 and st in ("running", "queued", "paused"):
+            kb.append([InlineKeyboardButton(f"🚀 Fᴏʀᴄᴇ Pᴏsᴛ Nᴏᴡ ({buf} Fɪʟᴇs)", callback_data=f"lb#force#{jid}")])
+            
         kb.append([InlineKeyboardButton("🔄 Rᴇғʀᴇsʜ", callback_data=f"lb#view#{jid}")])
         if st in ("completed", "stopped", "failed"):
             kb.append([InlineKeyboardButton("🗑 Dᴇʟᴇᴛᴇ Rᴇᴄᴏʀᴅ", callback_data=f"lb#del#{jid}")])
         kb.append([InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="lb#main")])
-        
-        buf = len(job.get("buffer_mids", []))
-        trgt = job.get("threshold", 10)
         
         txt = (
             f"<b>📡 Lɪᴠᴇ Bᴀᴛᴄʜ Sᴛᴀᴛᴜs</b>\n\n"
@@ -364,6 +374,13 @@ async def _lb_callbacks(bot, update: CallbackQuery):
         if jid in _lb_paused: _lb_paused[jid].clear()
         await _lb_update_job(jid, {"status": "paused"})
         update.data = f"lb#view#{jid}"
+        return await _lb_callbacks(bot, update)
+        
+    elif action == "force":
+        jid = data[2]
+        await _lb_update_job(jid, {"force_flush": True})
+        update.data = f"lb#view#{jid}"
+        await update.answer("🚀 Triggered forced buffer flush!", show_alert=False)
         return await _lb_callbacks(bot, update)
 
     elif action == "resume":
