@@ -212,25 +212,10 @@ async def _lb_run_job(job_id: str):
             batch_req = []
             
             try:
-                # Find the latest message ID in the channel
-                latest_m = None
-                async for m in src_client.get_chat_history(source, limit=1):
-                    latest_m = m
-                    break
-                    
-                if not latest_m:
-                    await asyncio.sleep(20)
-                    continue
-                    
-                latest_id = latest_m.id
-                
-                if latest_id <= last_seen:
-                    await asyncio.sleep(20)
-                    continue
-                    
-                # We have new messages! Fetch them in chunks up to latest_id
+                # Pyrogram's get_chat_history is blocked for Bot accounts!
+                # We systematically just chunk forward using get_messages.
                 batch_req = []
-                for mid in range(last_seen + 1, min(last_seen + 201, latest_id + 1)):
+                for mid in range(last_seen + 1, last_seen + 201):
                     batch_req.append(mid)
                     
                 msgs = await src_client.get_messages(source, batch_req)
@@ -240,16 +225,32 @@ async def _lb_run_job(job_id: str):
                 logger.error(f"Live Batch get_messages error: {e}")
                 msgs = []
                 
-            valid = [m for m in msgs if m and not m.empty and not m.service and getattr(m, 'media', None)]
+            valid = [m for m in msgs if m and not m.empty and getattr(m, 'media', None) and not m.service]
             valid.sort(key=lambda m: m.id)
             
+            raw_exists = [m for m in msgs if m and not getattr(m, 'empty', True)]
+            
+            if not raw_exists:
+                # The entire 200-ID chunk is completely empty.
+                # Could be the physical end of the channel, OR a deleted gap larger than 200.
+                try:
+                    probe = await src_client.get_messages(source, [last_seen + 250, last_seen + 500, last_seen + 1000])
+                    if isinstance(probe, list) and any(p for p in probe if p and not getattr(p, 'empty', True)):
+                        # Massive gap confirmed! Jump forward.
+                        last_seen += 200
+                        await _lb_update_job(job_id, {"last_seen_id": last_seen})
+                        continue
+                except: pass
+                # No messages ahead. We are at the bleeding edge.
+                await asyncio.sleep(20)
+                continue
+                
+            # Valid media found inside chunk! Process it.
             for m in valid:
                 buffer_mids.append(m.id)
                 
-            # Always advance last_seen up to the end of what we requested!
-            # Since we only request up to latest_id, we know any empty messages before our requested max are genuinely deleted or missing.
-            if batch_req:
-                last_seen = batch_req[-1]
+            # Safely advance last_seen to the highest physically detected message in this chunk!
+            last_seen = max(m.id for m in raw_exists)
 
             await _lb_update_job(job_id, {"last_seen_id": last_seen, "buffer_mids": buffer_mids})
 
