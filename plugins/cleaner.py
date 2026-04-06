@@ -372,11 +372,16 @@ async def _cl_run_job(job_id: str, bot=None):
                     if not ok:
                         raise Exception(f"FFmpeg Edit Failed: {err[:500]}")
 
-                    # Upload using the same client
+                    # ── Choose the correct client for upload ──
+                    # DM (dest_ch == uid): MUST use main bot — clone bot has never met the user
+                    # Channel: use clone client — it was added as admin to the channel
+                    upload_client = bot if (dest_ch == uid and bot) else client
+
+                    # Upload
                     thumb = local_cover if (local_cover and os.path.exists(local_cover)) else None
                     for attempt in range(5):
                         try:
-                            await client.send_audio(
+                            await upload_client.send_audio(
                                 chat_id=dest_ch,
                                 audio=out_path,
                                 caption=f"**{clean_title}**",
