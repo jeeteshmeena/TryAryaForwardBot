@@ -1,9 +1,15 @@
 """
-Audio Cleaner & Renamer - v1
+Audio Cleaner & Renamer - v2
 ============================
 Downloads audio files strictly in order, cleans them with FFmpeg (noise reduction,
 metadata stripping), applies fresh metadata, renames them using sequential numbers,
 and uploads them to the destination.
+
+Fixed in v2:
+  - Client init now correctly uses start_clone_bot
+  - Cover download uses the correct client instance
+  - Metadata steps are individual prompts (not pipe format)
+  - upload uses the same client that downloaded
 """
 import os
 import re
@@ -113,6 +119,7 @@ def _build_cl_info(job: dict) -> str:
     done = job.get("files_done", 0)
     total = max(job.get("total_files", 1), 1)
     err = job.get("error", "")
+    start_num = job.get("starting_number", 1)
 
     pct = int((done / total) * 100) if total else 0
     filled = int(18 * pct / 100)
@@ -120,15 +127,29 @@ def _build_cl_info(job: dict) -> str:
 
     ic = {"running":"🔄","paused":"⏸","completed":"✅","failed":"⚠️","stopped":"🔴","queued":"⏳"}.get(status, "❔")
     
+    # ETA
+    eta_str = ""
+    start_ts = job.get("phase_start_ts", 0) or 0
+    if status == "running" and done > 0 and start_ts > 0:
+        elapsed = time.time() - start_ts
+        rate = elapsed / done
+        remaining = rate * (total - done)
+        eta_str = f"\n  ⏱ <b>ETA:</b> ~{_tm(remaining)}"
+    
     lines = [
         f"{ic} <b>🧹 {name}</b>  [{job.get('job_id')[-6:]}]",
         f"  Status: <b>{status.title()}</b>",
         f"  <code>{bar}</code>",
         "",
         f"  📁 <b>Processed:</b> {done}/{total} files",
-        f"  📝 <b>Pattern:</b> {job.get('base_name')} {'{number}'}",
-        f"  🎯 <b>Target:</b> {job.get('dest_chat')}"
+        f"  🔢 <b>Range:</b> {name} {start_num} → {name} {start_num + total - 1}",
+        f"  🎨 <b>Artist:</b> {job.get('artist', '—')}",
+        f"  💿 <b>Album:</b> {job.get('album', '—')}",
+        f"  🗓 <b>Year:</b> {job.get('year', '—')}",
+        f"  🖼 <b>Cover:</b> {'✅ Set' if job.get('cover_file_id') else '—'}",
+        f"  🎯 <b>Target:</b> {job.get('target_title', '?')}",
     ]
+    if eta_str: lines.append(eta_str)
     if err:
         lines.append(f"\n  ⚠️ <b>Error:</b> <code>{err[:200]}</code>")
     
@@ -165,13 +186,18 @@ async def _process_audio_ffmpeg(input_path, output_path, cover_path, meta: dict)
 
     cmd.append(output_path)
 
+    loop = asyncio.get_event_loop()
+    def _sync_run():
+        try:
+            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=300)
+            return result.returncode, result.stderr.decode('utf-8', errors='replace')
+        except Exception as e:
+            return -1, str(e)
+    
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-        )
-        _, stderr = await proc.communicate()
-        if proc.returncode != 0 or not os.path.exists(output_path) or os.path.getsize(output_path) < 1000:
-            return False, stderr.decode('utf-8', errors='replace')[-1000:]
+        rc, stderr = await loop.run_in_executor(None, _sync_run)
+        if rc != 0 or not os.path.exists(output_path) or os.path.getsize(output_path) < 1000:
+            return False, stderr[-1000:]
         return True, ""
     except Exception as e:
         return False, str(e)
@@ -189,20 +215,22 @@ async def _cl_run_job(job_id: str):
             if not job or job.get("status") in ("completed", "failed", "stopped"):
                 return
 
-            await _cl_update_job(job_id, {"status": "running", "error": ""})
+            await _cl_update_job(job_id, {"status": "running", "error": "", "phase_start_ts": time.time()})
             uid = job["user_id"]
             
-            # Init client
+            # ── Init correct download client ──
             acc_id = job.get("account_id")
-            if acc_id == "bot":
-                client = _CLIENT
-            else:
-                client = await start_clone_bot(await db.get_bot(uid, acc_id))
-            if not getattr(client, "is_initialized", False):
-                if not client.is_connected:
-                    try: await client.start()
-                    except: pass
-            
+            client = None
+            try:
+                acc = await db.get_bot(uid, acc_id)
+                if not acc:
+                    await _cl_update_job(job_id, {"status": "failed", "error": "Account not found in DB"})
+                    return
+                client = await start_clone_bot(_CLIENT.client(acc))
+            except Exception as e:
+                await _cl_update_job(job_id, {"status": "failed", "error": f"Client init failed: {e}"})
+                return
+
             # Setup
             from_ch = job["from_chat"]
             dest_ch = job["dest_chat"]
@@ -212,26 +240,33 @@ async def _cl_run_job(job_id: str):
             
             base_name = job.get("base_name", "Cleaned")
             art = job.get("artist", "")
-            yr  = job.get("year", "")
-            cov = job.get("cover_file_id", "")
+            yr  = str(job.get("year", "") or "")
+            alb = job.get("album", "") or art
+            gen = job.get("genre", "")
+            cov_fid = job.get("cover_file_id", "")
             curr_num = job.get("starting_number", 1) + done
 
-            # Download Cover once if needed
-            local_cover = f"temp_cover_{job_id}.jpg"
-            if cov and not os.path.exists(local_cover):
+            # ── Download cover image once using the CORRECT client ──
+            local_cover = os.path.abspath(f"temp_cover_{job_id}.jpg")
+            if cov_fid and not os.path.exists(local_cover):
                 try:
-                    await _CLIENT.download_media(cov, file_name=local_cover)
+                    dl = await client.download_media(cov_fid, file_name=local_cover)
+                    if not dl or not os.path.exists(local_cover):
+                        local_cover = None
                 except Exception as e:
-                    logger.warning(f"Cleaner Cover dl fail: {e}")
-                    cov = None
+                    logger.warning(f"[Cleaner {job_id}] Cover dl fail: {e}")
+                    local_cover = None
+            elif not cov_fid:
+                local_cover = None
 
             fail_count = 0
+            phase_start = time.time()
             
-            # Loop
+            # Loop through all message IDs
             for msg_id in range(sid + done, eid + 1):
                 ev = _cl_paused.get(job_id)
                 if ev and not ev.is_set():
-                    break # pause triggered
+                    break  # pause triggered
 
                 job = await _cl_get_job(job_id)
                 if job.get("status") == "stopped":
@@ -245,61 +280,70 @@ async def _cl_run_job(job_id: str):
                     clean_title = f"{base_name} {curr_num}"
                     clean_file  = f"{clean_title}.mp3"
                     
-                    album_val = job.get("album") or art
-                    year_val = str(job.get("year", yr) or yr or "")
-                    
                     meta = {
-                        "title": clean_title,
+                        "title":  clean_title,
                         "artist": art,
-                        "album": album_val,
-                        "year": year_val
+                        "album":  alb or art,
+                        "year":   yr,
+                        "genre":  gen,
                     }
-                    if job.get("genre"):
-                        meta["genre"] = str(job.get("genre"))
 
                     # Download
-                    in_path  = f"temp_cl_in_{job_id}_{msg_id}.tmp"
-                    out_path = f"temp_cl_out_{job_id}_{msg_id}.mp3"
+                    in_path  = os.path.abspath(f"temp_cl_in_{job_id}_{msg_id}.tmp")
+                    out_path = os.path.abspath(f"temp_cl_out_{job_id}_{msg_id}.mp3")
                     
                     dl_path = await client.download_media(msg, file_name=in_path)
-                    if not dl_path:
+                    if not dl_path or not os.path.exists(str(dl_path)):
                         continue
 
-                    # Process
-                    ok, err = await _process_audio_ffmpeg(dl_path, out_path, local_cover if cov else None, meta)
+                    # Process with FFmpeg
+                    ok, err = await _process_audio_ffmpeg(str(dl_path), out_path, local_cover, meta)
                     
-                    try: os.remove(dl_path)
+                    try: os.remove(str(dl_path))
                     except: pass
 
                     if not ok:
-                        raise Exception(f"FFmpeg Edit Failed: {err}")
+                        raise Exception(f"FFmpeg Edit Failed: {err[:500]}")
 
-                    # Upload
-                    await client.send_audio(
-                        chat_id=dest_ch,
-                        audio=out_path,
-                        caption=f"**{clean_title}**",
-                        title=clean_title,
-                        performer=art,
-                        file_name=clean_file
-                    )
+                    # Upload using the same client
+                    thumb = local_cover if (local_cover and os.path.exists(local_cover)) else None
+                    for attempt in range(5):
+                        try:
+                            await client.send_audio(
+                                chat_id=dest_ch,
+                                audio=out_path,
+                                caption=f"**{clean_title}**",
+                                title=clean_title,
+                                performer=art,
+                                file_name=clean_file,
+                                thumb=thumb,
+                            )
+                            break
+                        except FloodWait as fw:
+                            await asyncio.sleep(fw.value + 2)
+                        except Exception as ue:
+                            if attempt >= 4:
+                                raise Exception(f"Upload failed: {ue}")
+                            await asyncio.sleep(3)
 
                     try: os.remove(out_path)
                     except: pass
 
-                    # Success!
+                    # Success
                     done += 1
                     curr_num += 1
                     fail_count = 0
                     await _cl_update_job(job_id, {"files_done": done})
+                    await asyncio.sleep(0.5)
 
                 except FloodWait as fw:
                     await asyncio.sleep(fw.value + 2)
-                    continue # retry same
+                    continue  # retry same
                 except Exception as e:
                     fail_count += 1
-                    if fail_count > 3:
-                        await _cl_update_job(job_id, {"status": "failed", "error": f"Failed repeatedly at msg {msg_id}: {str(e)}"})
+                    logger.error(f"[Cleaner {job_id}] Error at msg {msg_id}: {e}")
+                    if fail_count > 5:
+                        await _cl_update_job(job_id, {"status": "failed", "error": f"Failed repeatedly at msg {msg_id}: {str(e)[:200]}"})
                         break
                     await asyncio.sleep(5)
             
@@ -315,21 +359,29 @@ async def _cl_run_job(job_id: str):
                 # Finished entirely
                 await _cl_update_job(job_id, {"status": "completed", "error": ""})
                 
-                # Send Final Report
                 try:
-                    await _CLIENT.send_message(
+                    await _CLIENT.get_me()  # ensure main bot client is alive
+                    from pyrogram import Client as _PC
+                    main_bot = _PC.get_instance("main") if hasattr(_PC, "get_instance") else None
+                except:
+                    main_bot = None
+
+                try:
+                    notif_client = main_bot or client
+                    await notif_client.send_message(
                         uid,
-                        f"<b>🎉 Cʟᴇᴀɴᴇʀ Jᴏʙ Cᴏᴍᴘʟᴇᴛᴇᴅ!</b>\n\n"
-                        f"<b>🧹 Jᴏʙ Nᴀᴍᴇ:</b> {base_name}\n"
-                        f"<b>📄 Fɪʟᴇs Cʟᴇᴀɴᴇᴅ & Rᴇɴᴀᴍᴇᴅ:</b> {done} / {job.get('total_files', 0)}\n"
-                        f"<b>🎯 Rᴀɴɢᴇ Cᴏᴠᴇʀᴇᴅ:</b> <code>{base_name} {job.get('starting_number')}</code> ➠ <code>{base_name} {curr_num - 1}</code>\n\n"
-                        f"<i>All files successfully scrubbed of corruption, re-encoded (128kbps), metadata sanitized, and uploaded.</i>"
+                        f"<b>🎉 Cleaner Job Completed!</b>\n\n"
+                        f"<b>🧹 Job Name:</b> {base_name}\n"
+                        f"<b>📄 Files Cleaned & Renamed:</b> {done} / {job.get('total_files', 0)}\n"
+                        f"<b>🎯 Range Covered:</b> <code>{base_name} {job.get('starting_number')}</code> ➠ <code>{base_name} {curr_num - 1}</code>\n\n"
+                        f"<i>All files scrubbed, re-encoded (128kbps), metadata sanitized, and uploaded.</i>"
                     )
                 except Exception as e:
                     logger.warning(f"Failed to send cleaner report: {e}")
             
+            # Cleanup cover
             try:
-                if os.path.exists(local_cover): os.remove(local_cover)
+                if local_cover and os.path.exists(local_cover): os.remove(local_cover)
             except: pass
             
             break
@@ -347,7 +399,6 @@ async def _cl_callbacks(bot, update: CallbackQuery):
         active = [j for j in jobs if j.get("status") not in ("completed", "stopped", "failed")]
         kb = [[InlineKeyboardButton("➕ Sᴛᴀʀᴛ Nᴇᴡ Cʟᴇᴀɴᴇʀ Jᴏʙ", callback_data="cl#new")]]
         
-        # Default Settings Row
         kb.append([
             InlineKeyboardButton("⚙️ Sᴇᴛ Cᴏᴠᴇʀ", callback_data="cl#cfg#cover"),
             InlineKeyboardButton("⚙️ Sᴇᴛ Aʀᴛɪsᴛ", callback_data="cl#cfg#artist"),
@@ -376,7 +427,7 @@ async def _cl_callbacks(bot, update: CallbackQuery):
 
     elif action == "cfg":
         cfg_type = data[2]
-        ask_txt = f"Send the new default <b>{cfg_type.title()}</b>" + (" (or send a Photo for cover art)" if cfg_type == "cover" else "") + "\n<i>Send /skip to clear.</i>"
+        ask_txt = f"Send the new default <b>{cfg_type.title()}</b>" + (" (send a Photo/image for cover art)" if cfg_type == "cover" else "") + "\n<i>Send /skip to clear.</i>"
         try:
             resp = await _cl_ask(bot, uid, ask_txt, timeout=120)
             if not resp: raise asyncio.TimeoutError
@@ -385,17 +436,18 @@ async def _cl_callbacks(bot, update: CallbackQuery):
             if txt.lower() == "/skip":
                 await _cl_save_default(uid, cfg_type, "")
             else:
-                if cfg_type == "cover" and resp.photo:
-                    await _cl_save_default(uid, cfg_type, resp.photo.file_id)
+                if cfg_type == "cover" and (resp.photo or resp.document):
+                    fid = (resp.photo or resp.document).file_id
+                    await _cl_save_default(uid, cfg_type, fid)
                 else:
                     await _cl_save_default(uid, cfg_type, txt)
             
-            await ask_msg.delete()
             try: await resp.delete()
             except: pass
+            await bot.send_message(uid, f"✅ Default <b>{cfg_type}</b> updated!")
             
         except asyncio.TimeoutError:
-            await ask_msg.edit_text("<i>Timed out.</i>")
+            await bot.send_message(uid, "<i>Timed out.</i>")
             
         # Re-render main
         update.data = "cl#main"
@@ -474,10 +526,14 @@ async def _create_cl_flow(bot, user_id):
     if old and not old.done(): old.cancel()
 
     CANCEL_BTN = KeyboardButton("⛔ Cᴀɴᴄᴇʟ")
+    SKIP_BTN   = KeyboardButton("⏭ Sᴋɪᴘ")
     UNDO_BTN   = KeyboardButton("↩️ Uɴᴅᴏ")
+    markup_b   = ReplyKeyboardMarkup([[UNDO_BTN, CANCEL_BTN]], resize_keyboard=True, one_time_keyboard=True)
+    markup_s   = ReplyKeyboardMarkup([[SKIP_BTN, CANCEL_BTN]], resize_keyboard=True, one_time_keyboard=True)
 
     def _cancel(txt): return txt.strip().startswith("/cancel") or "⛔" in txt or "Cᴀɴᴄᴇʟ" in txt
-    def _undo(txt):   return txt.strip().startswith("/undo") or "↩️" in txt or "Uɴᴅᴏ" in txt
+    def _skip(txt):   return "⏭" in txt or "Sᴋɪᴘ" in txt or txt.strip().lower() == "/skip"
+    def _undo(txt):   return "↩️" in txt or "Uɴᴅᴏ" in txt
 
     # ── Step 1: Account ───────────────────────────────────────────
     accounts = await db.get_bots(user_id)
@@ -492,132 +548,147 @@ async def _create_cl_flow(bot, user_id):
     acc_btns = [[KeyboardButton(_acc_label(a))] for a in accounts]
     acc_btns.append([CANCEL_BTN])
     
-    r_acc = await _cl_ask(bot, user_id, "<b>🧹 Create Cleaner Job — Step 1/7</b>\n\nChoose the <b>account</b> to read from:", 
-                          reply_markup=ReplyKeyboardMarkup(acc_btns, resize_keyboard=True, one_time_keyboard=True))
-    if _cancel(r_acc.text): return await bot.send_message(user_id, "<i>Process Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+    r_acc = await _cl_ask(bot, user_id,
+        "<b>🧹 Create Cleaner Job — Step 1/8</b>\n\nChoose the <b>account</b> to read from:",
+        reply_markup=ReplyKeyboardMarkup(acc_btns, resize_keyboard=True, one_time_keyboard=True))
+    if _cancel(r_acc.text or ""): return await bot.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
 
     acc_id = None
-    if "[" in r_acc.text and "]" in r_acc.text:
+    if "[" in (r_acc.text or "") and "]" in (r_acc.text or ""):
         try: acc_id = int(r_acc.text.split('[')[-1].split(']')[0])
-        except Exception: pass
+        except: pass
     sel_acc = (await db.get_bot(user_id, acc_id)) if acc_id else accounts[0]
     
     # ── Step 2: Start link ───────────────────────────────────────
-    r_start = await _cl_ask(bot, user_id, "<b>»  Step 2/7</b>\n\nSend the <b>Start Message Link</b>:", reply_markup=ReplyKeyboardRemove())
-    if _cancel(r_start.text): return await bot.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
-    if _undo(r_start.text): return await bot.send_message(user_id, "<b>Undo not supported at first logic step. Use Cancel.</b>", reply_markup=ReplyKeyboardRemove())
-    from_chat, sid = _parse_link(r_start.text)
+    r_start = await _cl_ask(bot, user_id,
+        "<b>»  Step 2/8</b>\n\nSend the <b>Start Message Link</b> (first file):",
+        reply_markup=ReplyKeyboardMarkup([[CANCEL_BTN]], resize_keyboard=True, one_time_keyboard=True))
+    if _cancel(r_start.text or ""): return await bot.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+    from_chat, sid = _parse_link(r_start.text or "")
 
     # ── Step 3: End link ─────────────────────────────────────────
-    markup_b = ReplyKeyboardMarkup([[UNDO_BTN, CANCEL_BTN]], resize_keyboard=True, one_time_keyboard=True)
-    r_end = await _cl_ask(bot, user_id, "<b>»  Step 3/7</b>\n\nSend the <b>End Message Link</b>:", reply_markup=markup_b)
-    if _cancel(r_end.text): return await bot.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
-    if _undo(r_end.text):
-        r_start = await _cl_ask(bot, user_id, "<b>»  Step 2/7 (REDO)</b>\n\nSend the <b>Start Message Link</b>:", reply_markup=ReplyKeyboardRemove())
-        if _cancel(r_start.text): return await bot.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
-        from_chat, sid = _parse_link(r_start.text)
-        r_end = await _cl_ask(bot, user_id, "<b>»  Step 3/7</b>\n\nSend the <b>End Message Link</b>:", reply_markup=markup_b)
-        if _cancel(r_end.text): return await bot.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
-
-    _, eid = _parse_link(r_end.text)
-    if sid > eid: sid, eid = eid, sid
+    r_end = await _cl_ask(bot, user_id,
+        "<b>»  Step 3/8</b>\n\nSend the <b>End Message Link</b> (last file):",
+        reply_markup=markup_b)
+    if _cancel(r_end.text or ""): return await bot.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+    _, eid = _parse_link(r_end.text or "")
+    if sid and eid and sid > eid: sid, eid = eid, sid
 
     # ── Step 4: Destination ──────────────────────────────────────
     channels = await db.get_user_channels(user_id)
     dest_chat = None
+    ch = None
     if channels:
         ch_kb = [[KeyboardButton(f"📢 {ch['title']}")] for ch in channels]
-        ch_kb.append([KeyboardButton("⏭ Skip (DM only)")])
-        ch_kb.append([UNDO_BTN, CANCEL_BTN])
-        r_dest = await _cl_ask(bot, user_id, "<b>»  Step 4/7</b>\n\nSelect destination channel:", reply_markup=ReplyKeyboardMarkup(ch_kb, resize_keyboard=True, one_time_keyboard=True))
-        if _cancel(r_dest.text): return await bot.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
-        if _undo(r_dest.text):
-            r_end = await _cl_ask(bot, user_id, "<b>»  Step 3/7 (REDO)</b>\n\nSend the <b>End Message Link</b>:", reply_markup=markup_b)
-            if _cancel(r_end.text): return await bot.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
-            _, eid = _parse_link(r_end.text)
-            if sid > eid: sid, eid = eid, sid
-            r_dest = await _cl_ask(bot, user_id, "<b>»  Step 4/7</b>\n\nSelect destination channel:", reply_markup=ReplyKeyboardMarkup(ch_kb, resize_keyboard=True, one_time_keyboard=True))
-            if _cancel(r_dest.text): return await bot.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+        ch_kb.append([KeyboardButton("⏭ Skip (Send to DM)")])
+        ch_kb.append([CANCEL_BTN])
+        r_dest = await _cl_ask(bot, user_id,
+            "<b>»  Step 4/8</b>\n\nSelect <b>destination channel</b> for cleaned files:",
+            reply_markup=ReplyKeyboardMarkup(ch_kb, resize_keyboard=True, one_time_keyboard=True))
+        if _cancel(r_dest.text or ""): return await bot.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
         
-        if "Skip" not in r_dest.text:
-            title = r_dest.text.replace("📢 ","").strip()
+        if "Skip" not in (r_dest.text or ""):
+            title = (r_dest.text or "").replace("📢 ", "").strip()
             ch = next((c for c in channels if c["title"] == title), None)
             if ch: dest_chat = int(ch["chat_id"])
     if not dest_chat:
         dest_chat = user_id
 
     # ── Step 5: Base Name ────────────────────────────────────────
-    r_base = await _cl_ask(bot, user_id, "<b>»  Step 5/7</b>\n\nSend <b>Base Name</b> for the files\n<i>(e.g., Send `Saaya` -> outputs `Saaya 1.mp3`)</i>", reply_markup=markup_b)
-    if _cancel(r_base.text): return await bot.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
-    if _undo(r_base.text):
-        return await bot.send_message(user_id, "<b>‣ Please restart the flow to undo further back.</b>", reply_markup=ReplyKeyboardRemove())
-    base_name = re.sub(r'[<>:"/\\|?*]', '_', r_base.text.strip())
+    r_base = await _cl_ask(bot, user_id,
+        "<b>»  Step 5/8</b>\n\nSend the <b>Base Name</b> for the files.\n"
+        "<i>Example: Send <code>Saaya</code> → outputs <code>Saaya 1.mp3</code>, <code>Saaya 2.mp3</code>...</i>",
+        reply_markup=markup_b)
+    if _cancel(r_base.text or ""): return await bot.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+    base_name = re.sub(r'[<>:"/\\|?*]', '_', (r_base.text or "Cleaned").strip())
 
-    # ── Step 6: Advanced Metadata ────────────────────────────────
-    markup_m = ReplyKeyboardMarkup([["⏭ Skip (Use Defaults)"], [UNDO_BTN, CANCEL_BTN]], resize_keyboard=True, one_time_keyboard=True)
-    r_meta = await _cl_ask(bot, user_id, "<b>»  Step 6/7</b>\n\nAdvanced Metadata Configuration.\nSend details in format: <code>Artist | Year | Album | Genre</code>\n\n<i>Or click Skip to use global defaults.</i>", reply_markup=markup_m)
-    if _cancel(r_meta.text): return await bot.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
-    if _undo(r_meta.text):
-        r_base = await _cl_ask(bot, user_id, "<b>»  Step 5/7 (REDO)</b>\n\nSend <b>Base Name</b>:", reply_markup=markup_b)
-        if _cancel(r_base.text): return await bot.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
-        base_name = re.sub(r'[<>:"/\\|?*]', '_', r_base.text.strip())
-        r_meta = await _cl_ask(bot, user_id, "<b>»  Step 6/7</b>\n\nAdvanced Metadata Configuration.\nSend: <code>Artist | Year | Album | Genre</code>", reply_markup=markup_m)
-        if _cancel(r_meta.text): return await bot.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+    # ── Step 6: Starting Number ──────────────────────────────────
+    r_num = await _cl_ask(bot, user_id,
+        "<b>»  Step 6/8</b>\n\nSend the <b>Starting Number</b>.\n"
+        "<i>Example: Send <code>1</code> for Saaya 1, or <code>201</code> for Saaya 201...</i>",
+        reply_markup=markup_b)
+    if _cancel(r_num.text or ""): return await bot.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+    start_num = int((r_num.text or "1").strip()) if (r_num.text or "").strip().isdigit() else 1
 
+    # ── Step 7: Metadata (individual prompts) ────────────────────
     df = await _cl_get_defaults(user_id)
-    adv_artist = df.get('artist', 'Arya Audio')
-    adv_year = df.get('year', '')
-    adv_album = getattr(df, 'get', lambda x,y:y)('album', '')
+    adv_artist = df.get("artist", "")
+    adv_year   = df.get("year", "")
+    adv_album  = df.get("album", "")
+    adv_genre  = df.get("genre", "")
+    adv_cover  = df.get("cover", "")
+
+    r_art = await _cl_ask(bot, user_id,
+        f"<b>»  Step 7a/8 — Artist Name</b>\n\n"
+        f"Enter the <b>Artist</b> name.\n"
+        f"<i>Default: {adv_artist or 'None'}. Skip to keep.</i>",
+        reply_markup=markup_s)
+    if _cancel(r_art.text or ""): return await bot.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+    if not _skip(r_art.text or ""): adv_artist = (r_art.text or "").strip()
+
+    r_alb = await _cl_ask(bot, user_id,
+        f"<b>»  Step 7b/8 — Album Name</b>\n\n"
+        f"Enter the <b>Album</b> name.\n"
+        f"<i>Default: Story name / artist. Skip to use Artist name.</i>",
+        reply_markup=markup_s)
+    if _cancel(r_alb.text or ""): return await bot.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+    if not _skip(r_alb.text or ""): adv_album = (r_alb.text or "").strip()
+    if not adv_album: adv_album = adv_artist
+
+    r_yr = await _cl_ask(bot, user_id,
+        f"<b>»  Step 7c/8 — Year</b>\n\n"
+        f"Enter the <b>Release Year</b> (e.g. <code>2024</code>).\n"
+        f"<i>Default: {adv_year or 'None'}. Skip to leave empty.</i>",
+        reply_markup=markup_s)
+    if _cancel(r_yr.text or ""): return await bot.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+    if not _skip(r_yr.text or ""): adv_year = (r_yr.text or "").strip()
+
+    # ── Step 8: Cover Image ──────────────────────────────────────
+    r_cov = await _cl_ask(bot, user_id,
+        f"<b>»  Step 8/8 — Cover Image</b>\n\n"
+        f"Send a <b>photo/image</b> to use as the album cover art for all files.\n"
+        f"<i>{'Current default cover is set. ' if adv_cover else ''}Skip to {'keep existing' if adv_cover else 'use no cover'}.</i>",
+        reply_markup=markup_s,
+        timeout=300)
+    if _cancel((r_cov.text or "") if r_cov else ""): return await bot.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
     
-    if "Skip" not in r_meta.text:
-        parts = [p.strip() for p in r_meta.text.split('|')]
-        if len(parts) > 0 and parts[0]: adv_artist = parts[0]
-        if len(parts) > 1 and parts[1]: adv_year   = parts[1]
-        if len(parts) > 2 and parts[2]: adv_album  = parts[2]
+    if r_cov and not _skip(r_cov.text or ""):
+        if r_cov.photo:
+            adv_cover = r_cov.photo.file_id
+        elif r_cov.document and 'image' in (r_cov.document.mime_type or ''):
+            adv_cover = r_cov.document.file_id
 
-    # ── Step 7: Starting Number ──────────────────────────────────
-    r_num = await _cl_ask(bot, user_id, "<b>»  Step 7/7</b>\n\nSend <b>Starting Number</b> (e.g. `1` or `201`)", reply_markup=markup_b)
-    if _cancel(r_num.text): return await bot.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
-    if _undo(r_num.text):
-        r_meta = await _cl_ask(bot, user_id, "<b>»  Step 6/7 (REDO)</b>\n\nAdvanced Metadata Configuration:", reply_markup=markup_m)
-        if _cancel(r_meta.text): return await bot.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
-        if "Skip" not in r_meta.text:
-            parts = [p.strip() for p in r_meta.text.split('|')]
-            if len(parts) > 0 and parts[0]: adv_artist = parts[0]
-            if len(parts) > 1 and parts[1]: adv_year   = parts[1]
-            if len(parts) > 2 and parts[2]: adv_album  = parts[2]
-        r_num = await _cl_ask(bot, user_id, "<b>»  Step 7/7</b>\n\nSend <b>Starting Number</b>:", reply_markup=markup_b)
-        if _cancel(r_num.text): return await bot.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
-
-    start_num = int(r_num.text.strip() if r_num.text.strip().isdigit() else 1)
-
+    # ── Create Job ───────────────────────────────────────────────
     job_id = str(uuid.uuid4())
+    total_range = (eid - sid) + 1 if (sid and eid) else 0
     job = {
         "job_id": job_id, "user_id": user_id, "status": "queued",
         "from_chat": from_chat, "dest_chat": dest_chat,
         "start_id": sid, "end_id": eid,
-        "total_files": (eid - sid) + 1, "files_done": 0,
+        "total_files": total_range, "files_done": 0,
         "base_name": base_name, "starting_number": start_num,
         "artist": adv_artist,
         "year": adv_year,
         "album": adv_album,
-        "cover_file_id": df.get('cover', ''),
+        "genre": adv_genre,
+        "cover_file_id": adv_cover,
         "account_id": sel_acc.get("id") or acc_id,
-        "is_bot": sel_acc.get('is_bot', True),
+        "is_bot": sel_acc.get("is_bot", True),
         "created_at": _ist_now().strftime('%Y-%m-%d %H:%M:%S'),
-        "target_title": "DM" if dest_chat == user_id else getattr(ch, "title", "Channel") if dest_chat else "DM",
-        "metadata": {"artist": adv_artist, "year": adv_year, "album": adv_album}
+        "target_title": "DM" if dest_chat == user_id else (ch.get("title", "Channel") if ch else "Channel"),
+        "phase_start_ts": 0,
     }
     await _cl_save_job(job)
-    await bot.send_message(user_id, f"<b>✅ Cleaner Job Queued!</b>\nName: <code>{base_name}</code>\nMetadata: Art: {adv_artist} | Yr: {adv_year}", reply_markup=ReplyKeyboardRemove())
+    await bot.send_message(
+        user_id,
+        f"<b>✅ Cleaner Job Queued!</b>\n"
+        f"Name: <code>{base_name}</code>\n"
+        f"Files: <code>{sid}</code> → <code>{eid}</code> (~{total_range} msgs)\n"
+        f"Numbering: {base_name} <b>{start_num}</b> → {base_name} <b>{start_num + total_range - 1}</b>\n"
+        f"Artist: {adv_artist or '—'}  |  Cover: {'✅ Set' if adv_cover else '—'}",
+        reply_markup=ReplyKeyboardRemove()
+    )
     
     _cl_paused[job_id] = asyncio.Event()
     _cl_paused[job_id].set()
     _cl_tasks[job_id] = asyncio.create_task(_cl_run_job(job_id))
-    
-    class FakeUpdate: pass
-    fake = FakeUpdate()
-    fake.from_user = type('obj', (object,), {'id': user_id})()
-    fake.message = None
-    fake.data = f"cl#view#{job_id}"
-    await _cl_callbacks(bot, fake)

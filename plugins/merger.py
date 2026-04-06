@@ -360,8 +360,9 @@ def _probe(fp):
              "-of","csv=p=0",fp], capture_output=True, text=True, timeout=30)
         
         err_out = (r.stderr or "").lower()
-        if "moov atom not found" in err_out or "invalid data" in err_out or "error" in err_out:
-            return info  # Return completely empty if corrupted
+        # Only reject on REAL fatal errors — not mere warnings printed to stderr
+        if "moov atom not found" in err_out or "invalid data found" in err_out or "no such file" in err_out:
+            return info  # Return completely empty if truly corrupted
             
         for line in (r.stdout or "").strip().split("\n"):
             parts = line.strip().split(",")
@@ -862,7 +863,8 @@ async def _run_job(jid, uid, bot):
         # ══════════════════════════════════════════════════════════════════
         # PHASE 1 — Collect all media message IDs in strict order
         # ══════════════════════════════════════════════════════════════════
-        await _db_up(jid, status="downloading", error="", phase_start_ts=time.time())
+        _dl_phase_start = time.time()   # Track the true download start for ETA
+        await _db_up(jid, status="downloading", error="", phase_start_ts=_dl_phase_start)
         all_msgs_ordered = []   # list of (msg_id, msg) in channel order
         current = start_id
         while current <= end_id:
@@ -1109,8 +1111,17 @@ async def _run_job(jid, uid, bot):
                 # Apply speed factor to cumulative time
                 cumulative_secs += dur / max(speed, 0.1)
 
+                # ── ETA: calculate from TRUE download start, not from last chunk ──
+                _dl_elapsed = time.time() - _dl_phase_start
+                if global_seq > 0 and _dl_elapsed > 3:
+                    _speed_per_file = _dl_elapsed / global_seq
+                    _dl_remaining = _speed_per_file * (total_files - global_seq)
+                else:
+                    _dl_remaining = 0
+
                 await _db_up(jid, downloaded=global_seq, current_id=msg.id,
-                             total_dl_bytes=dl_total_bytes)
+                             total_dl_bytes=dl_total_bytes,
+                             dl_eta=_dl_remaining)
                 await asyncio.sleep(0.3)
 
                 # Update status every 3 files
@@ -1127,12 +1138,13 @@ async def _run_job(jid, uid, bot):
                 logger.warning(f"[MG {jid}] Chunk {chunk_num} had no downloadable files, skipping.")
                 continue
 
-            # End download phase — record dl_time
+            # End download phase — record dl_time (use real start, not per-chunk)
             _dl_end = time.time()
-            _dl_time = _dl_end - (job.get("phase_start_ts") or _dl_end)
+            _dl_time = _dl_end - _dl_phase_start
 
             # Partial merge of this chunk
-            await _db_up(jid, status="merging", dl_time=_dl_time, phase_start_ts=time.time())
+            _merge_start = time.time()
+            await _db_up(jid, status="merging", dl_time=_dl_time, phase_start_ts=_merge_start)
             part_ext  = ".mp4" if mtype == "video" else ".mp3"
             part_path = os.path.join(wdir, f"part_{chunk_num:04d}{part_ext}")
 
