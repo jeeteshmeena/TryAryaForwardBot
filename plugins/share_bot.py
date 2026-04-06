@@ -123,7 +123,9 @@ async def check_all_subscriptions(client, user_id: int, fsub_channels: list, bot
                 pass
             member = await client.get_chat_member(int(chat_id), user_id)
             if member.status in (enums.ChatMemberStatus.LEFT, enums.ChatMemberStatus.BANNED):
-                not_joined.append(ch)
+                ch_copy = dict(ch)
+                ch_copy['has_left'] = True
+                not_joined.append(ch_copy)
             # MEMBER / ADMINISTRATOR / OWNER / RESTRICTED = they're in → allow
         except UserNotParticipant:
             if is_jr:
@@ -225,10 +227,19 @@ async def _process_start(client, message):
         if not_joined:
             f_buttons = []  # User needs to join more channels
             channel_num = 1
+            ordinals = [
+                ("First", "🫠"), ("Second", "😮"), ("Third", "🤧"), 
+                ("Fourth", "🥲"), ("Fifth", "🙃"), ("Sixth", "🤭"),
+                ("Seventh", "🫡"), ("Eighth", "🫣")
+            ]
             for ch in not_joined:
                 invite  = ch.get('invite_link', '')
                 is_jr   = ch.get('join_request', False)
-                label   = f"Jᴏɪɴ Cʜᴀɴɴᴇʟ {channel_num}"  # Never show channel name
+                if channel_num - 1 < len(ordinals):
+                    word, em = ordinals[channel_num - 1]
+                    label = f"{word} Channel {em}"
+                else:
+                    label = f"Channel {channel_num} 🫠"
                 channel_num += 1
                 if invite:
                     emoji = "» " if is_jr else "» "
@@ -253,7 +264,20 @@ async def _process_start(client, message):
             else:
                 has_jr = any(ch.get('join_request') for ch in not_joined)
                 user_name = message.from_user.first_name or "User"
-                if has_jr:
+                
+                if any(ch.get('has_left') for ch in not_joined):
+                    import random
+                    savage_replies = [
+                        "<b>😏 Arey wah! Bade smart ban rahe the?</b>\nChannel chhod ke wapas aa gaye content ke liye? Pehle dobara join karo, phir access milega!",
+                        "<b>🏃‍♂️ Bhag kahan rahe ho?</b>\nSocha channel leave karke files download kar loge? System update ho gaya hai bhai, chup chap join button dabao!",
+                        "<b>🤡 You thought you could outsmart me?</b>\nYou literally joined, grabbed what you wanted, and LEFT. Well, the door is locked now. Join again if you want the files!",
+                        "<b>😹 Ek baar join karke nikal lene se kaam nahi chalta!</b>\nPermanent access chahiye toh permanent ban ke raho. Go click that join button again!",
+                        "<b>💀 Caught in 4k!</b>\nYou left the channel but still want the files? It doesn't work like that here. Join us back to proceed.",
+                        "<b>👀 Kya baat hai dost!</b>\nIdhar udhar kahan ghoom rahe ho? Channel tumne chhod diya aur file maangne aa gaye? Dobara join karo tab milegi!",
+                        "<b>😂 Nice try escaping!</b>\nBut my sensors caught you! You left the community, but you still need the content. First step: Join back!"
+                    ]
+                    txt = random.choice(savage_replies)
+                elif has_jr:
                     txt = (
                         f"<b>🔒  Aᴄᴄᴇss Dᴇɴɪᴇᴅ</b>\n\n"
                         f"Hey <b>{user_name}</b>,\n"
