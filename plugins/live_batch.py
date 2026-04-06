@@ -298,40 +298,58 @@ async def _lb_run_job(job_id: str):
                         # Massive gap confirmed! Jump forward.
                         last_seen += 200
                         await _lb_update_job(job_id, {"last_seen_id": last_seen})
-                        continue
+                        # Don't continue yet — still check buffer below
+                    else:
+                        # No messages ahead. We are at the bleeding edge.
+                        # But still fall through to the buffer-flush check below!
+                        pass
                 except: pass
-                # No messages ahead. We are at the bleeding edge.
-                await asyncio.sleep(20)
-                continue
-                
-            # Valid media found inside chunk! Process it.
-            for m in valid:
-                buffer_mids.append(m.id)
-                
-            # Safely advance last_seen to the highest physically detected message in this chunk!
-            last_seen = max(m.id for m in raw_exists)
+            else:
+                # Valid media found inside chunk! Process it.
+                for m in valid:
+                    buffer_mids.append(m.id)
+                    
+                # Safely advance last_seen to the highest physically detected message in this chunk!
+                last_seen = max(m.id for m in raw_exists)
+                await _lb_update_job(job_id, {"last_seen_id": last_seen, "buffer_mids": buffer_mids})
 
-            await _lb_update_job(job_id, {"last_seen_id": last_seen, "buffer_mids": buffer_mids})
+            # ──── BUFFER FLUSH CHECK ────
+            # Always check EVERY loop iteration — NOT only when new messages arrive.
+            # Re-read fresh from DB so we never miss a force_flush signal.
+            fresh_job = await _lb_get_job(job_id)
+            buffer_mids = fresh_job.get("buffer_mids", buffer_mids)  # use freshest buffer
+            force = fresh_job.get("force_flush", False)
 
-            force = job.get("force_flush")
-            if len(buffer_mids) >= thresh or (force and buffer_mids):
-                if force: await _lb_update_job(job_id, {"force_flush": False})
-                
-                post_limit = len(buffer_mids) if force else thresh
-                if post_limit > 100: post_limit = 100 # Safety for telegram API
-                
-                chunk_ids = buffer_mids[:post_limit]
-                rem_mids  = buffer_mids[post_limit:]
-                
-                actual_msgs = await src_client.get_messages(source, chunk_ids)
-                if not isinstance(actual_msgs, list): actual_msgs = [actual_msgs]
-                actual_msgs = [m for m in actual_msgs if m and not m.empty]
-                
-                # Execute payload
-                success = await _post_live_batch(sb_client, job, actual_msgs)
-                if success:
-                    fwd_count += len(chunk_ids)
-                    await _lb_update_job(job_id, {"buffer_mids": rem_mids, "forwarded": fwd_count})
+            if force:
+                # Immediately clear the flag so it doesn't fire twice
+                await _lb_update_job(job_id, {"force_flush": False})
+
+            if buffer_mids and (len(buffer_mids) >= thresh or force):
+                # Drain as many complete batches as possible
+                # On force: drain everything; otherwise drain in thresh-sized chunks
+                to_post = buffer_mids if force else buffer_mids[:thresh]
+                while to_post:
+                    chunk_ids = to_post[:100]  # Telegram API safety limit
+                    remaining_post = to_post[100:]
+                    
+                    actual_msgs = await src_client.get_messages(source, chunk_ids)
+                    if not isinstance(actual_msgs, list): actual_msgs = [actual_msgs]
+                    actual_msgs = [m for m in actual_msgs if m and not m.empty]
+                    
+                    success = await _post_live_batch(sb_client, job, actual_msgs)
+                    if success:
+                        fwd_count += len(chunk_ids)
+                        buffer_mids = [mid for mid in buffer_mids if mid not in chunk_ids]
+                        await _lb_update_job(job_id, {"buffer_mids": buffer_mids, "forwarded": fwd_count})
+                        # Refresh job for next batch post param
+                        job = await _lb_get_job(job_id)
+                        logger.info(f"[LiveBatch] Posted batch of {len(chunk_ids)} files. Buffer remaining: {len(buffer_mids)}")
+                    else:
+                        logger.warning(f"[LiveBatch] Post failed, will retry next cycle.")
+                        break
+                    
+                    # Continue draining if force OR still above threshold
+                    to_post = remaining_post if force else (buffer_mids[:thresh] if len(buffer_mids) >= thresh else [])
             
             now_t = time.time()
             up_time = job.get("last_prog_update", 0)
