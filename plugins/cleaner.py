@@ -138,8 +138,13 @@ def _build_cl_info(job: dict) -> str:
         eta_str = f"\n  ⏱ <b>ETA:</b> ~{_tm(remaining)}"
     
     lines = [
-        f"{ic} <b>🧹 {name}</b>  [{job.get('job_id')[-6:]}]",
-        f"  Status: <b>{status.title()}</b>",
+        f"<b>{st_icon} 🧹 {name} [{job_id[-6:]}]</b>",
+        f"Status: {st_icon} {status.title()}",
+    ]
+    if job.get("worker_node"):
+        lines.append(f"🖥 <b>Node:</b> {job.get('worker_node')}")
+        
+    lines.extend([
         f"  <code>{bar}</code>",
         "",
         f"  📁 <b>Processed:</b> {done}/{total} files",
@@ -150,7 +155,7 @@ def _build_cl_info(job: dict) -> str:
         f"  🖼 <b>Cover:</b> {'✅ Set' if job.get('cover_file_id') else '—'}",
         f"  🎯 <b>Target:</b> {job.get('target_title', '?')}",
         f"  📝 <b>Caption:</b> {'✅ Yes' if job.get('use_caption', True) else '❌ No'}",
-    ]
+    ])
     if eta_str: lines.append(eta_str)
     if err:
         lines.append(f"\n  ⚠️ <b>Error:</b> <code>{err[:200]}</code>")
@@ -178,6 +183,8 @@ async def _process_audio_ffmpeg(input_path, output_path, cover_path, meta: dict)
         cmd += ["-map", "0:a:0"]
 
     cmd += ["-c:a", "libmp3lame", "-b:a", "128k", "-q:a", "2"]
+    # Limit memory resources to prevent 1GB RAM VPS from crashing on huge files
+    cmd += ["-threads", "1", "-max_muxing_queue_size", "1024"]
     cmd += ["-map_metadata", "-1"]
 
     for k, v in meta.items():
@@ -402,6 +409,15 @@ async def _cl_run_job(job_id: str, bot=None):
                     dl_path = await client.download_media(msg, file_name=in_path)
                     if not dl_path or not os.path.exists(str(dl_path)):
                         continue
+                        
+                    # Verify complete download before giving it to FFmpeg
+                    tg_size = getattr(media_obj, 'file_size', 0)
+                    dl_size = os.path.getsize(str(dl_path))
+                    if tg_size > 0 and dl_size < (tg_size * 0.95):
+                        try: os.remove(str(dl_path))
+                        except: pass
+                        raise Exception(f"Incomplete download: {dl_size} bytes downloaded out of {tg_size}. Forcing retry.")
+                        
                     await db.update_global_stats(total_files_downloaded=1)
 
                     # Process with FFmpeg
@@ -411,6 +427,10 @@ async def _cl_run_job(job_id: str, bot=None):
                     except: pass
 
                     if not ok:
+                        # Prevent the entire job from crashing if one file is fundamentally unreadable
+                        if "Invalid data found" in err:
+                            logger.error(f"[Cleaner {job_id}] Fatal decode error on {msg_id}: Invalid data. Skipping this file.")
+                            continue
                         raise Exception(f"FFmpeg Edit Failed: {err[:500]}")
 
                     # ── Upload with fallback ──
@@ -879,4 +899,7 @@ async def _create_cl_flow(bot, user_id):
     _cl_paused[job_id] = asyncio.Event()
     _cl_paused[job_id].set()
     _cl_bot_ref[job_id] = bot  # store so resume can notify too
-    _cl_tasks[job_id] = asyncio.create_task(_cl_run_job(job_id, bot))
+    
+    # Check if Master should run it locally or leave for workers
+    if not os.environ.get("MASTER_ONLY_QUEUE", "False").lower() in ("1", "true"):
+        _cl_tasks[job_id] = asyncio.create_task(_cl_run_job(job_id, bot))

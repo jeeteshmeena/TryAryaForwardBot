@@ -39,12 +39,12 @@ from config import Config
 logger = logging.getLogger(__name__)
 
 # ── Thresholds ─────────────────────────────────────────────────────────────────
-RAM_WARN      = 80   # %  (was 75 — too aggressive, triggered during normal high use)
-RAM_CRITICAL  = 88   # %
-RAM_EMERGENCY = 95   # %
-CPU_WARN      = 80   # %
-CPU_CRITICAL  = 92   # %
-CPU_EMERGENCY = 97   # %
+RAM_WARN      = 90   # %
+RAM_CRITICAL  = 95   # %
+RAM_EMERGENCY = 97   # %
+CPU_WARN      = 95   # %
+CPU_CRITICAL  = 99   # %
+CPU_EMERGENCY = 100  # % (Essentially disable CPU auto-pause, CPU 100% is normal for FFmpeg)
 
 MONITOR_INTERVAL  = 30   # seconds between each check
 ALERT_COOLDOWN_WARN  = 1800  # 30 min cooldown for WARNING alerts (moderate load — don't spam)
@@ -358,21 +358,17 @@ async def _monitor_loop(bot):
 
             avail_gb = snap["ram_avail_gb"]
 
-            # Dynamic Resource Scaling: Ensure local PCs can run faster by relying on actual available RAM
-            is_ram_emer = (r > 98 and avail_gb < 0.2)
-            is_ram_crit = (r > 95 and avail_gb < 0.4)
-            is_ram_warn = (r > 92 and avail_gb < 0.8)
-
-            is_cpu_emer = c >= 98
-            is_cpu_crit = c >= 95
-            is_cpu_warn = c >= 90
+            # Dynamic Resource Scaling: Only trigger emergency on RAM death, not CPU spikes
+            is_ram_emer = (r >= RAM_EMERGENCY and avail_gb < 0.15)
+            # We no longer trigger auto-pauses purely for CPU spikes. High CPU just means FFmpeg is working.
+            # We only warn for CPU, but never EMERGENCY pause for it, otherwise every encoding job dies instantly.
 
             # Determine current level
-            if is_ram_emer or is_cpu_emer:
+            if is_ram_emer:
                 level = "emergency"
-            elif is_ram_crit or is_cpu_crit:
+            elif (r >= RAM_CRITICAL and avail_gb < 0.3):
                 level = "critical"
-            elif is_ram_warn or is_cpu_warn:
+            elif (r >= RAM_WARN and avail_gb < 0.5) or c >= CPU_WARN:
                 level = "warning"
             else:
                 level = "ok"
@@ -412,10 +408,10 @@ async def _monitor_loop(bot):
                         # Pause Mergers only if > 1 running
                         reason = f"System critical: RAM {r:.0f}% CPU {c:.0f}%"
                         mj_p = await _pause_multijobs(reason)
-                        lj_p = await _pause_livejobs(reason)
+                        lj_p = [] # Never pause Live Jobs, they are passive listeners
                         mg_p = await _pause_mergers(reason, force_all=False)
 
-                        paused_count = len(mj_p) + len(lj_p) + len(mg_p)
+                        paused_count = len(mj_p) + len(mg_p)
                         merger_note = (
                             "Merger continuing (only 1 running — allowed)."
                             if jobs["mg_active"] <= 1
@@ -425,9 +421,8 @@ async def _monitor_loop(bot):
                         txt = (
                             f"<b><u>CRITICAL: Auto-Pause Triggered</u></b>\n\n"
                             f"<b>RAM:</b> <code>{r:.1f}%</code> | <b>CPU:</b> <code>{c:.1f}%</code>\n\n"
-                            f"<i>Action automatically taken to stabilize system:</i>\n"
+                            f"<i>Action automatically taken to stabilize system (Live Jobs protected):</i>\n"
                             f"• Paused <b>{len(mj_p)}</b> Multi Job(s)\n"
-                            f"• Paused <b>{len(lj_p)}</b> Live Job(s)\n"
                             f"• {merger_note}\n\n"
                             f"<i>All paused jobs are safely bookmarked. "
                             f"Use <b>/resumeall</b> to seamlessly continue when the load drops.</i>"
@@ -444,16 +439,15 @@ async def _monitor_loop(bot):
                         # Pause EVERYTHING including all mergers
                         reason = f"EMERGENCY: RAM {r:.0f}% CPU {c:.0f}%"
                         mj_p = await _pause_multijobs(reason)
-                        lj_p = await _pause_livejobs(reason)
+                        lj_p = [] # Never pause Live Jobs, they are passive listeners
                         mg_p = await _pause_mergers(reason, force_all=True)
 
                         txt = (
                             f"<b><u>EMERGENCY: All Tasks Auto-Paused</u></b>\n\n"
                             f"<b>RAM:</b> <code>{r:.1f}%</code> | <b>CPU:</b> <code>{c:.1f}%</code>\n"
                             f"<i>System has reached an emergency threshold.</i>\n\n"
-                            f"<i>Action immediately taken:</i>\n"
+                            f"<i>Action immediately taken (Live Jobs protected):</i>\n"
                             f"• Paused <b>{len(mj_p)}</b> Multi Job(s)\n"
-                            f"• Paused <b>{len(lj_p)}</b> Live Job(s)\n"
                             f"• Paused <b>{len(mg_p)}</b> Merger(s)\n\n"
                             f"<i>You should consider clearing temporary files to free memory. "
                             f"Use <b>/cleanup</b> to wipe cache, and <b>/resumeall</b> once recovered.</i>"
