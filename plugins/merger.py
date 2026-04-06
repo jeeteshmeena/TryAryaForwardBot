@@ -985,7 +985,6 @@ async def _run_job(jid, uid, bot):
 
                         fp = await client.download_media(target_msg, file_name=temp_dlp)
                         if fp and os.path.exists(fp):
-                            from database import db
                             await db.update_global_stats(total_files_downloaded=1)
                             fsz_check = os.path.getsize(fp)
                             expected_sz = getattr(media_obj, 'file_size', 0)
@@ -1390,7 +1389,6 @@ async def _run_job(jid, uid, bot):
                             if metadata.get("title"): kw["title"] = metadata["title"]
                             if metadata.get("artist"): kw["performer"] = metadata["artist"]
                             await client.send_audio(**kw)
-                        from database import db
                         await db.update_global_stats(total_files_uploaded=1)
                         break
                     except FloodWait as fw: await asyncio.sleep(fw.value+2)

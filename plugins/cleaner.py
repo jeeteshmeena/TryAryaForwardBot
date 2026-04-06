@@ -138,8 +138,8 @@ def _build_cl_info(job: dict) -> str:
         eta_str = f"\n  ⏱ <b>ETA:</b> ~{_tm(remaining)}"
     
     lines = [
-        f"<b>{st_icon} 🧹 {name} [{job_id[-6:]}]</b>",
-        f"Status: {st_icon} {status.title()}",
+        f"<b>{ic} 🧹 {name} [{job.get('job_id', '')[-6:]}]</b>",
+        f"Status: {ic} {status.title()}",
     ]
     if job.get("worker_node"):
         lines.append(f"🖥 <b>Node:</b> {job.get('worker_node')}")
