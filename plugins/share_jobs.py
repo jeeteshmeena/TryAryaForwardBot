@@ -686,9 +686,14 @@ async def _build_share_links(bot, user_id, sj, info_msg):
             and smart fallback logic for single episodes.
             """
             c = text
+            # Step 1: Strip file extension (e.g. .mp3, .m4a, .mp4, .txt)
             dot = c.rfind('.')
-            if dot > 0: c = c[:dot]
+            if dot > 0 and (len(c) - dot) <= 5: c = c[:dot]
+            
+            # Step 2: Strip TRAILING copy-counter suffixes like " (1)", " (2)", " (1)" BEFORE any number extraction
+            # These are NOT episode numbers — they are duplicate markers added by Telegram/OS
             import re as _re
+            c = _re.sub(r'\s*\(\d+\)\s*$', '', c).strip()
             
             # 1. Comma / Space sequence of numbers (e.g. 1 2 3 4 5)
             s = _re.search(r'(?<!\d)(\d{1,4}(?:(?:,\s*|\s+)\d{1,4}){2,})(?!\d)', c)
