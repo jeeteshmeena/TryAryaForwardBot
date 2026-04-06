@@ -269,12 +269,19 @@ async def _cl_run_job(job_id: str, bot=None):
             cov_fid = job.get("cover_file_id", "")
             curr_num = job.get("starting_number", 1) + done
 
-            # ── Download cover image once using the CORRECT client ──
+            # ── Download cover image using the MAIN BOT (file_id is scoped to main bot token) ──
+            # NEVER use the clone client here — file_ids are bot-specific.
             local_cover = os.path.abspath(f"temp_cover_{job_id}.jpg")
             if cov_fid and not os.path.exists(local_cover):
+                dl_client = bot if bot else client   # main bot preferred
                 try:
-                    dl = await client.download_media(cov_fid, file_name=local_cover)
-                    if not dl or not os.path.exists(local_cover):
+                    dl = await dl_client.download_media(cov_fid, file_name=local_cover)
+                    # Validate: must actually exist AND be a real image (>1KB)
+                    if not dl or not os.path.exists(local_cover) or os.path.getsize(local_cover) < 1024:
+                        logger.warning(f"[Cleaner {job_id}] Cover download produced invalid file, disabling cover.")
+                        try:
+                            if os.path.exists(local_cover): os.remove(local_cover)
+                        except: pass
                         local_cover = None
                 except Exception as e:
                     logger.warning(f"[Cleaner {job_id}] Cover dl fail: {e}")
@@ -284,7 +291,34 @@ async def _cl_run_job(job_id: str, bot=None):
 
             fail_count = 0
             phase_start = time.time()
-            
+            job_failed = False  # flag to break outer while True loop on fatal errors
+
+            def _extract_ep_label(fname: str) -> str:
+                """
+                Extract an episode number or range from a filename for output naming.
+                - 'Shadow 388-389.mp3'   -> '388-389'
+                - 'Shadow 567 to 677.mp3'-> '567 to 677'
+                - 'Shadow 86 (1).mp3'    -> '86'
+                - 'Shadow 201.mp3'       -> '201'
+                - 'Shadow.mp3'           -> '' (no episode found)
+                """
+                import re as _re
+                base = _re.sub(r'\.\w{2,4}$', '', fname)        # strip extension
+                base = _re.sub(r'\s*\(\d+\)\s*$', '', base).strip()  # strip (1),(2) copy markers
+                # Range: '388-389' or '567 to 677'
+                m = _re.search(r'\b(\d{1,4})\s*(?:-|to)\s*(\d{1,4})\b', base, _re.IGNORECASE)
+                if m:
+                    a, b = int(m.group(1)), int(m.group(2))
+                    if 0 < a < 5000 and a <= b < 5000:
+                        sep = m.group(0)[len(m.group(1)):-len(m.group(2))].strip()
+                        return f"{a} {sep} {b}" if 'to' in sep.lower() else f"{a}-{b}"
+                # Single episode number (not a year)
+                nums = [int(x) for x in _re.findall(r'\b(\d{1,4})\b', base)
+                        if 0 < int(x) < 5000 and not (1900 <= int(x) <= 2100)]
+                if nums:
+                    return str(nums[-1])
+                return ''  # no episode found — fall back to sequential
+
             # Loop through all message IDs
             for msg_id in range(sid + done, eid + 1):
                 ev = _cl_paused.get(job_id)
@@ -300,8 +334,18 @@ async def _cl_run_job(job_id: str, bot=None):
                     if not msg or msg.empty or not (msg.audio or msg.voice or msg.document):
                         continue
 
-                    clean_title = f"{base_name} {curr_num}"
-                    clean_file  = f"{clean_title}.mp3"
+                    # ── Determine output title: preserve original episode/range if present ──
+                    media_obj = msg.audio or msg.voice or msg.document
+                    orig_fn = getattr(media_obj, 'file_name', None) or ""
+                    ep_label = _extract_ep_label(orig_fn) if orig_fn else ''
+                    if ep_label:
+                        clean_title = f"{base_name} {ep_label}"
+                        # Do NOT increment curr_num when using extracted label
+                    else:
+                        clean_title = f"{base_name} {curr_num}"
+                        curr_num += 1   # Only advance sequential counter for non-labeled files
+
+                    clean_file = f"{clean_title}.mp3"
                     
                     meta = {
                         "title":  clean_title,
@@ -352,25 +396,35 @@ async def _cl_run_job(job_id: str, bot=None):
                     try: os.remove(out_path)
                     except: pass
 
-                    # Success
+                    # ── Only advance curr_num if we used sequential numbering ──
+                    if not ep_label:
+                        pass  # curr_num already incremented above
                     done += 1
-                    curr_num += 1
                     fail_count = 0
                     await _cl_update_job(job_id, {"files_done": done})
                     await asyncio.sleep(0.5)
 
                 except FloodWait as fw:
                     await asyncio.sleep(fw.value + 2)
-                    continue  # retry same
+                    continue  # retry same msg
                 except Exception as e:
                     fail_count += 1
                     logger.error(f"[Cleaner {job_id}] Error at msg {msg_id}: {e}")
-                    if fail_count > 5:
-                        await _cl_update_job(job_id, {"status": "failed", "error": f"Failed repeatedly at msg {msg_id}: {str(e)[:200]}"})
-                        break
+                    if fail_count > 3:
+                        err_msg = f"Failed {fail_count}x at msg {msg_id}: {str(e)[:200]}"
+                        await _cl_update_job(job_id, {"status": "failed", "error": err_msg})
+                        if bot:
+                            try: await bot.send_message(uid, f"⚠️ <b>Cleaner job failed:</b>\n<code>{err_msg[:400]}</code>")
+                            except: pass
+                        job_failed = True
+                        break   # break inner for-loop
                     await asyncio.sleep(5)
             
-            # End of loop logic
+            # ── End of loop logic ──
+            if job_failed:
+                # Fatal failure already logged above, break outer loop
+                break
+            
             job = await _cl_get_job(job_id)
             if job.get("status") == "failed":
                 pass  # already logged
