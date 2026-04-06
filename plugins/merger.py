@@ -961,7 +961,7 @@ async def _run_job(jid, uid, bot):
                 dlp = os.path.join(chunk_dir, seq_name)
 
                 fp = None
-                MAX_DL_RETRIES = 20  # extra retries for CDN-empty-file bug
+                MAX_DL_RETRIES = 5  # 5 attempts is sufficient — valid files always download first try
                 for att in range(MAX_DL_RETRIES):
                     # Use a fresh temp path every attempt to work around
                     # Telegram CDN serving a cached empty/corrupt file
@@ -982,8 +982,10 @@ async def _run_job(jid, uid, bot):
                             expected_sz = getattr(media_obj, 'file_size', 0)
                             
                             is_valid = fsz_check > 100
-                            # Prevent silent partial download drops
-                            if expected_sz > 0 and fsz_check < expected_sz:
+                            # Allow up to 1% size difference — Telegram CDN metadata is
+                            # sometimes slightly inaccurate (off by a few bytes/KB).
+                            # Only fail if the file is significantly smaller (< 99% of expected).
+                            if expected_sz > 0 and fsz_check < int(expected_sz * 0.99):
                                 is_valid = False
                                 
                             # Prevent FFmpeg "moov atom not found" corrupt headers
