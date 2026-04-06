@@ -36,6 +36,7 @@ COLL = "cleaner_jobs"
 _cl_tasks: dict[str, asyncio.Task] = {}
 _cl_paused: dict[str, asyncio.Event] = {}
 _cl_waiter: dict[int, asyncio.Future] = {}
+_cl_bot_ref: dict[str, object] = {}   # job_id -> bot instance for notifications
 MAX_CONCURRENT = 1
 _cl_semaphore = asyncio.Semaphore(MAX_CONCURRENT)
 IST_OFFSET = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
@@ -204,7 +205,8 @@ async def _process_audio_ffmpeg(input_path, output_path, cover_path, meta: dict)
 
 
 # ─── Job Runner ──────────────────────────────────────────────────────────────
-async def _cl_run_job(job_id: str):
+async def _cl_run_job(job_id: str, bot=None):
+    """Main cleaner job coroutine. bot = the main Pyrogram bot client for DM notifications."""
     async with _cl_semaphore:
         while True:
             ev = _cl_paused.get(job_id)
@@ -218,6 +220,12 @@ async def _cl_run_job(job_id: str):
             await _cl_update_job(job_id, {"status": "running", "error": "", "phase_start_ts": time.time()})
             uid = job["user_id"]
             
+            # Recover bot ref if not passed (e.g. after resume)
+            if bot is None:
+                bot = _cl_bot_ref.get(job_id)
+            else:
+                _cl_bot_ref[job_id] = bot
+            
             # ── Init correct download client ──
             acc_id = job.get("account_id")
             client = None
@@ -225,10 +233,25 @@ async def _cl_run_job(job_id: str):
                 acc = await db.get_bot(uid, acc_id)
                 if not acc:
                     await _cl_update_job(job_id, {"status": "failed", "error": "Account not found in DB"})
+                    if bot:
+                        try: await bot.send_message(uid, "⚠️ <b>Cleaner failed:</b> Account not found in DB.")
+                        except: pass
                     return
-                client = await start_clone_bot(_CLIENT.client(acc))
+                pyrogram_client = _CLIENT.client(acc)
+                try:
+                    client = await start_clone_bot(pyrogram_client)
+                except Exception as start_err:
+                    # If already started, try to use as-is
+                    if "already" in str(start_err).lower() or "connected" in str(start_err).lower():
+                        client = pyrogram_client
+                    else:
+                        raise
             except Exception as e:
-                await _cl_update_job(job_id, {"status": "failed", "error": f"Client init failed: {e}"})
+                err_msg = f"Client init failed: {e}"
+                await _cl_update_job(job_id, {"status": "failed", "error": err_msg})
+                if bot:
+                    try: await bot.send_message(uid, f"⚠️ <b>Cleaner failed:</b> <code>{err_msg[:300]}</code>")
+                    except: pass
                 return
 
             # Setup
@@ -350,7 +373,7 @@ async def _cl_run_job(job_id: str):
             # End of loop logic
             job = await _cl_get_job(job_id)
             if job.get("status") == "failed":
-                pass
+                pass  # already logged
             elif job.get("status") == "stopped":
                 pass
             elif _cl_paused.get(job_id) and not _cl_paused[job_id].is_set():
@@ -358,32 +381,24 @@ async def _cl_run_job(job_id: str):
             else:
                 # Finished entirely
                 await _cl_update_job(job_id, {"status": "completed", "error": ""})
-                
-                try:
-                    await _CLIENT.get_me()  # ensure main bot client is alive
-                    from pyrogram import Client as _PC
-                    main_bot = _PC.get_instance("main") if hasattr(_PC, "get_instance") else None
-                except:
-                    main_bot = None
-
-                try:
-                    notif_client = main_bot or client
-                    await notif_client.send_message(
-                        uid,
-                        f"<b>🎉 Cleaner Job Completed!</b>\n\n"
-                        f"<b>🧹 Job Name:</b> {base_name}\n"
-                        f"<b>📄 Files Cleaned & Renamed:</b> {done} / {job.get('total_files', 0)}\n"
-                        f"<b>🎯 Range Covered:</b> <code>{base_name} {job.get('starting_number')}</code> ➠ <code>{base_name} {curr_num - 1}</code>\n\n"
-                        f"<i>All files scrubbed, re-encoded (128kbps), metadata sanitized, and uploaded.</i>"
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to send cleaner report: {e}")
+                if bot:
+                    try:
+                        await bot.send_message(
+                            uid,
+                            f"<b>🎉 Cleaner Job Completed!</b>\n\n"
+                            f"<b>🧹 Job Name:</b> {base_name}\n"
+                            f"<b>📄 Files Cleaned & Renamed:</b> {done} / {job.get('total_files', 0)}\n"
+                            f"<b>🎯 Range Covered:</b> <code>{base_name} {job.get('starting_number')}</code> ➠ <code>{base_name} {curr_num - 1}</code>\n\n"
+                            f"<i>All files scrubbed, re-encoded (128kbps), metadata sanitized, and uploaded.</i>"
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to send cleaner report: {e}")
             
-            # Cleanup cover
+            # Cleanup
             try:
                 if local_cover and os.path.exists(local_cover): os.remove(local_cover)
             except: pass
-            
+            _cl_bot_ref.pop(job_id, None)
             break
 
 
@@ -501,7 +516,7 @@ async def _cl_callbacks(bot, update: CallbackQuery):
         if jid not in _cl_paused: _cl_paused[jid] = asyncio.Event()
         _cl_paused[jid].set()
         if jid not in _cl_tasks or _cl_tasks[jid].done():
-            _cl_tasks[jid] = asyncio.create_task(_cl_run_job(jid))
+            _cl_tasks[jid] = asyncio.create_task(_cl_run_job(jid, bot))
         update.data = f"cl#view#{jid}"
         return await _cl_callbacks(bot, update)
 
@@ -691,4 +706,5 @@ async def _create_cl_flow(bot, user_id):
     
     _cl_paused[job_id] = asyncio.Event()
     _cl_paused[job_id].set()
-    _cl_tasks[job_id] = asyncio.create_task(_cl_run_job(job_id))
+    _cl_bot_ref[job_id] = bot  # store so resume can notify too
+    _cl_tasks[job_id] = asyncio.create_task(_cl_run_job(job_id, bot))
