@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 import asyncio
 from database import db, mongodb_version
 from config import Config, temp
@@ -323,7 +324,8 @@ async def status(bot, query):
     ul_files = stats.get('total_files_uploaded', 0)
     data_usage = humanbytes(stats.get('total_data_usage_bytes', 0))
     
-    uptime = get_readable_time(int(time.time() - stats.get('bot_start_time', time.time())))
+    from main import START_TIME
+    uptime = get_readable_time(int(time.time() - START_TIME))
     
     kwargs = {
         'users_count': users_count,

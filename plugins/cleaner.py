@@ -149,6 +149,7 @@ def _build_cl_info(job: dict) -> str:
         f"  🗓 <b>Year:</b> {job.get('year', '—')}",
         f"  🖼 <b>Cover:</b> {'✅ Set' if job.get('cover_file_id') else '—'}",
         f"  🎯 <b>Target:</b> {job.get('target_title', '?')}",
+        f"  📝 <b>Caption:</b> {'✅ Yes' if job.get('use_caption', True) else '❌ No'}",
     ]
     if eta_str: lines.append(eta_str)
     if err:
@@ -268,6 +269,7 @@ async def _cl_run_job(job_id: str, bot=None):
             sid = job["start_id"]
             eid = job["end_id"]
             done = job.get("files_done", 0)
+            curr_msg_id = job.get("current_msg_id", sid)
             
             base_name = job.get("base_name", "Cleaned")
             art = job.get("artist", "")
@@ -330,8 +332,7 @@ async def _cl_run_job(job_id: str, bot=None):
                 if m:
                     a, b = int(m.group(1)), int(m.group(2))
                     if 0 < a < 5000 and a <= b < 5000:
-                        sep = m.group(0)[len(m.group(1)):-len(m.group(2))].strip()
-                        return f"{a} {sep} {b}" if 'to' in sep.lower() else f"{a}-{b}"
+                        return m.group(0).strip()
                 # Single episode number (not a year)
                 nums = [int(x) for x in _re.findall(r'\b(\d{1,4})\b', base)
                         if 0 < int(x) < 5000 and not (1900 <= int(x) <= 2100)]
@@ -340,7 +341,9 @@ async def _cl_run_job(job_id: str, bot=None):
                 return ''  # no episode found — fall back to sequential
 
             # Loop through all message IDs
-            for msg_id in range(sid + done, eid + 1):
+            for msg_id in range(curr_msg_id, eid + 1):
+                # Save the loop var as progress checkpoint
+                await _cl_update_job(job_id, {"current_msg_id": msg_id})
                 ev = _cl_paused.get(job_id)
                 if ev and not ev.is_set():
                     break  # pause triggered
@@ -367,9 +370,13 @@ async def _cl_run_job(job_id: str, bot=None):
                     ep_label = _extract_ep_label(orig_fn) if orig_fn else ''
                     if ep_label:
                         clean_title = f"{base_name} {ep_label}"
-                        # Do NOT increment curr_num when using extracted label
+                        # Try to extract the first number as track, else use curr_num
+                        import re as _re_meta
+                        _tm = _re_meta.search(r'\d+', ep_label)
+                        track_num = _tm.group() if _tm else str(curr_num)
                     else:
                         clean_title = f"{base_name} {curr_num}"
+                        track_num = str(curr_num)
                         curr_num += 1   # Only advance sequential counter for non-labeled files
 
                     clean_file = f"{clean_title}.mp3"
@@ -380,6 +387,12 @@ async def _cl_run_job(job_id: str, bot=None):
                         "album":  alb or art,
                         "year":   yr,
                         "genre":  gen,
+                        "track":  track_num,
+                        "comment": "Optimized & Cleaned by Arya Bot",
+                        "description": f"Processed by Arya Bot | Source: {base_name}",
+                        "publisher": "Arya Bot",
+                        "encoder": "Arya Bot",
+                        "encoded_by": "Arya Bot"
                     }
 
                     # Download
@@ -389,6 +402,7 @@ async def _cl_run_job(job_id: str, bot=None):
                     dl_path = await client.download_media(msg, file_name=in_path)
                     if not dl_path or not os.path.exists(str(dl_path)):
                         continue
+                    await db.update_global_stats(total_files_downloaded=1)
 
                     # Process with FFmpeg
                     ok, err = await _process_audio_ffmpeg(str(dl_path), out_path, local_cover, meta)
@@ -410,13 +424,14 @@ async def _cl_run_job(job_id: str, bot=None):
                             await upload_client.send_audio(
                                 chat_id=dest_ch,
                                 audio=out_path,
-                                caption=f"**{clean_title}**",
+                                caption=f"**{clean_title}**" if job.get("use_caption", True) else "",
                                 title=clean_title,
                                 performer=art,
                                 file_name=clean_file,
                                 thumb=thumb,
                             )
                             uploaded = True
+                            await db.update_global_stats(total_files_uploaded=1)
                             break
                         except FloodWait as fw:
                             await asyncio.sleep(fw.value + 2)
@@ -512,6 +527,9 @@ async def _cl_callbacks(bot, update: CallbackQuery):
             InlineKeyboardButton("⚙️ Sᴇᴛ Cᴏᴠᴇʀ", callback_data="cl#cfg#cover"),
             InlineKeyboardButton("⚙️ Sᴇᴛ Aʀᴛɪsᴛ", callback_data="cl#cfg#artist"),
         ])
+        kb.append([
+            InlineKeyboardButton("⚙️ Sᴇᴛ Gᴇɴʀᴇ", callback_data="cl#cfg#genre"),
+        ])
         
         row = []
         for i, j in enumerate(active):
@@ -525,11 +543,12 @@ async def _cl_callbacks(bot, update: CallbackQuery):
         
         df = await _cl_get_defaults(uid)
         txt = (
-            "<b><u>🧹 Aᴜᴅɪᴏ Cʟᴇᴀɴᴇʀ & Rᴇɴᴀᴍᴇʀ</u></b>\n\n"
+            "<b><u>\ud83e\uddf9 A\u1d1c\u1d04\u026a\u1d0f C\u029f\u1d07\u1d00\u0274\u1d07\u0280 & R\u1d07\u0274\u1d00\u1d0d\u1d07\u0280</u></b>\n\n"
             "This system strips background noise, cleans corrupted metadata, "
             "forces 128kbps standard formats, and strictly renames sequential files.\n\n"
             f"<b>Global Defaults:</b>\n"
             f"  • Artist: {df.get('artist', '<i>None</i>')}\n"
+            f"  • Genre: {df.get('genre', '<i>None</i>')}\n"
             f"  • Cover Art: {'<i>Saved</i> ✅' if df.get('cover') else '<i>None</i>'}\n"
         )
         return await update.message.edit_text(txt, reply_markup=InlineKeyboardMarkup(kb))
@@ -785,13 +804,24 @@ async def _create_cl_flow(bot, user_id):
         f"<b>»  Step 7c/8 — Year</b>\n\n"
         f"Enter the <b>Release Year</b> (e.g. <code>2024</code>).\n"
         f"<i>Default: {adv_year or 'None'}. Skip to leave empty.</i>",
-        reply_markup=markup_s)
+        reply_markup=ReplyKeyboardMarkup([
+            ["2023", "2024", "2025", "2026"],
+            ["/skip"], ["/cancel"]
+        ], resize_keyboard=True))
     if _cancel(r_yr.text or ""): return await bot.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
     if not _skip(r_yr.text or ""): adv_year = (r_yr.text or "").strip()
 
+    r_gen = await _cl_ask(bot, user_id,
+        f"<b>»  Step 7d/8 — Genre</b>\n\n"
+        f"Enter the <b>Genre</b> (e.g. <code>Audiobook</code>, <code>Romance</code>, <code>Podcast</code>).\n"
+        f"<i>Default: {adv_genre or 'None'}. Skip to leave empty.</i>",
+        reply_markup=markup_s)
+    if _cancel(r_gen.text or ""): return await bot.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+    if not _skip(r_gen.text or ""): adv_genre = (r_gen.text or "").strip()
+
     # ── Step 8: Cover Image ──────────────────────────────────────
     r_cov = await _cl_ask(bot, user_id,
-        f"<b>»  Step 8/8 — Cover Image</b>\n\n"
+        f"<b>»  Step 8/9 — Cover Image</b>\n\n"
         f"Send a <b>photo/image</b> to use as the album cover art for all files.\n"
         f"<i>{'Current default cover is set. ' if adv_cover else ''}Skip to {'keep existing' if adv_cover else 'use no cover'}.</i>",
         reply_markup=markup_s,
@@ -803,6 +833,16 @@ async def _create_cl_flow(bot, user_id):
             adv_cover = r_cov.photo.file_id
         elif r_cov.document and 'image' in (r_cov.document.mime_type or ''):
             adv_cover = r_cov.document.file_id
+
+    # ── Step 9: Caption Option ───────────────────────────────────
+    r_cap = await _cl_ask(bot, user_id,
+        f"<b>»  Step 9/9 — Add Caption?</b>\n\n"
+        f"Do you want to add the file name as the caption in the target channel/DM?\n",
+        reply_markup=ReplyKeyboardMarkup([
+            ["✅ Yes, Add Caption"], ["❌ No, Empty Caption"], ["/cancel"]
+        ], resize_keyboard=True, one_time_keyboard=True))
+    if _cancel((r_cap.text or "") if r_cap else ""): return await bot.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+    use_caption = not ("no, empty caption" in (r_cap.text or "").lower())
 
     # ── Create Job ───────────────────────────────────────────────
     job_id = str(uuid.uuid4())
@@ -818,6 +858,7 @@ async def _create_cl_flow(bot, user_id):
         "album": adv_album,
         "genre": adv_genre,
         "cover_file_id": adv_cover,
+        "use_caption": use_caption,
         "account_id": sel_acc.get("id") or acc_id,
         "is_bot": sel_acc.get("is_bot", True),
         "created_at": _ist_now().strftime('%Y-%m-%d %H:%M:%S'),

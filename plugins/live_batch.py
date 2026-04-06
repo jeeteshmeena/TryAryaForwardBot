@@ -336,6 +336,13 @@ async def _lb_run_job(job_id: str):
                     if not isinstance(actual_msgs, list): actual_msgs = [actual_msgs]
                     actual_msgs = [m for m in actual_msgs if m and not m.empty]
                     
+                    if not actual_msgs:
+                        logger.info(f"[LiveBatch] All {len(chunk_ids)} messages in chunk were deleted or invalid. Removing from buffer.")
+                        buffer_mids = [mid for mid in buffer_mids if mid not in chunk_ids]
+                        await _lb_update_job(job_id, {"buffer_mids": buffer_mids})
+                        to_post = remaining_post if force else (buffer_mids[:thresh] if len(buffer_mids) >= thresh else [])
+                        continue
+                    
                     success = await _post_live_batch(sb_client, job, actual_msgs)
                     if success:
                         fwd_count += len(chunk_ids)

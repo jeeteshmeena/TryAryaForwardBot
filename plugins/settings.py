@@ -148,7 +148,7 @@ async def settings_query(bot, query):
          "Send <code>/cancel</code> to abort."
      )
      try:
-         resp = await bot.listen(chat_id=user_id, timeout=120)
+         resp = await _ask(bot, user_id, timeout=120)
          if getattr(resp, "text", None) and any(x in str(resp.text).lower() for x in ["cancel", "cᴀɴᴄᴇʟ", "⛔", "/cancel"]):
              await resp.delete()
              return await ask.edit_text("<i>Process Cancelled Successfully!</i>", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#main")]]))
@@ -172,6 +172,14 @@ async def settings_query(bot, query):
          await ask.edit_text("»  ✅ Main Menu image configured successfully!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#main")]]))
      except asyncio.TimeoutError:
          await ask.edit_text("Timeout.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#main")]]))
+
+  elif type == "main_menu_clr":
+     cfgs = await db.get_configs(user_id)
+     cfgs['menu_image_id'] = None
+     await db.update_configs(user_id, cfgs)
+     await query.answer("\ud83d\uddd1 Menu image removed!", show_alert=False)
+     query.data = "settings#main"
+     return await settings_query(bot, query)
 
   elif type=="noop":
      await query.answer()
@@ -459,6 +467,10 @@ async def settings_query(bot, query):
               img_btns = []
       if img_btns:
           buttons.append(img_btns)
+      
+      # Show clear-all button only when images exist
+      if images:
+          buttons.append([InlineKeyboardButton('🗑 Rᴇᴍᴏᴠᴇ Aʟʟ Iᴍᴀɢᴇs', callback_data=f"settings#sb_menu_clr_{b_id}")])
           
       buttons.append([InlineKeyboardButton('❮ Bᴀᴄᴋ', callback_data=f"settings#sb_wa_{b_id}")])
       
@@ -470,7 +482,7 @@ async def settings_query(bot, query):
       )
 
   elif type.startswith("sb_menu_del_"):
-      _, b_id, idx = type.split("sb_menu_del_")[1].partition("_")
+      b_id, _, idx = type.split("sb_menu_del_")[1].partition("_")
       idx = int(idx)
       about = await db.get_share_bot_about(b_id)
       images = about.get('menu_image_ids', [])
@@ -479,6 +491,15 @@ async def settings_query(bot, query):
           about['menu_image_ids'] = images
           await db.set_share_bot_about(b_id, about)
       
+      query.data = f"settings#sb_menu_mgr_{b_id}"
+      return await settings_query(bot, query)
+
+  elif type.startswith("sb_menu_clr_"):
+      b_id = type.split("sb_menu_clr_")[1]
+      about = await db.get_share_bot_about(b_id)
+      about['menu_image_ids'] = []
+      await db.set_share_bot_about(b_id, about)
+      await query.answer("🗑 All menu images removed!", show_alert=False)
       query.data = f"settings#sb_menu_mgr_{b_id}"
       return await settings_query(bot, query)
 
@@ -511,7 +532,7 @@ async def settings_query(bot, query):
           "Send <code>/cancel</code> to abort."
       )
       try:
-          resp = await bot.listen(chat_id=user_id, timeout=120)
+          resp = await _ask(bot, user_id, timeout=120)
 
           if getattr(resp, "text", None) and any(x in str(resp.text).lower() for x in ["cancel", "cᴀɴᴄᴇʟ", "⛔", "/cancel"]):
               await resp.delete()
@@ -630,33 +651,75 @@ async def settings_query(bot, query):
   elif type.startswith("sb_fetch_media_"):
       b_id = type.split("sb_fetch_media_")[1]
       existing = await db.get_bot_fetching_media(b_id)
+      
+      buttons = []
+      buttons.append([
+          InlineKeyboardButton('➕ Aᴅᴅ Mᴇᴅɪᴀ', callback_data=f"settings#sb_fetch_add_{b_id}"),
+          InlineKeyboardButton('👁 Pʀᴇᴠɪᴇᴡ', callback_data=f"settings#sb_fetch_pre_{b_id}")
+      ])
+      
+      img_btns = []
+      for idx, media in enumerate(existing):
+          img_btns.append(InlineKeyboardButton(f'❌ Mᴇᴅɪᴀ {idx+1}', callback_data=f"settings#sb_fetch_del_{b_id}_{idx}"))
+          if len(img_btns) == 2:
+              buttons.append(img_btns)
+              img_btns = []
+      if img_btns:
+          buttons.append(img_btns)
+          
+      buttons.append([InlineKeyboardButton('❮ Bᴀᴄᴋ', callback_data=f"settings#sb_view_{b_id}")])
+      
+      await query.message.edit_text(
+          f"<b>❪ FETCHING MEDIA MANAGER ❫</b>\n\n"
+          f"You have <b>{len(existing)}/10</b> media items in rotation.\n"
+          f"Users will see one of these randomly while their files are being prepared.",
+          reply_markup=InlineKeyboardMarkup(buttons)
+      )
 
-      # Build current status badge
-      if existing and existing.get('file_id'):
-          ext = existing.get('media_type', 'photo')
-          type_icon = {"animation": "🎞", "video": "🎬", "photo": "🖼"}.get(ext, "🖼")
-          status_str = f"{type_icon} Currently set: <b>{ext}</b> — tap below to replace or clear."
-      else:
-          status_str = "<i>❌ Not configured — delivery shows text only.</i>"
+  elif type.startswith("sb_fetch_del_"):
+      b_id, _, idx = type.split("sb_fetch_del_")[1].partition("_")
+      idx = int(idx)
+      existing = await db.get_bot_fetching_media(b_id)
+      if 0 <= idx < len(existing):
+          existing.pop(idx)
+          await db.set_bot_fetching_media(b_id, existing)
+      query.data = f"settings#sb_fetch_media_{b_id}"
+      return await settings_query(bot, query)
 
+  elif type.startswith("sb_fetch_pre_"):
+      b_id = type.split("sb_fetch_pre_")[1]
+      existing = await db.get_bot_fetching_media(b_id)
+      if not existing:
+          return await query.answer("No fetching media configured yet!", show_alert=True)
+      import random
+      media = random.choice(existing)
+      await query.message.delete()
+      
+      kwargs = {
+          "chat_id": user_id, 
+          "caption": "<b>👁 Preview of rotating fetching media.</b>",
+          "reply_markup": InlineKeyboardMarkup([[InlineKeyboardButton('❮ Bᴀᴄᴋ Tᴏ Mᴀɴᴀɢᴇʀ', callback_data=f"settings#sb_fetch_media_{b_id}")]])
+      }
+      mtype = media.get("media_type")
+      fid = media.get("file_id")
+      if mtype == "animation": await bot.send_animation(animation=fid, **kwargs)
+      elif mtype == "video": await bot.send_video(video=fid, **kwargs)
+      else: await bot.send_photo(photo=fid, **kwargs)
+
+  elif type.startswith("sb_fetch_add_"):
+      b_id = type.split("sb_fetch_add_")[1]
       await query.message.delete()
       ask = await bot.send_message(
           user_id,
-          f"<b>🎞 Fetching Media Setup</b>\n\n"
-          f"{status_str}\n\n"
-          "<b>How it works:</b>\n"
-          "When a user requests files, this GIF / Image / Video appears while\n"
-          "their files are being prepared — making delivery feel alive & premium.\n\n"
+          f"<b>🎞 Set Fetching Media</b>\n\n"
+          "Send a media file representing what users will see while waiting.\n\n"
           "<b>Supported types:</b>\n"
           "  🎞 GIF / Animation\n"
           "  🖼 Photo / Image\n"
           "  🎬 Short Video (max 10 sec)\n\n"
-          "<b>Simply send the media now.</b>\n"
-          "Or send <code>/clear</code> to remove it.\n"
-          "Or send <code>/cancel</code> to abort.",
-          reply_markup=InlineKeyboardMarkup([[
-              InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=f"settings#sb_view_{b_id}")
-          ]])
+          "Send <code>/clear</code> to remove ALL media.\n"
+          "Send <code>/cancel</code> to abort.",
+          reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=f"settings#sb_fetch_media_{b_id}")]])
       )
 
       try:
@@ -669,37 +732,39 @@ async def settings_query(bot, query):
                   except: pass
                   return await ask.edit_text(
                       "<i>Process Cancelled Successfully!</i>",
-                      reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=f"settings#sb_view_{b_id}")]])
+                      reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=f"settings#sb_fetch_media_{b_id}")]])
                   )
               if '/clear' in txt:
-                  await db.clear_bot_fetching_media(b_id)
+                  await db.set_bot_fetching_media(b_id, [])
                   try: await resp.delete()
                   except: pass
                   return await ask.edit_text(
-                      "✅ Fetching media <b>removed</b>. Delivery will show text only.",
-                      reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=f"settings#sb_view_{b_id}")]])
+                      "✅ Fetching media <b>cleared</b>. Delivery will show text only.",
+                      reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=f"settings#sb_fetch_media_{b_id}")]])
                   )
 
-          # ── Detect media type ──────────────────────────────────────────────
+          existing = await db.get_bot_fetching_media(b_id)
+          if len(existing) >= 10:
+              try: await resp.delete()
+              except: pass
+              return await ask.edit_text(
+                  "<b>‣  Limit Reached:</b> You can only set up to 10 rotating fetching media.\nSend <code>/clear</code> first to reset the list.",
+                  reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=f"settings#sb_fetch_media_{b_id}")]])
+              )
+
           file_id   = None
           media_type = None
 
           if resp.animation:
-              # GIF / animation: always has file_id directly
               file_id    = resp.animation.file_id
               media_type = 'animation'
-
           elif resp.video and resp.video.duration <= 10:
               file_id    = resp.video.file_id
               media_type = 'video'
-
           elif resp.photo:
-              # In Pyrogram, msg.photo is the LARGEST PhotoSize object
-              # (not a list like in older versions) — just use file_id directly
               ph = resp.photo
               file_id    = ph.file_id if hasattr(ph, 'file_id') else ph[-1].file_id
               media_type = 'photo'
-
           else:
               try: await resp.delete()
               except: pass
@@ -707,29 +772,22 @@ async def settings_query(bot, query):
                   "❌ <b>Unsupported type.</b>\n\nPlease send:\n"
                   "  🎞 A GIF / Animation\n"
                   "  🖼 A Photo / Image\n"
-                  "  🎬 A Video under 10 seconds\n\n"
-                  "Try again with /settings → Fetching Media.",
-                  reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=f"settings#sb_view_{b_id}")]])
+                  "  🎬 A Video under 10 seconds",
+                  reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=f"settings#sb_fetch_media_{b_id}")]])
               )
 
-          # ── Capture Share Bot-compatible file_id ───────────────────────────
-          # Strategy: have the Share Bot forward the media to itself (saved messages = bot's own chat).
-          # This gives a file_id bound to the Share Bot's session — guaranteed to work at delivery.
           from plugins.share_bot import share_clients
           sb_client   = share_clients.get(str(b_id))
-          final_file_id = file_id   # fallback = main bot's file_id
+          final_file_id = file_id   
           sb_status   = "⚠️ Share Bot offline"
           sb_ok       = False
 
           if sb_client:
               try:
-                  # Download via main bot (since Share Bot can't see the admin's DM with main bot)
                   dl_path = await bot.download_media(resp)
                   if dl_path:
                       staged = None
                       try:
-                          # Have the Share Bot send it to the admin (user_id)!
-                          # Doing this generates a Share-Bot-native file_id.
                           if media_type == 'animation':
                               staged = await sb_client.send_animation(user_id, animation=dl_path, caption="[Setting up Fetching Media...]")
                           elif media_type == 'video':
@@ -738,47 +796,44 @@ async def settings_query(bot, query):
                               staged = await sb_client.send_photo(user_id, photo=dl_path, caption="[Setting up Fetching Media...]")
 
                           if staged:
-                              if staged.animation:  final_file_id = staged.animation.file_id
-                              elif staged.video:    final_file_id = staged.video.file_id
+                              if staged.animation: final_file_id = staged.animation.file_id
+                              elif staged.video: final_file_id = staged.video.file_id
                               elif staged.photo:
                                   ph2 = staged.photo
                                   final_file_id = ph2.file_id if hasattr(ph2, 'file_id') else ph2[-1].file_id
 
-                              # Clean up staged message explicitly if we can
                               try: await staged.delete()
                               except: pass
 
                               sb_ok = True
                               sb_status = "✅ via Share Bot"
                       except Exception as _fe:
-                          logger.warning(f"[FetchMedia] Share Bot staging failed: {_fe}")
                           sb_status = f"⚠️ Share Bot error ({type(_fe).__name__})"
 
                       try: os.remove(dl_path)
                       except: pass
               except Exception as _outer_fe:
-                  logger.warning(f"[FetchMedia] Main block failed: {_outer_fe}")
                   sb_status = f"⚠️ Setup error ({type(_outer_fe).__name__})"
 
-          # ── Save to DB ─────────────────────────────────────────────────────
-          await db.set_bot_fetching_media(b_id, final_file_id, media_type)
+          existing.append({'file_id': final_file_id, 'media_type': media_type})
+          await db.set_bot_fetching_media(b_id, existing)
           try: await resp.delete()
           except: pass
 
           type_icon = {"animation": "🎞", "video": "🎬", "photo": "🖼"}.get(media_type, "🖼")
           await ask.edit_text(
-              f"<b>{type_icon} Fetching Media Saved!</b>\n\n"
+              f"<b>{type_icon} Fetching Media Added!</b>\n\n"
               f"<b>Type:</b> {media_type}\n"
               f"<b>Source:</b> {sb_status}\n\n"
               f"Users will see this media while their files are being delivered.\n"
               f"<i>{'Share Bot will send it directly.' if sb_ok else 'Warning: using main-bot file_id — may not display correctly if Share Bot cannot access it.'}</i>",
-              reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=f"settings#sb_view_{b_id}")]])
+              reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=f"settings#sb_fetch_media_{b_id}")]])
           )
 
       except asyncio.TimeoutError:
           await ask.edit_text(
               "⏱ <i>Timed out waiting for media. Please try again.</i>",
-              reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=f"settings#sb_view_{b_id}")]])
+              reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data=f"settings#sb_fetch_media_{b_id}")]])
           )
 
 
@@ -1818,10 +1873,12 @@ async def settings_query(bot, query):
 async def main_buttons(user_id=None):
   # Get current mode
   mode = 'forward'
+  menu_image_id = None
   if user_id:
       try:
           data = await get_configs(user_id)
           mode = data.get('bot_mode', 'forward')
+          menu_image_id = data.get('menu_image_id')
       except Exception:
           pass
 
@@ -1867,9 +1924,9 @@ async def main_buttons(user_id=None):
            ],[
            InlineKeyboardButton('💻 SʏsMᴏɴ Sᴛᴀᴛs',
                         callback_data='sysmon#stats'),
-           InlineKeyboardButton('Mᴀɪɴ Mᴇɴᴜ Iᴍᴀɢᴇ',
+           InlineKeyboardButton(('🖼✅ Mᴇɴᴜ Iᴍᴀɢᴇ' if menu_image_id else 'Mᴀɪɴ Mᴇɴᴜ Iᴍᴀɢᴇ'),
                         callback_data='settings#main_menu_img')
-           ],[
+           ] + ([InlineKeyboardButton('🗑 Rᴇᴍᴏᴠᴇ Iᴍɢ', callback_data='settings#main_menu_clr')] if menu_image_id else []) + [
            InlineKeyboardButton('Bᴀᴛᴄʜ Lɪɴᴋs Bᴏᴛ Sᴇᴛᴜᴘ',
                         callback_data='settings#sharebot'),
            InlineKeyboardButton('A I  E ɴ ʜ ᴀ ɴ ᴄ ᴇ ʀ',

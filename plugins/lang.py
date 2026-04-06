@@ -194,7 +194,7 @@ _S["HOW_USE_TXT"] = {
 #  ABOUT_TXT 
 _S["ABOUT_TXT"] = {
     "en": (
-        "<b> »  𝐁𝐨𝐭 𝐃𝐞𝐭𝐚𝐢𝐥𝐬 \n"
+        "<b> »  Bot Details \n"
         " \n"
         "  »  ᴍʏ ɴᴀᴍᴇ   : <a href='https://t.me/MeJeetX'>ᴀʀʏᴀ ʙᴏᴛ</a>\n"
         "  » ‍💻 ᴅᴇᴠᴇʟᴏᴘᴇʀ : <a href='https://t.me/MeJeetX'>ᴍᴇᴊᴇᴇᴛx</a>\n"
@@ -209,7 +209,7 @@ _S["ABOUT_TXT"] = {
         "</b>"
     ),
     "hi": (
-        "<b> »  𝐁𝐨𝐭 𝐃𝐞𝐭𝐚𝐢𝐥𝐬 \n"
+        "<b> »  Bot Details \n"
         " \n"
         "  »  मेरा नाम   : <a href='https://t.me/MeJeetX'>Aryᴀ Bᴏᴛ</a>\n"
         "  » ‍💻 डेवलपर   : <a href='https://t.me/MeJeetX'>MeJeetX</a>\n"
@@ -224,7 +224,7 @@ _S["ABOUT_TXT"] = {
         "</b>"
     ),
     "hinglish": (
-        "<b> »  𝐁𝐨𝐭 𝐃𝐞𝐭𝐚𝐢𝐥𝐬 \n"
+        "<b> »  Bot Details \n"
         " \n"
         "  »  Mera Naam : <a href='https://t.me/MeJeetX'>Aryᴀ Bᴏᴛ</a>\n"
         "  » ‍💻 Developer : <a href='https://t.me/MeJeetX'>MeJeetX</a>\n"
@@ -243,7 +243,7 @@ _S["ABOUT_TXT"] = {
 #  STATUS_TXT 
 _S["STATUS_TXT"] = {
     "en": (
-        "<b> »  𝐁𝐨𝐭 𝐒𝐭𝐚𝐭𝐮𝐬 \n"
+        "<b> »  Bot Status \n"
         "\n"
         "  »  ᴜꜱᴇʀꜱ: <code>{users_count}</code>\n"
         "  »  ʙᴏᴛꜱ: <code>{bots_count}</code>\n"
@@ -268,7 +268,7 @@ _S["STATUS_TXT"] = {
         "</b>"
     ),
     "hi": (
-        "<b> »  𝐁𝐨𝐭 𝐒𝐭𝐚𝐭𝐮𝐬 \n"
+        "<b> »  Bot Status \n"
         "\n"
         "  »  यूज़र्स: <code>{users_count}</code>\n"
         "  »  बोट्स: <code>{bots_count}</code>\n"
@@ -293,7 +293,7 @@ _S["STATUS_TXT"] = {
         "</b>"
     ),
     "hinglish": (
-        "<b> »  𝐁𝐨𝐭 𝐒𝐭𝐚𝐭𝐮𝐬 \n"
+        "<b> »  Bot Status \n"
         "\n"
         "  »  Users: <code>{users_count}</code>\n"
         "  »  Accounts: <code>{bots_count}</code>\n"
@@ -417,44 +417,44 @@ _S["USER_DETAILS"] = {
 #  TEXT (forwarding status box) 
 _S["TEXT"] = {
     "en": (
-        "<b>  𝐀𝐮𝐭𝐨 𝐅𝐨𝐫𝐰𝐚𝐫𝐝𝐞𝐫  \n"
+        "<b>  Auto Forwarder  \n"
         "\n"
-        "    𝐅𝐞𝐭𝐜𝐡𝐞𝐝     : <code>{}</code>\n"
-        "    𝐅𝐨𝐫𝐰𝐚𝐫𝐝𝐞𝐝   : <code>{}</code>\n"
-        "    𝐃𝐮𝐩𝐥𝐢𝐜𝐚𝐭𝐞   : <code>{}</code>\n"
-        "    𝐒𝐤𝐢𝐩𝐩𝐞𝐝     : <code>{}</code>\n"
-        "    𝐃𝐞𝐥𝐞𝐭𝐞𝐝     : <code>{}</code>\n"
+        "    Fetched     : <code>{}</code>\n"
+        "    Forwarded   : <code>{}</code>\n"
+        "    Duplicate   : <code>{}</code>\n"
+        "    Skipped     : <code>{}</code>\n"
+        "    Deleted     : <code>{}</code>\n"
         "\n"
-        "    𝐒𝐭𝐚𝐭𝐮𝐬      : <code>{}</code>\n"
-        "    𝐄𝐓𝐀         : <code>{}</code>\n"
+        "    Status      : <code>{}</code>\n"
+        "    ETA         : <code>{}</code>\n"
         "\n"
         "</b>"
     ),
     "hi": (
-        "<b>  𝐀𝐮𝐭𝐨 𝐅𝐨𝐫𝐰𝐚𝐫𝐝𝐞𝐫  \n"
+        "<b>  Auto Forwarder  \n"
         "\n"
-        "    𝐅𝐞𝐭𝐜𝐡    : <code>{}</code>\n"
-        "    𝐅𝐨𝐫𝐰𝐚𝐫𝐝  : <code>{}</code>\n"
-        "    डुप्लीकेट: <code>{}</code>\n"
-        "    𝐒𝐤𝐢𝐩     : <code>{}</code>\n"
-        "    𝐃𝐞𝐥𝐞𝐭𝐞   : <code>{}</code>\n"
+        "    Fetch    : <code>{}</code>\n"
+        "    Forward  : <code>{}</code>\n"
+        "    Duplicate: <code>{}</code>\n"
+        "    Skip     : <code>{}</code>\n"
+        "    Delete   : <code>{}</code>\n"
         "\n"
         "    स्थिति    : <code>{}</code>\n"
-        "    𝐄𝐓𝐀       : <code>{}</code>\n"
+        "    ETA       : <code>{}</code>\n"
         "\n"
         "</b>"
     ),
     "hinglish": (
-        "<b>  𝐀𝐮𝐭𝐨 𝐅𝐨𝐫𝐰𝐚𝐫𝐝𝐞𝐫  \n"
+        "<b>  Auto Forwarder  \n"
         "\n"
-        "    𝐅𝐞𝐭𝐜𝐡𝐞𝐝   : <code>{}</code>\n"
-        "    𝐅𝐨𝐫𝐰𝐚𝐫𝐝𝐞𝐝 : <code>{}</code>\n"
+        "    Fetched   : <code>{}</code>\n"
+        "    Forwarded : <code>{}</code>\n"
         "    Duplicate : <code>{}</code>\n"
-        "    𝐒𝐤𝐢𝐩𝐩𝐞𝐝   : <code>{}</code>\n"
-        "    𝐃𝐞𝐥𝐞𝐭𝐞𝐝   : <code>{}</code>\n"
+        "    Skipped   : <code>{}</code>\n"
+        "    Deleted   : <code>{}</code>\n"
         "\n"
         "    Status    : <code>{}</code>\n"
-        "    𝐄𝐓𝐀       : <code>{}</code>\n"
+        "    ETA       : <code>{}</code>\n"
         "\n"
         "</b>"
     ),
@@ -463,25 +463,25 @@ _S["TEXT"] = {
 #  DUPLICATE_TEXT 
 _S["DUPLICATE_TEXT"] = {
     "en": (
-        "<b>  𝐔𝐧𝐞𝐪𝐮𝐢𝐟𝐲 𝐒𝐭𝐚𝐭𝐮𝐬  \n"
+        "<b>  Unequify Status  \n"
         "\n"
-        "    𝐅𝐞𝐭𝐜𝐡𝐞𝐝     : <code>{}</code>\n"
-        "    𝐃𝐮𝐩𝐥𝐢𝐜𝐚𝐭𝐞𝐬  : <code>{}</code>\n"
+        "    Fetched     : <code>{}</code>\n"
+        "    Duplicates  : <code>{}</code>\n"
         "\n"
         " {} </b>"
     ),
     "hi": (
-        "<b>  𝐔𝐧𝐞𝐪𝐮𝐢𝐟𝐲 𝐒𝐭𝐚𝐭𝐮𝐬  \n"
+        "<b>  Unequify Status  \n"
         "\n"
-        "    𝐅𝐞𝐭𝐜𝐡       : <code>{}</code>\n"
-        "    𝐃𝐮𝐩𝐥𝐢𝐜𝐚𝐭𝐞𝐬  : <code>{}</code>\n"
+        "    Fetch       : <code>{}</code>\n"
+        "    Duplicates  : <code>{}</code>\n"
         "\n"
         " {} </b>"
     ),
     "hinglish": (
-        "<b>  𝐔𝐧𝐞𝐪𝐮𝐢𝐟𝐲 𝐒𝐭𝐚𝐭𝐮𝐬  \n"
+        "<b>  Unequify Status  \n"
         "\n"
-        "    𝐅𝐞𝐭𝐜𝐡𝐞𝐝     : <code>{}</code>\n"
+        "    Fetched     : <code>{}</code>\n"
         "    Duplicates  : <code>{}</code>\n"
         "\n"
         " {} </b>"

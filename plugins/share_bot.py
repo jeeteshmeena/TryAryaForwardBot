@@ -292,14 +292,16 @@ async def _process_start(client, message):
     active_downloads.add(dl_id)
 
     # Show configurable fetching media (GIF / Photo / Video) or fallback to text
-    fetching_media = await db.get_bot_fetching_media(bot_id) if bot_id else {}
+    fetching_media = await db.get_bot_fetching_media(bot_id) if bot_id else []
     cancel_kb = InlineKeyboardMarkup([[InlineKeyboardButton("Cᴀɴᴄᴇʟ", callback_data=f"cancel_dl_{uuid_str}")]])
     fetch_text = "<i>»  Fᴇᴛᴄʜɪɴɢ ʏᴏᴜʀ ꜰɪʟᴇs sᴇᴄᴜʀᴇʟʏ, ᴘʟᴇᴀsᴇ ᴡᴀɪᴛ...</i>"
     sts = None
 
-    if fetching_media and fetching_media.get('file_id'):
-        fid  = fetching_media['file_id']
-        ftyp = fetching_media.get('media_type', 'photo')
+    if fetching_media:
+        import random
+        fm = random.choice(fetching_media)
+        fid  = fm.get('file_id')
+        ftyp = fm.get('media_type', 'photo')
         try:
             if ftyp == 'animation':
                 sts = await client.send_animation(

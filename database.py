@@ -222,12 +222,15 @@ class Database:
         )
 
     # Per-bot fetching media (GIF/image/video shown while delivering files)
-    async def get_bot_fetching_media(self, bot_id: str) -> dict:
-        """Return {'file_id': ..., 'media_type': 'photo'|'animation'|'video'} or {}."""
-        return (await self._bot_cfg(bot_id)).get('fetching_media', {})
+    async def get_bot_fetching_media(self, bot_id: str) -> list:
+        """Return list of {'file_id': ..., 'media_type': 'photo'|'animation'|'video'} or []."""
+        fm = (await self._bot_cfg(bot_id)).get('fetching_media', [])
+        if isinstance(fm, dict):
+            return [fm] if fm.get('file_id') else []
+        return fm
 
-    async def set_bot_fetching_media(self, bot_id: str, file_id: str, media_type: str):
-        await self._set_bot_cfg(bot_id, fetching_media={'file_id': file_id, 'media_type': media_type})
+    async def set_bot_fetching_media(self, bot_id: str, fetch_list: list):
+        await self._set_bot_cfg(bot_id, fetching_media=fetch_list)
 
     async def clear_bot_fetching_media(self, bot_id: str):
         if not bot_id: return
@@ -382,7 +385,7 @@ class Database:
     
     async def total_users_bots_count(self):
         bcount = await self.bot.count_documents({})
-        count = await self.col.count_documents({})
+        count = await self.col.count_documents({"name": {"$exists": True}})
         return count, bcount
 
     async def total_channels(self):

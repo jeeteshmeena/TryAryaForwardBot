@@ -29,6 +29,8 @@ class JobType(str, Enum):
     MERGER    = "merger"
     MULTIJOB  = "multijob"
     LIVEJOB   = "livejob"
+    CLEANER   = "cleaner"
+    TASKJOB   = "taskjob"
 
 
 # ── Concurrency limits per job type ──────────────────────────────────────────
@@ -36,6 +38,8 @@ _LIMITS = {
     JobType.MERGER:   1,   # Merges are extremely CPU+RAM heavy — 1 at a time
     JobType.MULTIJOB: 3,   # Multi Jobs: up to 3 simultaneous copy operations
     JobType.LIVEJOB:  5,   # Live Jobs: up to 5 simultaneous listeners
+    JobType.CLEANER:  2,   # Cleaners: heavy FFmpeg re-encoding (2 max)
+    JobType.TASKJOB:  3,   # Task Jobs: sequential copy (3 max)
 }
 
 # ── Semaphores ────────────────────────────────────────────────────────────────
