@@ -155,8 +155,8 @@ async def _watchdog_loop():
                         job_worker  = job.get("worker_node", "")
                         claimed_at  = job.get("claimed_at", 0)
 
-                        # Skip jobs running on THIS worker (we're alive)
-                        if job_worker == WORKER_NAME or job_id in _active_jobs:
+                        # Skip jobs running on THIS worker, or running on the main bot
+                        if job_worker in (WORKER_NAME, "main", "") or job_id in _active_jobs:
                             continue
 
                         # Check if the owning worker is still alive

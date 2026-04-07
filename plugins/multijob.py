@@ -743,8 +743,13 @@ async def _run_multijob(job_id: str, user_id: int, bot=None):
         if _mj_queue_acquired:
             AryaJobQueue.release(job_id, "multijob")
         if client:
-            try: await client.stop()
-            except Exception: pass
+            from plugins.test import release_client
+            client_name = getattr(client, 'name', None)
+            if client_name:
+                await release_client(client_name)
+            else:
+                try: await client.stop()
+                except Exception: pass
 
 
 def _mj_start_task(job_id: str, user_id: int, bot=None) -> asyncio.Task:
@@ -991,9 +996,17 @@ async def mj_resume_cb(bot, query):
         await _mj_update(job_id, status="running")
         await query.answer("▶️ Resumed!", show_alert=False)
     else:
-        await _mj_update(job_id, status="running")
-        _mj_start_task(job_id, user_id)
-        await query.answer("▶️ Restarted from saved position!", show_alert=False)
+        routing = await db.get_task_routing()
+        target_node = routing.get("multijob")
+        should_run_locally = (target_node == "main" or target_node is None)
+
+        if should_run_locally:
+            await _mj_update(job_id, status="running")
+            _mj_start_task(job_id, user_id)
+            await query.answer("▶️ Restarted from saved position!", show_alert=False)
+        else:
+            await _mj_update(job_id, status="queued")
+            await query.answer(f"▶️ Queued for worker: {target_node}", show_alert=False)
     await _render_mj_list(bot, user_id, query)
 
 

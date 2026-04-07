@@ -501,7 +501,12 @@ async def cleanmsg_confirm(bot, query):
             failed_chats.append(str(chat_id))
 
     try:
-        await client.stop()
+        from plugins.test import release_client
+        client_name = getattr(client, 'name', None)
+        if client_name:
+            await release_client(client_name)
+        else:
+            await client.stop()
     except Exception:
         pass
 
