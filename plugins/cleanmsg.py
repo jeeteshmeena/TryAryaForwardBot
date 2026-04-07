@@ -118,12 +118,23 @@ async def _do_delete(client, chat_id, wanted: str, status_msg, is_bot: bool, che
                                 await client.edit_message_text(chat_id, msg.id, text=new_text)
                                 total[0] += 1
                         elif msg.caption is not None:
-                            await client.edit_message_caption(chat_id, msg.id, caption=new_text)
+                            await client.edit_message_caption(chat_id, msg.id, caption="")
                             total[0] += 1
                     except FloodWait as fw:
                         await asyncio.sleep(fw.value + 2)
                     except Exception:
                         pass
+        elif wanted == "text":
+            if msg.text and not msg.media:
+                batch.append(msg.id)
+            elif msg.media and msg.caption:
+                try:
+                    await client.edit_message_caption(chat_id, msg.id, caption="")
+                    total[0] += 1
+                except FloodWait as fw:
+                    await asyncio.sleep(fw.value + 2)
+                except Exception:
+                    pass
         elif _type_matches(msg, wanted):
             batch.append(msg.id)
             
