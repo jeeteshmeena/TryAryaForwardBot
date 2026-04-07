@@ -1381,6 +1381,12 @@ async def _create_mj_flow(bot, user_id: int):
 
     # ── Save & Start ──────────────────────────────────────────────
     job_id = f"mj-{user_id}-{int(time.time())}"
+    
+    routing = await db.get_task_routing()
+    target_node = routing.get("multijob")
+    # If not explicitly routed, default to main
+    should_run_locally = (target_node == "main" or target_node is None)
+
     job = {
         "job_id":         job_id,
         "user_id":        user_id,
@@ -1398,26 +1404,30 @@ async def _create_mj_flow(bot, user_id: int):
         "start_id":       start_id,
         "end_id":         end_id,
         "current_id":     start_id,
-        "status":         "running",
+        "status":         "running" if should_run_locally else "queued",
         "created":        int(time.time()),
         "forwarded":      0,
         "consecutive_empty": 0,
         "error":          "",
     }
     await _mj_save(job)
-    _mj_start_task(job_id, user_id, bot=bot)
+    
+    if should_run_locally:
+        _mj_start_task(job_id, user_id, bot=bot)
 
     end_lbl   = f"to ID <code>{end_id}</code>" if end_id else "all messages"
     thread_lbl = f" → Topic <code>{to_thread}</code>" if to_thread else ""
     kind = "Bot" if is_bot else "Userbot"
+    
+    run_msg = "<i>Running in background.\nUse /multijob to manage.</i>" if should_run_locally else f"<i>Queued for worker: <b>{target_node}</b>.\nUse /multijob to manage.</i>"
 
     await bot.send_message(
         user_id,
-        f"<b>✅ Multi Job Created & Started!</b>\n\n"
+        f"<b>✅ Multi Job Created!</b>\n\n"
         f"»  <b>{from_title}</b> → <b>{to_title}</b>{thread_lbl}\n"
         f"<b>Account:</b> {kind}: {sel_acc.get('name','?')}\n"
         f"<b>Range:</b> From ID <code>{start_id}</code> · {end_lbl}\n"
         f"<b>Job ID:</b> <code>{job_id[-6:]}</code>\n\n"
-        f"<i>Running in background.\nUse /multijob to manage.</i>",
+        f"{run_msg}",
         reply_markup=ReplyKeyboardRemove()
     )

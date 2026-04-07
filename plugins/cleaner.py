@@ -870,6 +870,11 @@ async def _create_cl_flow(bot, user_id):
     # ── Create Job ───────────────────────────────────────────────
     job_id = str(uuid.uuid4())
     total_range = (eid - sid) + 1 if (sid and eid) else 0
+    
+    routing = await db.get_task_routing()
+    target_node = routing.get("cleaner")
+    should_run_locally = (target_node == "main" or target_node is None)
+
     job = {
         "job_id": job_id, "user_id": user_id, "status": "queued",
         "from_chat": from_chat, "dest_chat": dest_chat,
@@ -889,20 +894,22 @@ async def _create_cl_flow(bot, user_id):
         "phase_start_ts": 0,
     }
     await _cl_save_job(job)
+    
+    run_msg = "" if should_run_locally else f"\nQueued for worker: <b>{target_node}</b>"
+    
     await bot.send_message(
         user_id,
         f"<b>✅ Cleaner Job Queued!</b>\n"
         f"Name: <code>{base_name}</code>\n"
         f"Files: <code>{sid}</code> → <code>{eid}</code> (~{total_range} msgs)\n"
         f"Numbering: {base_name} <b>{start_num}</b> → {base_name} <b>{start_num + total_range - 1}</b>\n"
-        f"Artist: {adv_artist or '—'}  |  Cover: {'✅ Set' if adv_cover else '—'}",
+        f"Artist: {adv_artist or '—'}  |  Cover: {'✅ Set' if adv_cover else '—'}{run_msg}",
         reply_markup=ReplyKeyboardRemove()
     )
     
-    _cl_paused[job_id] = asyncio.Event()
-    _cl_paused[job_id].set()
-    _cl_bot_ref[job_id] = bot  # store so resume can notify too
-    
-    # Check if Master should run it locally or leave for workers
-    if not os.environ.get("MASTER_ONLY_QUEUE", "False").lower() in ("1", "true"):
-        _cl_tasks[job_id] = asyncio.create_task(_cl_run_job(job_id, bot))
+    if should_run_locally:
+        _cl_paused[job_id] = asyncio.Event()
+        _cl_paused[job_id].set()
+        _cl_bot_ref[job_id] = bot  # store so resume can notify too
+        if not os.environ.get("MASTER_ONLY_QUEUE", "False").lower() in ("1", "true"):
+            _cl_tasks[job_id] = asyncio.create_task(_cl_run_job(job_id, bot))

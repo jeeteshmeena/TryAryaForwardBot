@@ -218,7 +218,10 @@ async def owners_cb(bot, query):
     is_any = await is_any_owner(uid)
     if not is_any:
         return await query.answer("⛔ Owner only!", show_alert=True)
-    await query.answer()
+    try:
+        await query.answer()
+    except Exception:
+        pass
     data = query.data.split("#", 1)[1]
 
     # ── Features Toggle Panel ─────────────────────────────────────────────────
@@ -247,12 +250,70 @@ async def owners_cb(bot, query):
         fkey = data.split("features_", 1)[1]
         was_disabled = fkey in disabled
         await set_feature_disabled(fkey, not was_disabled)
-        label = FEATURE_LABELS.get(fkey, fkey)
-        state = "🔴 Disabled" if not was_disabled else "🟢 Enabled"
-        await query.answer(f"{label} is now {state}", show_alert=False)
+        try: await query.answer("Toggled!", show_alert=False)
+        except Exception: pass
         # Refresh features panel
         query.data = "settings#features"
         return await owners_cb(bot, query)
+
+    # ── Node Routing (Worker Binding) Panel ───────────────────────────────────
+    if data in ("routing",) or data.startswith("route_"):
+        routing_map = await db.get_task_routing()
+
+        # Update if it was a toggle
+        if data.startswith("route_"):
+            parts = data.split("_", 2)
+            if len(parts) == 3:
+                r_task, r_node = parts[1], parts[2]
+                if r_node == "clear":
+                    routing_map.pop(r_task, None)
+                else:
+                    routing_map[r_task] = r_node
+                await db.set_task_routing(routing_map)
+                try: await query.answer("Worker bound!", show_alert=False)
+                except Exception: pass
+            data = "routing"
+
+        if data == "routing":
+            # List of configurable backend tasks
+            tasks = {
+                "merger": "Vɪᴅᴇᴏ/Aᴜᴅɪᴏ Mᴇʀɢᴇʀ",
+                "cleaner": "Mᴇᴅɪᴀ Cʟᴇᴀɴᴇʀ",
+                "multijob": "Mᴜʟᴛɪ-Jᴏʙ (Bᴀᴛᴄʜ)",
+            }
+            # List of predefined generic workers + main bot
+            nodes = {
+                "main": "Mᴀɪɴ Bᴏᴛ 🖥️",
+                "oracle_1": "Oʀᴀᴄʟᴇ 🗄️",
+                "google_1": "ɢCʟᴏᴜᴅ ☁️",
+            }
+            btns = []
+            for t_id, t_lbl in tasks.items():
+                curr_node = routing_map.get(t_id)
+                node_lbl = nodes.get(curr_node, curr_node) if curr_node else "Any Worker 🌍"
+                # This button loops through options when tapped
+                next_node_keys = list(nodes.keys()) + ["clear"] # "clear" means Any Worker
+                
+                try:
+                    curr_idx = next_node_keys.index(curr_node) if curr_node else list(nodes.keys()).index("clear")
+                except ValueError:
+                    curr_idx = -1
+                    
+                next_node = next_node_keys[(curr_idx + 1) % len(next_node_keys)]
+                btns.append([InlineKeyboardButton(f"{t_lbl}  →  {node_lbl}", callback_data=f"settings#route_{t_id}_{next_node}")])
+
+            btns.append([InlineKeyboardButton("❮ Bᴀᴄᴋ Tᴏ Oᴡɴᴇʀ Pᴀɴᴇʟ", callback_data="settings#owners")])
+            
+            txt = (
+                "<b><u>🖥️ Worker Routing System</u></b>\n\n"
+                "To prevent <code>AuthKeyDuplicated</code> session errors resulting from the same UserBot operating on multiple systems, "
+                "you can lock specific heavy tasks to specific Cloud Workers.\n\n"
+                "• <b>Any Worker:</b> Whichever worker is free grabs the job.\n"
+                "• <b>Specific Node:</b> ONLY that node will execute the task.\n\n"
+                "<i>Tap a task to cycle its designated worker node.</i>"
+            )
+            return await query.message.edit_text(txt, reply_markup=InlineKeyboardMarkup(btns))
+
 
     # ── Owners Management ─────────────────────────────────────────────────────
     if data == "owners":
@@ -276,19 +337,22 @@ async def owners_cb(bot, query):
             InlineKeyboardButton("⚙️ Gʟᴏʙᴀʟ Lɪᴍɪᴛs", callback_data="settings#limits_global"),
             InlineKeyboardButton("🔧 Usᴇʀ Lɪᴍɪᴛ", callback_data="settings#limits_user")
         ])
-        btns.append([InlineKeyboardButton(f"🔌 Fᴇᴀᴛᴜʀᴇs ({len(disabled)} ᴅɪsᴀʙʟᴇᴅ)", callback_data="settings#features")])
+        btns.append([
+            InlineKeyboardButton(f"🔌 Fᴇᴀᴛᴜʀᴇs ({len(disabled)} ᴅɪsᴀʙʟᴇᴅ)", callback_data="settings#features"),
+            InlineKeyboardButton("🖥️ Bɪɴᴅ Wᴏʀᴋᴇʀs", callback_data="settings#routing")
+        ])
         btns.append([InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#main")])
         txt = (
-            "<b><u>👑 Owner Management</u></b>\n\n"
+            "<b><u>👑 Owner / Admin Control Panel</u></b>\n\n"
             f"<b>Primary Owners:</b> {len(primary)}  |  <b>Co-Owners:</b> {len(co)}\n\n"
             f"<b>Global User Limits:</b>\n"
             f"  Live Jobs: <code>{limits.get('max_live_jobs', 3)}</code>  "
             f"Multi Jobs: <code>{limits.get('max_multi_jobs', 2)}</code>\n"
             f"  Merge Jobs: <code>{limits.get('max_merge_jobs', 1)}</code>  "
             f"Accounts: <code>{limits.get('max_accounts', 2)}</code>\n\n"
-            "<b>Feature Controls:</b>\n"
+            "<b>Feature Controls & Workers:</b>\n"
             + ("  Disabled: " + ", ".join(FEATURE_LABELS.get(f, f) for f in disabled) if disabled else "  All features currently enabled.")
-            + "\n\n<i>Co-owners have FULL bot control. Only primary owners can add/remove other owners.</i>"
+            + "\n\n<i>Co-owners have FULL backend admin control. Only primary owners can add/remove other owners.</i>"
         )
         await query.message.edit_text(txt, reply_markup=InlineKeyboardMarkup(btns))
 
@@ -631,7 +695,8 @@ async def settings_query(bot, query):
   elif type == "sharebotprotect":
      protect = await db.get_share_protect_global()
      await db.set_share_protect_global(not protect)
-     await query.answer(f"Protection turned {'OFF' if protect else 'ON'}")
+     try: await query.answer(f"Protection turned {'OFF' if protect else 'ON'}")
+     except Exception: pass
      query.data = "settings#sharebot"
      return await settings_query(bot, query)
 

@@ -125,6 +125,18 @@ async def restart(client, message):
     await msg.edit("<i>Server restarted successfully » </i>")
     os.execl(sys.executable, sys.executable, *sys.argv)
 
+@Client.on_message(filters.private & filters.command(['owner', 'panel', 'admin']))
+async def owner_cmd(bot, message):
+    from plugins.owner_utils import is_any_owner
+    if not await is_any_owner(message.from_user.id):
+        return await message.reply_text("⛔ Owner only!")
+    # Just redirect them into the callback logic using mock object or trigger via settings_cb if needed.
+    # But since owners_cb handles query.message.edit_text, it's easier to send a dummy message with inline keyboard that says "Open Panel"
+    await message.reply_text(
+        "<b>👑 Owner Panel Access</b>\nClick below to open the secure admin panel.",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Oᴘᴇɴ Oᴡɴᴇʀ Pᴀɴᴇʟ", callback_data="settings#owners")]])
+    )
+
 # ==================Callback Functions==================
 
 @Client.on_callback_query(filters.regex(r'^help'))

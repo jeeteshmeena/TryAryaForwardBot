@@ -44,6 +44,22 @@ class Database:
             return doc['bots']
         return []
 
+    async def get_share_protect_global(self) -> bool:
+        """Global toggle to protect share bot deliveries."""
+        doc = await self.stats.find_one({'_id': 'share_config'})
+        return doc.get('protect', False) if doc else False
+
+    async def set_share_protect_global(self, protect: bool):
+        await self.stats.update_one({'_id': 'share_config'}, {'$set': {'protect': protect}}, upsert=True)
+
+    async def get_task_routing(self) -> dict:
+        """Returns routing map: e.g. {'merger': 'google_worker', 'cleaner': 'main'}"""
+        doc = await self.stats.find_one({'_id': 'task_routing'})
+        return doc.get('routing', {}) if doc else {}
+
+    async def set_task_routing(self, routing: dict):
+        await self.stats.update_one({'_id': 'task_routing'}, {'$set': {'routing': routing}}, upsert=True)
+
     async def add_share_bot(self, b_id: int, token: str, username: str, name: str):
         """Adds a new share bot. Prevents duplicates by ID."""
         b_id_str = str(b_id)

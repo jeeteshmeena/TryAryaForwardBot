@@ -2344,6 +2344,10 @@ async def _create_flow(bot, uid, mtype="audio"):
             try: shutil.rmtree(os.path.abspath(td), ignore_errors=True)
             except: pass
 
+        routing = await db.get_task_routing()
+        target_node = routing.get("merger")
+        should_run_locally = (target_node == "main" or target_node is None)
+
         job = {
             "job_id": jid, "user_id": uid, "account_id": acc["id"],
             "from_chat": from_chat, "start_id": sid, "end_id": eid,
@@ -2355,18 +2359,22 @@ async def _create_flow(bot, uid, mtype="audio"):
             "speed": speed, "make_video": make_video,
             "upload_to_yt": upload_to_yt, "yt_title": yt_title,
             "has_yt_thumb": bool(yt_thumb_path), "yt_start_epi": yt_start_epi,
-            "name": out_name, "status": "downloading", "downloaded": 0,
+            "name": out_name, "status": "downloading" if should_run_locally else "queued", "downloaded": 0,
             "total_dl_bytes": 0, "error": "", "created_at": time.time(),
         }
         await _db_save(job)
-        _start_task(jid, uid, bot)
+        
+        if should_run_locally:
+            _start_task(jid, uid, bot)
+            
+        run_msg = "<i>Use /merge or /settings to monitor.</i>" if should_run_locally else f"<i>Queued for worker: <b>{target_node}</b>. Use /merge or /settings to monitor.</i>"
 
         await bot.send_message(uid,
             f"<b>✅ {icon} {label} Merge Started!</b>\n\n"
             f"<b>Range:</b> {sid} → {eid} ({total})\n"
             f"<b>Output:</b> <code>{out_name}</code>\n"
             f"<b>Job:</b> <code>{jid[-6:]}</code>\n\n"
-            f"<i>Use /merge or /settings to monitor.</i>",
+            f"{run_msg}",
             reply_markup=ReplyKeyboardRemove())
 
     except asyncio.TimeoutError:
