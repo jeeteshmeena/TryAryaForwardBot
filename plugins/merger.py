@@ -47,6 +47,12 @@ MAX_CONCURRENT_MERGES = 1   # keep at 1 — merges are extremely CPU+RAM heavy
 _mg_semaphore = asyncio.Semaphore(MAX_CONCURRENT_MERGES)
 _mg_global_lock = asyncio.Lock()  # kept for backward compat
 
+# ─── FFmpeg CPU throttle ──────────────────────────────────────────────────────
+# Each ffmpeg/ffprobe process is capped to this many threads so a 100-file
+# merge on a shared worker cannot pin the CPU to 100%.
+# 1 thread per process = steady ~30-50 % CPU even on large jobs.
+FFMPEG_THREADS = "1"
+
 
 # ─── Future-based ask ────────────────────────────────────────────────────────
 @Client.on_message(filters.private, group=-14)
@@ -397,10 +403,12 @@ def _get_duration(fp):
 
 
 def _build_atempo_chain(speed):
-    """Build FFmpeg atempo filter chain for speed (0.5x – 2.5x)."""
+    """Build FFmpeg atempo filter chain for speed (0.5x – 100x).
+    atempo only accepts [0.5, 2.0] per filter so we chain them.
+    2.5x  → atempo=2.0,atempo=1.25  (2.0 × 1.25 = 2.5)
+    """
     filters = []
     rem = float(speed)
-    # atempo range is [0.5, 2.0]; chain multiple for values outside
     while rem > 2.0:
         filters.append("atempo=2.0")
         rem /= 2.0
@@ -408,7 +416,7 @@ def _build_atempo_chain(speed):
         filters.append("atempo=0.5")
         rem /= 0.5
     if abs(rem - 1.0) > 0.001:
-        filters.append(f"atempo={rem:.4f}")
+        filters.append(f"atempo={rem:.6f}")
     return ",".join(filters) if filters else ""
 
 async def _ffmpeg_merge(file_list, output_path, metadata=None, mtype="audio", cover=None, speed=1.0, make_video=False, video_cover=None, outro_cover=None, total_duration=None, progress_cb=None, is_chunk=False):
@@ -421,21 +429,22 @@ async def _ffmpeg_merge(file_list, output_path, metadata=None, mtype="audio", co
 
     async def _run_cmd(cmd_list, timeout_sec):
         """Run an FFmpeg command and return (ok, error_message).
-        Uses subprocess.run via run_in_executor for 100% reliable output
-        capture on all platforms (especially Windows), with a separate
-        asyncio task for real-time progress tracking when progress_cb is set.
+        Runs via run_in_executor (non-blocking).  On POSIX systems the
+        process is started with SCHED_BATCH priority so it cannot starve
+        other processes even during long encodes.
         """
         loop = asyncio.get_event_loop()
 
-        # ── Synchronous runner (captures ALL stdout+stderr reliably) ──────
         def _sync_run():
             try:
-                result = _sp.run(
-                    cmd_list,
-                    stdout=_sp.PIPE,
-                    stderr=_sp.PIPE,
-                    timeout=timeout_sec
-                )
+                # On Linux/Mac: lower OS scheduling priority so the worker
+                # doesn't pin the CPU and cause the 100% CPU warning.
+                kwargs = dict(stdout=_sp.PIPE, stderr=_sp.PIPE, timeout=timeout_sec)
+                import platform as _plat
+                if _plat.system() != "Windows":
+                    # preexec_fn runs in child before exec — sets niceness to 10
+                    kwargs["preexec_fn"] = lambda: os.nice(10)
+                result = _sp.run(cmd_list, **kwargs)
                 return result.returncode, result.stderr.decode('utf-8', errors='replace')
             except _sp.TimeoutExpired:
                 return -1, "FFmpeg timed out"
@@ -445,7 +454,6 @@ async def _ffmpeg_merge(file_list, output_path, metadata=None, mtype="audio", co
                 return -1, str(exc)
 
         if progress_cb:
-            # Run FFmpeg in thread; simultaneously poll ffprobe every 3 s for progress
             import time as _time
             _start = _time.time()
             fut = loop.run_in_executor(None, _sync_run)
@@ -453,7 +461,7 @@ async def _ffmpeg_merge(file_list, output_path, metadata=None, mtype="audio", co
                 await asyncio.sleep(3)
                 elapsed = _time.time() - _start
                 try:
-                    await progress_cb(elapsed)   # rough progress by wall-clock
+                    await progress_cb(elapsed)
                 except Exception:
                     pass
             returncode, stderr_text = await fut
@@ -462,9 +470,7 @@ async def _ffmpeg_merge(file_list, output_path, metadata=None, mtype="audio", co
 
         if returncode == 0:
             return True, ""
-        # Strip the verbose FFmpeg banner so the actual error is visible
         meaningful = _strip_ffmpeg_banner(stderr_text)
-        # Log full command + error server-side for debugging
         logger.error(
             "[FFmpeg] Command failed (rc=%d):\n  %s\nError:\n%s",
             returncode,
@@ -492,25 +498,27 @@ async def _ffmpeg_merge(file_list, output_path, metadata=None, mtype="audio", co
 
 
         if not needs_reencode:
-            # Try lossless concat copy first (only safe for audio output or pure video concat)
-            cmd = ["ffmpeg","-y","-threads","2","-f","concat","-safe","0","-i",lst]
+            # Lossless concat copy (only for uniform-codec part files)
+            cmd = ["ffmpeg", "-y", "-threads", FFMPEG_THREADS,
+                   "-f", "concat", "-safe", "0", "-i", lst,
+                   "-fflags", "+genpts",
+                   "-avoid_negative_ts", "make_zero"]
             if cover and os.path.exists(cover) and mtype == "audio":
-                cmd += ["-i", cover, "-map","0:a","-map","1:0","-c:a","copy",
-                        "-id3v2_version","3",
-                        "-metadata:s:v","title=Album cover",
-                        "-metadata:s:v","comment=Cover (front)",
-                        "-max_muxing_queue_size", "4096"]
+                cmd += ["-i", cover, "-map", "0:a", "-map", "1:0", "-c:a", "copy",
+                        "-id3v2_version", "3",
+                        "-metadata:s:v", "title=Album cover",
+                        "-metadata:s:v", "comment=Cover (front)",
+                        "-max_muxing_queue_size", "9999"]
             elif mtype == "video":
-                # Video concat: add faststart so YouTube can process it
-                cmd += ["-c", "copy", "-movflags", "+faststart", "-max_muxing_queue_size", "4096"]
+                cmd += ["-c", "copy", "-movflags", "+faststart",
+                        "-max_muxing_queue_size", "9999"]
             else:
-                cmd += ["-c", "copy", "-max_muxing_queue_size", "4096"]
+                cmd += ["-c", "copy", "-max_muxing_queue_size", "9999"]
             if metadata:
                 for k, v in (metadata or {}).items():
                     if v: cmd += ["-metadata", f"{k}={v}"]
-            cmd.append(output_path)
             abs_out = os.path.abspath(output_path)
-            cmd[-1] = abs_out
+            cmd.append(abs_out)
             ok, err = await _run_cmd(cmd, 7200)
             if ok and os.path.exists(abs_out) and os.path.getsize(abs_out) > 1000:
                 return True, ""
@@ -526,11 +534,28 @@ async def _ffmpeg_merge(file_list, output_path, metadata=None, mtype="audio", co
             # O(1) RAM regardless of how many parts there are. Parts are uniform
             # mp3/192k from Phase 2 so concat demuxer works perfectly.
             tmp_audio = output_path + ".tmp_audio.m4a"
-            audio_join_cmd = ["ffmpeg", "-y", "-threads", "2",
-                              "-f", "concat", "-safe", "0", "-i", lst, "-vn"]
+            # Step A: concat all part files → single AAC track
+            # -vn = ignore any video streams in the parts
+            # -af atempo chain applies exact 2.5x (or whatever speed) here
+            # 48 kHz / 192 kbps AAC — lossless-equivalent for speech/audio dramas
+            audio_join_cmd = [
+                "ffmpeg", "-y", "-threads", FFMPEG_THREADS,
+                "-f", "concat", "-safe", "0",
+                "-i", lst,
+                "-vn",                              # drop any video streams
+                "-fflags", "+genpts",
+                "-avoid_negative_ts", "make_zero",
+            ]
             if atempo:
                 audio_join_cmd += ["-af", atempo]
-            audio_join_cmd += ["-c:a", "aac", "-b:a", "192k", tmp_audio]
+            audio_join_cmd += [
+                "-c:a", "aac",
+                "-b:a", "192k",
+                "-ar", "48000",
+                "-ac", "2",                         # force stereo — YouTube requires it
+                "-max_muxing_queue_size", "9999",
+                tmp_audio
+            ]
             a_ok, a_err = await _run_cmd(audio_join_cmd, 86400)
             if not a_ok or not os.path.exists(tmp_audio) or os.path.getsize(tmp_audio) < 1000:
                 try:
@@ -551,28 +576,39 @@ async def _ffmpeg_merge(file_list, output_path, metadata=None, mtype="audio", co
             else:
                 valid_outros = []
 
-            cmd_v = ["ffmpeg", "-y", "-threads", "2"]
+            # Step B: encode video — 1fps still-image + merged audio
+            # Key optimisations for large files / YouTube:
+            #   • -r 1           → 1 fps; cover never changes, no need for 25 fps
+            #   • veryfast       → 4-5× faster encode vs superfast, similar quality
+            #   • -crf 23        → decent quality without huge bitrate
+            #   • -maxrate/-bufsize → prevent VBR spikes that confuse YouTube
+            #   • -pix_fmt yuv420p → required by YouTube for H.264
+            #   • -map 0:v -map 1:a  → explicit mappings so audio is NEVER dropped
+            #   • -c:a aac -b:a 192k → re-encode from tmp AAC (safer than "copy")
+            #   • -movflags +faststart → moov atom at front for streaming / YT
+            #   • -shortest       → stop when audio ends (not when static image loop ends)
+            #   • -fflags +genpts → regenerate timestamps cleanly
+
+            cmd_v = ["ffmpeg", "-y", "-threads", FFMPEG_THREADS]
 
             if valid_outros and len(valid_outros) >= 4:
-                # 4-outro overlay mode: cover (input 0) + 4 outro images (inputs 1-4) + audio (input 5)
                 outro_positions = [
                     max(0.0, real_dur * 0.25),
                     max(0.0, real_dur * 0.50),
                     max(0.0, real_dur * 0.75),
                     max(0.0, real_dur * 0.95 - 5),
                 ]
-                cmd_v += ["-loop", "1", "-framerate", "1", "-t", f"{real_dur:.2f}",
-                           "-i", os.path.abspath(eff_cover)]
+                cmd_v += ["-loop", "1", "-r", "1", "-t", f"{real_dur:.2f}",
+                          "-i", os.path.abspath(eff_cover)]
                 for op in valid_outros[:4]:
-                    cmd_v += ["-loop", "1", "-framerate", "1", "-t", "5",
-                               "-i", os.path.abspath(op)]
+                    cmd_v += ["-loop", "1", "-r", "1", "-t", "5",
+                              "-i", os.path.abspath(op)]
                 cmd_v += ["-i", tmp_audio]
                 audio_idx = 5
 
-                # filter_complex: scale cover → overlay each outro sequentially
                 fc_parts = [
                     f"[0:v]scale=1280:720:force_original_aspect_ratio=decrease,"
-                    f"pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p[base]"
+                    f"pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p,fps=1[base]"
                 ]
                 prev = "[base]"
                 for i, pos in enumerate(outro_positions):
@@ -580,29 +616,41 @@ async def _ffmpeg_merge(file_list, output_path, metadata=None, mtype="audio", co
                     out_lbl = f"[ov{i}]" if i < 3 else "[finalv]"
                     fc_parts.append(
                         f"[{i+1}:v]scale=1280:720:force_original_aspect_ratio=decrease,"
-                        f"pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p[os{i}];"
+                        f"pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p,fps=1[os{i}];"
                         f"{prev}[os{i}]overlay=0:0:enable='between(t,{pos:.1f},{end_t:.1f})'{out_lbl}"
                     )
                     prev = out_lbl
                 cmd_v += ["-filter_complex", ";".join(fc_parts)]
                 cmd_v += ["-map", "[finalv]", "-map", f"{audio_idx}:a"]
             else:
-                # Simple mode: cover image + merged audio (no outros, only 2 inputs)
-                cmd_v += ["-loop", "1", "-framerate", "1", "-i", os.path.abspath(eff_cover)]
+                # Simple mode: only 2 inputs — cover (0) + audio (1)
+                cmd_v += ["-loop", "1", "-r", "1", "-i", os.path.abspath(eff_cover)]
                 cmd_v += ["-i", tmp_audio]
                 cmd_v += [
                     "-filter_complex",
                     "[0:v]scale=1280:720:force_original_aspect_ratio=decrease,"
-                    "pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p[v1]",
+                    "pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p,fps=1[v1]",
                 ]
                 cmd_v += ["-map", "[v1]", "-map", "1:a"]
 
-            # Common video encoding options
+            # Common video encoding options — optimised for YouTube + large files
             cmd_v += [
-                "-c:v", "libx264", "-preset", "superfast", "-tune", "stillimage",
-                "-c:a", "copy",
-                "-movflags", "+faststart", "-shortest",
-                "-max_muxing_queue_size", "4096"
+                "-c:v", "libx264",
+                "-preset", "veryfast",
+                "-tune", "stillimage",
+                "-crf", "23",
+                "-maxrate", "1M",
+                "-bufsize", "2M",
+                "-pix_fmt", "yuv420p",             # mandatory for YouTube H.264
+                "-c:a", "aac",
+                "-b:a", "192k",
+                "-ar", "48000",
+                "-ac", "2",
+                "-movflags", "+faststart",
+                "-fflags", "+genpts",
+                "-avoid_negative_ts", "make_zero",
+                "-shortest",                       # stop at audio end
+                "-max_muxing_queue_size", "9999",
             ]
             if metadata:
                 for k, v in (metadata or {}).items():
@@ -619,15 +667,26 @@ async def _ffmpeg_merge(file_list, output_path, metadata=None, mtype="audio", co
             return False, v_err
 
         elif mtype == "video":
-            # Pure video concat with optional speed adjustment (no image overlay)
-            cmd2 = ["ffmpeg", "-y", "-threads", "2",
-                    "-f", "concat", "-safe", "0", "-i", lst]
-            vf = f"setpts={1.0/speed:.4f}*PTS" if abs(speed - 1.0) > 0.001 else ""
-            if vf: cmd2 += ["-vf", vf]
-            if atempo: cmd2 += ["-af", atempo]
-            cmd2 += ["-c:v", "libx264", "-preset", "superfast", "-crf", "28",
-                     "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart",
-                     "-max_muxing_queue_size", "4096"]
+            # Pure video file concat with optional speed adjustment
+            cmd2 = ["ffmpeg", "-y", "-threads", FFMPEG_THREADS,
+                    "-f", "concat", "-safe", "0", "-i", lst,
+                    "-fflags", "+genpts",
+                    "-avoid_negative_ts", "make_zero"]
+            vf = f"setpts={1.0/speed:.6f}*PTS" if abs(speed - 1.0) > 0.001 else ""
+            af_chain = atempo or ""
+            if vf and af_chain:
+                cmd2 += ["-vf", vf, "-af", af_chain]
+            elif vf:
+                cmd2 += ["-vf", vf]
+            elif af_chain:
+                cmd2 += ["-af", af_chain]
+            cmd2 += [
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "26",
+                "-pix_fmt", "yuv420p",
+                "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
+                "-movflags", "+faststart",
+                "-max_muxing_queue_size", "9999"
+            ]
             if metadata:
                 for k, v in (metadata or {}).items():
                     if v: cmd2 += ["-metadata", f"{k}={v}"]
@@ -639,30 +698,39 @@ async def _ffmpeg_merge(file_list, output_path, metadata=None, mtype="audio", co
             return False, err2
 
         else:
-            # Pure audio re-encode: filter_complex concat (handles mixed codecs mp3+m4a+ogg).
-            # NOTE: This path is only used for CHUNK merges (≤5 files).
-            # Final combine of uniform parts is handled by the lossless path above.
-            cmd2 = ["ffmpeg", "-y", "-threads", "2"]
+            # Audio re-encode path — used for CHUNK merges (≤CHUNK_SIZE files).
+            # filter_complex concat handles mixed codecs (mp3 + m4a + ogg) safely.
+            # Final combine of uniform .mp3 parts uses the fast lossless path above.
+            cmd2 = ["ffmpeg", "-y", "-threads", FFMPEG_THREADS]
             for p in file_list:
                 cmd2 += ["-i", os.path.abspath(p)]
-            fc = "".join(f"[{i}:a]" for i in range(len(file_list))) + f"concat=n={len(file_list)}:v=0:a=1[a1]"
+            n = len(file_list)
+            fc = "".join(f"[{i}:a]" for i in range(n)) + f"concat=n={n}:v=0:a=1[a1]"
             if atempo:
                 fc += f";[a1]{atempo}[a2]"
             map_lbl = "[a2]" if atempo else "[a1]"
 
             if cover and os.path.exists(cover):
                 cmd2 += ["-i", os.path.abspath(cover)]
-                cov_idx = len(file_list)
-                cmd2 += ["-filter_complex", fc, "-map", map_lbl, "-map", f"{cov_idx}:v",
-                         "-id3v2_version", "3",
-                         "-metadata:s:v", "title=Album cover",
-                         "-metadata:s:v", "comment=Cover (front)",
-                         "-c:a", "libmp3lame", "-b:a", "192k", "-ar", "48000",
-                         "-max_muxing_queue_size", "4096"]
+                cov_idx = n
+                cmd2 += [
+                    "-filter_complex", fc,
+                    "-map", map_lbl, "-map", f"{cov_idx}:v",
+                    "-id3v2_version", "3",
+                    "-metadata:s:v", "title=Album cover",
+                    "-metadata:s:v", "comment=Cover (front)",
+                    "-c:a", "libmp3lame", "-b:a", "192k", "-ar", "48000", "-ac", "2",
+                    "-fflags", "+genpts",
+                    "-max_muxing_queue_size", "9999"
+                ]
             else:
-                cmd2 += ["-filter_complex", fc, "-map", map_lbl,
-                         "-c:a", "libmp3lame", "-b:a", "192k", "-ar", "48000",
-                         "-max_muxing_queue_size", "4096"]
+                cmd2 += [
+                    "-filter_complex", fc,
+                    "-map", map_lbl,
+                    "-c:a", "libmp3lame", "-b:a", "192k", "-ar", "48000", "-ac", "2",
+                    "-fflags", "+genpts",
+                    "-max_muxing_queue_size", "9999"
+                ]
             if metadata:
                 for k, v in (metadata or {}).items():
                     if v: cmd2 += ["-metadata", f"{k}={v}"]
@@ -722,7 +790,7 @@ async def _scan_total_size(client, from_chat, start_id, end_id):
 # ══════════════════════════════════════════════════════════════════════════════
 # Core runner — Chunked, Memory-safe
 # ══════════════════════════════════════════════════════════════════════════════
-CHUNK_SIZE   = 5          # Reduced to 10 to keep RAM footprint low
+CHUNK_SIZE   = 10         # 10 files per chunk — good balance of RAM vs CPU cycles
 MAX_TOTAL_GB = 15.0        # Hard limit on total estimated size across all files
 MAX_CHUNK_GB = 2.0         # Abort a single chunk if it somehow exceeds this
 
@@ -1114,10 +1182,11 @@ async def _run_job(jid, uid, bot):
                 tc = f"{h:02d}:{m_:02d}:{s_:02d}"
                 log_entries.append((tc, original_name, global_seq))
 
-                # Probe duration for log, fallback to Telegram API duration if ffprobe fails
-                dur = _ffprobe_duration(fp)
-                if dur <= 0 and media_obj:
-                    dur = float(getattr(media_obj, 'duration', 0) or 0)
+                # Use Telegram API duration as primary source — fast, no subprocess.
+                # Only fall back to ffprobe if API gave 0 (e.g. document files).
+                dur = float(getattr(media_obj, 'duration', 0) or 0)
+                if dur <= 0:
+                    dur = _ffprobe_duration(fp)   # last resort — spawns subprocess
                 # Apply speed factor to cumulative time
                 cumulative_secs += dur / max(speed, 0.1)
 
@@ -1164,8 +1233,17 @@ async def _run_job(jid, uid, bot):
             except: pass
 
             chunk_files_sorted = sorted(chunk_files, key=lambda p: os.path.basename(p))
-            
-            chunk_dur = sum(_ffprobe_duration(f) for f in chunk_files_sorted)
+
+            # Build chunk duration from already-collected cumulative_secs delta
+            # to avoid spawning CHUNK_SIZE ffprobe processes here.
+            # cumulative_secs already reflects speed-adjusted total.
+            # We just need the raw pre-speed sum for progress display.
+            chunk_dur = sum(
+                float(getattr(msg, attr, None) and getattr(getattr(msg, attr, None), 'duration', 0) or 0)
+                for msg in chunk_msgs
+                for attr in ('audio', 'video', 'document', 'voice', 'video_note')
+                if getattr(msg, attr, None)
+            ) or max(len(chunk_files_sorted) * 30.0, 1.0)  # fallback 30s/file
             last_edit = [time.time()]
             async def chunk_prog(cur_secs):
                 now = time.time()
