@@ -305,7 +305,6 @@ async def _run_multijob(job_id: str, user_id: int, bot=None):
             await _mj_update(job_id, status="error", error="Account not found")
             return
 
-        client  = await start_clone_bot(_CLIENT.client(acc))
         is_bot  = acc.get("is_bot", True)
 
         is_force = job.get("force_active", False)
@@ -330,6 +329,8 @@ async def _run_multijob(job_id: str, user_id: int, bot=None):
                 await bot.send_message(user_id,
                     f"▶️ Multi Job <code>[{job_id[-6:]}]</code> now has a slot and is starting.")
             except Exception: pass
+
+        client  = await start_clone_bot(_CLIENT.client(acc))
 
         from_chat   = job["from_chat"]
         to_chat     = job["to_chat"]

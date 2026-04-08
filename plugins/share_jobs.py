@@ -755,7 +755,7 @@ async def _build_share_links(bot, user_id, sj, info_msg):
                 if 0 < n < 5000: return (n, n, False)
 
             # 4. Explicit keywords: "Ep 23", "Episode 23", "Part 23", "Ch 2", hindi
-            kw = _re.search(r'(?i)(?:ep|episode|e|ch|chapter|part|एपिसोड|भाग)[\s\-\:\.\#]*(\d{1,4})(?!\d)', c)
+            kw = _re.search(r'(?i)(?:ep|epi|episode|e|ch|chapter|part|एपिसोड|भाग)[\s\-\:\.\#\_]*(\d{1,4})(?!\d)', c)
             if kw:
                 n = int(kw.group(1))
                 if 0 < n < 5000: return (n, n, False)

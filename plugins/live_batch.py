@@ -145,49 +145,61 @@ async def _post_live_batch(sb_client, job: dict, chunk_msgs: list):
             url = f"https://t.me/{bot_usr}?start={uuid_str}"
             
             raw_buttons.append({
-                "btn": InlineKeyboardButton(_sc(btn_text), url=url),
+                "text": _sc(btn_text),
+                "url": url,
                 "ep_start": b_s,
                 "ep_end": b_e
             })
             
-        # Extract globals for Post Label
-        valid_starts = [b["ep_start"] for b in raw_buttons if str(b["ep_start"]).isdigit()]
-        valid_ends   = [b["ep_end"] for b in raw_buttons if str(b["ep_end"]).isdigit()]
-        
-        first_ep = min(valid_starts) if valid_starts else "?"
-        last_ep  = max(valid_ends) if valid_ends else "?"
-        
-        txt = f"{_bold_sans(job['story'])} 𝗘𝗣𝗦 {first_ep} - {last_ep}"
-        
         buttons_per_post = int(job.get("buttons_per_post", 10))
+        all_buttons = job.get("all_buttons", [])
+        all_buttons.extend(raw_buttons)
         
-        # For simplicity in Live mode, we send a single merged block if possible.
-        # But if it exceeds telegram limits (or buttons_per_post logic), we can just chunk keyboard row layout.
-        keyboard = []
-        for j in range(0, len(raw_buttons), 2):
-            row = [c["btn"] for c in raw_buttons[j:j + 2]]
-            keyboard.append(row)
-            
-        keyboard.append([
-            InlineKeyboardButton(_sc("tutorial"), url="https://t.me/StoriesLinkopningguide"),
-            InlineKeyboardButton(_sc("support"), url="https://t.me/AryaHelpTG")
-        ])
-        
-        for attempt in range(5):
+        old_mids = job.get("posted_mids", [])
+        if old_mids:
             try:
-                await sb_client.send_message(
-                    chat_id=target_ch, text=txt,
-                    reply_markup=InlineKeyboardMarkup(keyboard),
-                    reply_to_message_id=job.get('target_topic_id')
-                )
-                return True
-            except FloodWait as fw:
-                await asyncio.sleep(fw.value + 2)
-            except Exception as tg_err:
-                logger.warning(f"Live Batch Post TG Send Error: {tg_err}")
-                await asyncio.sleep(5)
+                await sb_client.delete_messages(target_ch, old_mids)
+            except Exception as e:
+                logger.warning(f"Live Batch delete old messages error: {e}")
                 
-        return False
+        new_mids = []
+        blocks = []
+        for i in range(0, len(all_buttons), buttons_per_post):
+            blocks.append(all_buttons[i : i + buttons_per_post])
+            
+        for block in blocks:
+            v_starts = [b["ep_start"] for b in block if str(b["ep_start"]).isdigit()]
+            v_ends   = [b["ep_end"] for b in block if str(b["ep_end"]).isdigit()]
+            first_ep = min(v_starts) if v_starts else "?"
+            last_ep  = max(v_ends) if v_ends else "?"
+            txt = f"{_bold_sans(job['story'])} 𝗘𝗣𝗦 {first_ep} - {last_ep}"
+            
+            keyboard = []
+            for j in range(0, len(block), 2):
+                row = [InlineKeyboardButton(c["text"], url=c["url"]) for c in block[j:j+2]]
+                keyboard.append(row)
+                
+            keyboard.append([
+                InlineKeyboardButton(_sc("tutorial"), url="https://t.me/StoriesLinkopningguide"),
+                InlineKeyboardButton(_sc("support"), url="https://t.me/AryaHelpTG")
+            ])
+            
+            for attempt in range(5):
+                try:
+                    m = await sb_client.send_message(
+                        chat_id=target_ch, text=txt,
+                        reply_markup=InlineKeyboardMarkup(keyboard),
+                        reply_to_message_id=job.get('target_topic_id')
+                    )
+                    new_mids.append(m.id)
+                    break
+                except FloodWait as fw:
+                    await asyncio.sleep(fw.value + 2)
+                except Exception as tg_err:
+                    logger.warning(f"Live Batch Post TG Send Error: {tg_err}")
+                    await asyncio.sleep(5)
+                    
+        return True, new_mids, all_buttons
     except Exception as grand_err:
         import traceback
         logger.error(f"FATAL Exception in _post_live_batch: {traceback.format_exc()}")
@@ -343,11 +355,21 @@ async def _lb_run_job(job_id: str):
                         to_post = remaining_post if force else (buffer_mids[:thresh] if len(buffer_mids) >= thresh else [])
                         continue
                     
-                    success = await _post_live_batch(sb_client, job, actual_msgs)
+                    res = await _post_live_batch(sb_client, job, actual_msgs)
+                    success = res[0] if isinstance(res, tuple) else res
+                    
                     if success:
+                        new_mids = res[1] if isinstance(res, tuple) else []
+                        upd_btns = res[2] if isinstance(res, tuple) else []
+                        
                         fwd_count += len(chunk_ids)
                         buffer_mids = [mid for mid in buffer_mids if mid not in chunk_ids]
-                        await _lb_update_job(job_id, {"buffer_mids": buffer_mids, "forwarded": fwd_count})
+                        
+                        update_dict = {"buffer_mids": buffer_mids, "forwarded": fwd_count}
+                        if new_mids: update_dict["posted_mids"] = new_mids
+                        if upd_btns: update_dict["all_buttons"] = upd_btns
+                        
+                        await _lb_update_job(job_id, update_dict)
                         # Refresh job for next batch post param
                         job = await _lb_get_job(job_id)
                         logger.info(f"[LiveBatch] Posted batch of {len(chunk_ids)} files. Buffer remaining: {len(buffer_mids)}")
