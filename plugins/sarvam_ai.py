@@ -4,8 +4,8 @@ sarvam_ai.py — Arya Bot
 Sarvam AI Chatbot Integration
 - Intercepts mentions/tags in the configured Help Group
 - Auto-replies in Hindi & English using Sarvam AI Saaras model
-- Admin-controlled toggle, model switching, and group config from Owner Panel
-- Supports preview from the Owner Panel
+- Controlled from Main Settings (Settings → 🤖 Sarvam AI)
+- Toggle, model switching, group config, API key, and preview
 """
 
 import asyncio
@@ -133,7 +133,7 @@ def _sarvam_markup(cfg: dict) -> InlineKeyboardMarkup:
     if has_key:
         btns.append([InlineKeyboardButton("🔬 Preview Reply", callback_data="sarvam#preview")])
 
-    btns.append([InlineKeyboardButton("❮ Back to Owner Panel", callback_data="settings#owners")])
+    btns.append([InlineKeyboardButton("❮ Back to Settings", callback_data="settings#main")])
     return InlineKeyboardMarkup(btns)
 
 
@@ -155,7 +155,7 @@ def _sarvam_text(cfg: dict) -> str:
         "When enabled, this assistant listens in the configured Help Group. "
         "If a user <b>mentions the bot</b> or <b>replies to the bot</b>, "
         "it automatically generates a helpful reply in <b>Hindi / English</b>.\n\n"
-        "<i>Use the Owner Panel to toggle, change the model, or set which group to monitor.</i>"
+        "<i>Use these buttons to toggle, change the model, set the help group, or update the API key.</i>"
     )
 
 
