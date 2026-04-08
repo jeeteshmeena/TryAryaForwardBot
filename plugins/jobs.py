@@ -36,6 +36,41 @@ _job_tasks: dict[str, asyncio.Task] = {}
 _lj_waiting: dict[int, asyncio.Future] = {}
 
 
+# ─── Client health-check / reconnect ────────────────────────────────────
+async def _lj_ensure_client_alive(client):
+    """
+    Verify the Pyrogram client is connected. If dead, attempt cold restart up to 3 times.
+    Live jobs run 24/7 — the TCP connection silently dies after idle periods.
+    """
+    for attempt in range(3):
+        try:
+            await asyncio.wait_for(client.get_me(), timeout=15)
+            return client   # alive ✔️
+        except Exception as e:
+            err_str = str(e).lower()
+            is_conn = ("not been started" in err_str or "not connected" in err_str
+                       or "disconnected" in err_str or isinstance(e, asyncio.TimeoutError))
+            if is_conn:
+                logger.warning(f"[LiveJob] Client dead (attempt {attempt+1}): {e} — reconnecting…")
+                try:
+                    cname = getattr(client, 'name', None)
+                    if cname:
+                        await release_client(cname)
+                except Exception: pass
+                try: await client.stop()
+                except Exception: pass
+                try:
+                    client = await start_clone_bot(client)
+                    await asyncio.sleep(1)
+                    continue
+                except Exception as re_err:
+                    logger.error(f"[LiveJob] Restart attempt {attempt+1} failed: {re_err}")
+                    await asyncio.sleep(3)
+            else:
+                raise   # not a connection error
+    raise RuntimeError("LiveJob client failed to reconnect after 3 attempts")
+
+
 @Client.on_message(filters.private, group=-12)
 async def _lj_input_router(bot, message):
     """Route private messages to waiting _ask() futures for Live Job flow."""
@@ -391,6 +426,8 @@ async def _run_job(job_id: str, user_id: int):
             return
 
         client = await start_clone_bot(_CLIENT.client(acc))
+        # Health-check immediately after starting
+        client = await _lj_ensure_client_alive(client)
         is_bot = acc.get("is_bot", True)
 
         from_chat    = job["from_chat"]
@@ -871,8 +908,22 @@ async def _run_job(job_id: str, user_id: int):
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                logger.warning(f"[Job {job_id}] Fetch error: {e}")
-                await asyncio.sleep(15)
+                err_fetch = str(e)
+                err_up = err_fetch.upper()
+                is_conn_err = any(k in err_up for k in (
+                    "TIMEOUT", "CONNECTION", "NOT BEEN STARTED", "NOT CONNECTED",
+                    "DISCONNECTED", "RESET", "NETWORK", "SOCKET", "PING"
+                ))
+                if is_conn_err:
+                    logger.warning(f"[Job {job_id}] Connection error in live fetch: {err_fetch}. Healing client...")
+                    try:
+                        client = await _lj_ensure_client_alive(client)
+                    except Exception as heal_e:
+                        logger.error(f"[Job {job_id}] Client heal failed: {heal_e}")
+                    await asyncio.sleep(15)
+                else:
+                    logger.warning(f"[Job {job_id}] Fetch error: {err_fetch}")
+                    await asyncio.sleep(15)
                 continue
 
             # Filter by source topic if configured
@@ -901,7 +952,19 @@ async def _run_job(job_id: str, user_id: int):
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:
-                    logger.debug(f"[Job {job_id}] Forward error: {e}")
+                    fwd_err = str(e)
+                    fwd_up = fwd_err.upper()
+                    is_conn_err = any(k in fwd_up for k in (
+                        "NOT BEEN STARTED", "NOT CONNECTED", "DISCONNECTED",
+                        "CONNECTION", "TIMEOUT", "RESET"
+                    ))
+                    if is_conn_err:
+                        logger.warning(f"[Job {job_id}] Connection error during forward: {fwd_err}. Healing...")
+                        try:
+                            client = await _lj_ensure_client_alive(client)
+                        except Exception: pass
+                    else:
+                        logger.debug(f"[Job {job_id}] Forward error: {fwd_err}")
                 last_seen = max(last_seen, msg.id)
                 await _update_job(job_id, last_seen_id=last_seen)
                 await asyncio.sleep(1)
@@ -933,6 +996,14 @@ async def _run_job(job_id: str, user_id: int):
     except Exception as e:
         err_str = str(e)
         err_upper = err_str.upper()
+        
+        # Define all known transient/connection error signatures
+        _TRANSIENT_KEYS = (
+            "CONNECTION", "TIMEOUT", "NETWORK", "PING", "SOCKET", "RESET",
+            "NOT BEEN STARTED", "NOT CONNECTED", "DISCONNECTED",  # Pyrogram client dead
+            "CONNECTION LOST"   # explicit string from Pyrogram
+        )
+        
         if "AUTH_KEY_DUPLICATED" in err_str:
             # Session was used in 2 places — clear from cache so next restart is fresh
             logger.warning(f"[Job {job_id}] AUTH_KEY_DUPLICATED — clearing client cache and pausing job")
@@ -944,16 +1015,19 @@ async def _run_job(job_id: str, user_id: int):
             # Don't mark job as error — just pause it so user can restart manually
             await _update_job(job_id, status="paused",
                               error="Session conflict (AUTH_KEY_DUPLICATED). Restart the job.")
-        elif any(kw in err_upper for kw in ("CONNECTION", "TIMEOUT", "NETWORK", "PING", "SOCKET")):
-            logger.warning(f"[Job {job_id}] Transient Network error: {err_str} - Auto-restarting in 30s")
-            # Don't crash out the job permanently! Wait and recreate the task
+        elif any(kw in err_upper for kw in _TRANSIENT_KEYS):
+            # Transient network/connection issue — DO NOT mark as error.
+            # Auto-resume in 30s so the job stays green.
+            logger.warning(f"[Job {job_id}] Transient connection error: {err_str} - Auto-restarting in 30s")
+            # Mark job as still running (not error) so UI stays green
+            await _update_job(job_id, error=f"[Auto-reconnect] {err_str[:60]}")
             async def _auto_resume():
                 await __import__('asyncio').sleep(30)
                 _start_job_task(job_id, user_id)
             __import__('asyncio').create_task(_auto_resume())
         else:
             logger.error(f"[Job {job_id}] Fatal: {e}", exc_info=True)
-            await _update_job(job_id, status="error", error=err_str[:40])
+            await _update_job(job_id, status="error", error=err_str[:80])
     finally:
         _job_tasks.pop(job_id, None)
         if client:
