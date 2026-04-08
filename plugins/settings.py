@@ -345,6 +345,15 @@ async def owners_cb(bot, query):
             InlineKeyboardButton("📊 Sʏs Mᴏɴɪᴛᴏʀ", callback_data="sysmon#stats"),
             InlineKeyboardButton("🔒 Pʀᴏᴛᴇᴄᴛᴇᴅ Cʜᴀᴛs", callback_data="settings#protected")
         ])
+        # Sarvam AI status
+        try:
+            from plugins.sarvam_ai import _get_sarvam_cfg as _sg_cfg, SARVAM_MODELS as _sg_models, DEFAULT_MODEL as _sg_def
+            _sg = await _sg_cfg()
+            _sg_on = _sg.get("enabled") and _sg.get("api_key")
+            _sg_lbl = "🟢 Sarvam AI" if _sg_on else "🔴 Sarvam AI"
+        except Exception:
+            _sg_lbl = "🤖 Sarvam AI"
+        btns.append([InlineKeyboardButton(_sg_lbl, callback_data="sarvam#main")])
         btns.append([InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#main")])
         txt = (
             "<b><u>👑 Owner / Admin Control Panel</u></b>\n\n"
