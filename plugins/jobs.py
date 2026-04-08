@@ -337,9 +337,11 @@ async def _forward_message(
                 return False
         return False
 
-    await _send_one(to_chat, thread_id)
+    success1 = await _send_one(to_chat, thread_id)
+    success2 = False
     if to_chat_2:
-        await _send_one(to_chat_2, thread_id_2)
+        success2 = await _send_one(to_chat_2, thread_id_2)
+    return success1 or success2
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -556,9 +558,10 @@ async def _run_job(job_id: str, user_id: int):
                         await _update_job(job_id, batch_cursor=msg.id + 1)
                         continue
                     try:
-                        await _forward_message(client, msg, to_chat, remove_caption, cap_tpl, forward_tag,
+                        success = await _forward_message(client, msg, to_chat, remove_caption, cap_tpl, forward_tag,
                                                to_thread, to_chat_2, to_thread_2, replacements, remove_links)
-                        await _inc_forwarded(job_id, 1, forward_type='batch')
+                        if success:
+                            await _inc_forwarded(job_id, 1, forward_type='batch')
                     except FloodWait as fw:
                         await asyncio.sleep(fw.value + 1)
                     except asyncio.CancelledError:
@@ -694,9 +697,10 @@ async def _run_job(job_id: str, user_id: int):
                         continue
 
                     try:
-                        await _forward_message(client, msg, to_chat, remove_caption, cap_tpl, forward_tag,
+                        success = await _forward_message(client, msg, to_chat, remove_caption, cap_tpl, forward_tag,
                                                to_thread, to_chat_2, to_thread_2, replacements, remove_links)
-                        await _inc_forwarded(job_id, 1, forward_type='batch')
+                        if success:
+                            await _inc_forwarded(job_id, 1, forward_type='batch')
                     except FloodWait as fw:
                         await asyncio.sleep(fw.value + 1)
                     except asyncio.CancelledError:
@@ -888,9 +892,10 @@ async def _run_job(job_id: str, user_id: int):
                     await _update_job(job_id, last_seen_id=last_seen)
                     continue
                 try:
-                    await _forward_message(client, msg, to_chat, remove_caption, cap_tpl, forward_tag,
+                    success = await _forward_message(client, msg, to_chat, remove_caption, cap_tpl, forward_tag,
                                            to_thread, to_chat_2, to_thread_2, replacements, remove_links)
-                    await _inc_forwarded(job_id, 1, forward_type='live')
+                    if success:
+                        await _inc_forwarded(job_id, 1, forward_type='live')
                 except FloodWait as fw:
                     await asyncio.sleep(fw.value + 1)
                 except asyncio.CancelledError:
