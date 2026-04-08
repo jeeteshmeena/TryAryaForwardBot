@@ -41,6 +41,12 @@ MAX_CONCURRENT = 1
 _cl_semaphore = asyncio.Semaphore(MAX_CONCURRENT)
 IST_OFFSET = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
 
+import concurrent.futures as _cf_cl
+# Single-worker executor: ensures only 1 FFmpeg runs at a time from cleaner.
+_CL_FFMPEG_EXECUTOR = _cf_cl.ThreadPoolExecutor(max_workers=1, thread_name_prefix="cl_ffmpeg")
+CL_FFMPEG_NICE      = 15   # OS-level nice priority for cleaner ffmpeg processes
+CL_FFMPEG_CPU_LIMIT = 60   # max % CPU per ffmpeg process when cpulimit is installed
+
 # ─── DB Helpers ──────────────────────────────────────────────────────────────
 async def _cl_save_job(job: dict):
     await db.db[COLL].replace_one({"job_id": job["job_id"]}, job, upsert=True)
@@ -165,15 +171,50 @@ def _build_cl_info(job: dict) -> str:
 
 
 # ─── FFmpeg Engine ───────────────────────────────────────────────────────────
+def _make_cl_run(cmd):
+    """
+    Build and return a *synchronous* callable that runs `cmd` via subprocess
+    with OS-level CPU throttling (nice=15, ionice=idle, cpulimit if available).
+    """
+    import platform as _plat, shutil as _sh
+
+    def _sync_run():
+        try:
+            kwargs = dict(stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=300)
+            if _plat.system() != "Windows":
+                def _preexec():
+                    os.nice(CL_FFMPEG_NICE)
+                    # ionice idle: disk IO doesn't starve the bot or merger
+                    try:
+                        import ctypes
+                        _sc = ctypes.CDLL(None).syscall
+                        _sc(251, 0, 0, (3 << 13) | 7)  # ioprio_set idle class
+                    except Exception:
+                        pass
+                kwargs["preexec_fn"] = _preexec
+                if _sh.which("cpulimit"):
+                    cmd_run = ["cpulimit", "-l", str(CL_FFMPEG_CPU_LIMIT), "-f", "--"] + cmd
+                else:
+                    cmd_run = cmd
+            else:
+                cmd_run = cmd
+
+            result = subprocess.run(cmd_run, **kwargs)
+            return result.returncode, result.stderr.decode('utf-8', errors='replace')
+        except Exception as e:
+            return -1, str(e)
+
+    return _sync_run
+
+
 async def _process_audio_ffmpeg(input_path, output_path, cover_path, meta: dict):
     """
     Re-encodes audio to clean 128kbps MP3 with fresh metadata and optional cover art.
-    NOTE: afftdn (noise reduction) intentionally removed — it takes 3-5 minutes per
-    file on CPU and is unnecessary for already-recorded audio.
+    CPU is throttled via _make_cl_run: nice=15, ionice=idle, cpulimit (if installed).
     """
     cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
     cmd += ["-i", input_path]
-    
+
     if cover_path and os.path.exists(cover_path) and os.path.getsize(cover_path) > 1024:
         cmd += ["-i", cover_path]
         cmd += ["-map", "0:a:0", "-map", "1:v:0"]
@@ -183,7 +224,6 @@ async def _process_audio_ffmpeg(input_path, output_path, cover_path, meta: dict)
         cmd += ["-map", "0:a:0"]
 
     cmd += ["-c:a", "libmp3lame", "-b:a", "128k", "-q:a", "2"]
-    # Limit memory resources to prevent 1GB RAM VPS from crashing on huge files
     cmd += ["-threads", "1", "-max_muxing_queue_size", "1024"]
     cmd += ["-map_metadata", "-1"]
 
@@ -193,15 +233,8 @@ async def _process_audio_ffmpeg(input_path, output_path, cover_path, meta: dict)
     cmd.append(output_path)
 
     loop = asyncio.get_event_loop()
-    def _sync_run():
-        try:
-            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=300)
-            return result.returncode, result.stderr.decode('utf-8', errors='replace')
-        except Exception as e:
-            return -1, str(e)
-    
     try:
-        rc, stderr = await loop.run_in_executor(None, _sync_run)
+        rc, stderr = await loop.run_in_executor(_CL_FFMPEG_EXECUTOR, _make_cl_run(cmd))
         if rc != 0 or not os.path.exists(output_path) or os.path.getsize(output_path) < 100:
             return False, stderr[-1500:]
         return True, ""
@@ -481,7 +514,9 @@ async def _cl_run_job(job_id: str, bot=None):
                     fail_count = 0   # reset per successfully processed file
                     await _cl_update_job(job_id, {"files_done": done})
                     logger.info(f"[Cleaner {job_id}] Done {done}: {clean_title}")
-                    await asyncio.sleep(0.5)
+                    # Brief cooldown after each file — lets the event loop run other tasks
+                    # and prevents sustained 100% CPU while the download of the next file starts.
+                    await asyncio.sleep(1.5)
 
                 except FloodWait as fw:
                     await asyncio.sleep(fw.value + 2)

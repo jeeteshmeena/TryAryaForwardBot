@@ -48,10 +48,16 @@ _mg_semaphore = asyncio.Semaphore(MAX_CONCURRENT_MERGES)
 _mg_global_lock = asyncio.Lock()  # kept for backward compat
 
 # ─── FFmpeg CPU throttle ──────────────────────────────────────────────────────
-# Each ffmpeg/ffprobe process is capped to this many threads so a 100-file
-# merge on a shared worker cannot pin the CPU to 100%.
-# 1 thread per process = steady ~30-50 % CPU even on large jobs.
+# 1 thread per process + OS-level niceness 15 = ~40-60% CPU sustained.
+# cpulimit (if installed on VPS) wraps the command for a hard % cap.
 FFMPEG_THREADS = "1"
+FFMPEG_CPU_LIMIT = 70      # max % CPU per ffmpeg process (used with cpulimit)
+FFMPEG_NICE      = 15      # OS niceness: 0=normal, 19=lowest; 15 keeps bot alive
+
+import concurrent.futures as _cf
+# Single-worker executor so at most ONE FFmpeg encodes simultaneously.
+# This prevents the thread pool from launching 4 merges in parallel on a 4GB VPS.
+_FFMPEG_EXECUTOR = _cf.ThreadPoolExecutor(max_workers=1, thread_name_prefix="ffmpeg")
 
 
 # ─── Future-based ask ────────────────────────────────────────────────────────
@@ -437,14 +443,32 @@ async def _ffmpeg_merge(file_list, output_path, metadata=None, mtype="audio", co
 
         def _sync_run():
             try:
-                # On Linux/Mac: lower OS scheduling priority so the worker
-                # doesn't pin the CPU and cause the 100% CPU warning.
-                kwargs = dict(stdout=_sp.PIPE, stderr=_sp.PIPE, timeout=timeout_sec)
                 import platform as _plat
+                import shutil as _sh
+                kwargs = dict(stdout=_sp.PIPE, stderr=_sp.PIPE, timeout=timeout_sec)
+
                 if _plat.system() != "Windows":
-                    # preexec_fn runs in child before exec — sets niceness to 10
-                    kwargs["preexec_fn"] = lambda: os.nice(10)
-                result = _sp.run(cmd_list, **kwargs)
+                    def _preexec():
+                        os.nice(FFMPEG_NICE)
+                        # ionice: idle class (3) so disk IO never starves the bot
+                        try:
+                            import ctypes
+                            _syscall = ctypes.CDLL(None).syscall
+                            IOPRIO_CLASS_IDLE = 3
+                            _syscall(251, 0, 0, (IOPRIO_CLASS_IDLE << 13) | 7)  # ioprio_set
+                        except Exception:
+                            pass
+                    kwargs["preexec_fn"] = _preexec
+
+                    # Prefer cpulimit wrapper (hard CPU cap) if installed on VPS
+                    if _sh.which("cpulimit"):
+                        actual_cmd = ["cpulimit", "-l", str(FFMPEG_CPU_LIMIT), "-f", "--"] + cmd_list
+                    else:
+                        actual_cmd = cmd_list
+                else:
+                    actual_cmd = cmd_list
+
+                result = _sp.run(actual_cmd, **kwargs)
                 return result.returncode, result.stderr.decode('utf-8', errors='replace')
             except _sp.TimeoutExpired:
                 return -1, "FFmpeg timed out"
@@ -453,10 +477,11 @@ async def _ffmpeg_merge(file_list, output_path, metadata=None, mtype="audio", co
             except Exception as exc:
                 return -1, str(exc)
 
+        # Use the global single-worker executor so at most 1 FFmpeg runs at a time.
         if progress_cb:
             import time as _time
             _start = _time.time()
-            fut = loop.run_in_executor(None, _sync_run)
+            fut = loop.run_in_executor(_FFMPEG_EXECUTOR, _sync_run)
             while not fut.done():
                 await asyncio.sleep(3)
                 elapsed = _time.time() - _start
@@ -466,7 +491,7 @@ async def _ffmpeg_merge(file_list, output_path, metadata=None, mtype="audio", co
                     pass
             returncode, stderr_text = await fut
         else:
-            returncode, stderr_text = await loop.run_in_executor(None, _sync_run)
+            returncode, stderr_text = await loop.run_in_executor(_FFMPEG_EXECUTOR, _sync_run)
 
         if returncode == 0:
             return True, ""
@@ -637,14 +662,16 @@ async def _ffmpeg_merge(file_list, output_path, metadata=None, mtype="audio", co
                 ]
                 cmd_v += ["-map", "[v1]", "-map", "1:a"]
 
-            # Common video encoding options — optimised for YouTube + large files
+            # Common video encoding options — optimised for YouTube + VPS CPU
+            # ultrafast preset uses ~35% less CPU than veryfast for still-image video.
+            # CRF 28 (vs 23) is still visually transparent for a static cover image.
             cmd_v += [
                 "-c:v", "libx264",
-                "-preset", "veryfast",
+                "-preset", "ultrafast",
                 "-tune", "stillimage",
-                "-crf", "23",
-                "-maxrate", "1M",
-                "-bufsize", "2M",
+                "-crf", "28",
+                "-maxrate", "800k",
+                "-bufsize", "1600k",
                 "-pix_fmt", "yuv420p",             # mandatory for YouTube H.264
                 "-c:a", "aac",
                 "-b:a", "192k",
@@ -672,6 +699,7 @@ async def _ffmpeg_merge(file_list, output_path, metadata=None, mtype="audio", co
 
         elif mtype == "video":
             # Pure video file concat with optional speed adjustment
+            # superfast preset ~35% less CPU than veryfast for full-motion video
             cmd2 = ["ffmpeg", "-y", "-threads", FFMPEG_THREADS,
                     "-f", "concat", "-safe", "0", "-i", lst,
                     "-fflags", "+genpts",
@@ -685,7 +713,7 @@ async def _ffmpeg_merge(file_list, output_path, metadata=None, mtype="audio", co
             elif af_chain:
                 cmd2 += ["-af", af_chain]
             cmd2 += [
-                "-c:v", "libx264", "-preset", "veryfast", "-crf", "26",
+                "-c:v", "libx264", "-preset", "superfast", "-crf", "28",
                 "-pix_fmt", "yuv420p",
                 "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
                 "-movflags", "+faststart",
