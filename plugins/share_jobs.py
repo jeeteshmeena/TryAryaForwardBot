@@ -371,109 +371,26 @@ async def _create_share_flow(bot, user_id, force_live=False):
                 new_share_job[user_id]['start_id'] = start_id
                 new_share_job[user_id]['end_id'] = end_id
             
-        msg_batch = await _ask(bot, user_id, 
-            "<b>❪ STEP 9: EPISODES PER BUTTON ❫</b>\n\nHow many episodes per link button?\nExample: <code>20</code>", 
-            reply_markup=markup
-        )
-        if getattr(msg_batch, 'text', None) and any(x in msg_batch.text.lower() for x in ['cancel', 'cᴀɴᴄᴇʟ', '⛔']): return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
-        if getattr(msg_batch, "text", None) and any(x in msg_batch.text.lower() for x in ["/undo", "undo", "uɴᴅᴏ", "↩️"]):
-            # Re-ask end_id
-            if not is_topic:
-                msg_end2 = await _ask(bot, user_id,
-                    "<b>❪ STEP 8 (REDO): LAST MESSAGE ❫</b>\n\nForward or paste the last message:",
-                    reply_markup=markup
-                )
-                if getattr(msg_end2, 'text', None) and any(x in msg_end2.text.lower() for x in ['cancel', 'cᴀɴᴄᴇʟ', '⛔']): return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
-                new_share_job[user_id]['end_id'] = parse_id(msg_end2)
-            msg_batch = await _ask(bot, user_id,
-                "<b>❪ STEP 9: EPISODES PER BUTTON ❫</b>\n\nHow many episodes per link button?",
-                reply_markup=markup
-            )
-            if getattr(msg_batch, 'text', None) and any(x in msg_batch.text.lower() for x in ['cancel', 'cᴀɴᴄᴇʟ', '⛔']): return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
-        
-        raw_b = (msg_batch.text or msg_batch.caption or "20").strip()
-        batch_size = int(raw_b) if raw_b.isdigit() else 20
-        if batch_size < 1: batch_size = 20
-        new_share_job[user_id]['batch_size'] = batch_size
-
-        msg_bpp = await _ask(bot, user_id, 
-            "<b>❪ STEP 10: BUTTONS PER POST ❫</b>\n\nHow many buttons should appear in one post in the channel?\nExample: <code>10</code>", 
-            reply_markup=markup
-        )
-        if getattr(msg_bpp, 'text', None) and any(x in msg_bpp.text.lower() for x in ['cancel', 'cᴀɴᴄᴇʟ', '⛔']): return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
-        if getattr(msg_bpp, "text", None) and any(x in msg_bpp.text.lower() for x in ["/undo", "undo", "uɴᴅᴏ", "↩️"]):
-            # Re-ask batch_size
-            msg_batch2 = await _ask(bot, user_id,
-                "<b>❪ STEP 9 (REDO): EPISODES PER BUTTON ❫</b>\n\nHow many episodes per link button?",
-                reply_markup=markup
-            )
-            if getattr(msg_batch2, 'text', None) and any(x in msg_batch2.text.lower() for x in ['cancel', 'cᴀɴᴄᴇʟ', '⛔']): return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
-            raw_b2 = (msg_batch2.text or "20").strip()
-            new_share_job[user_id]['batch_size'] = int(raw_b2) if raw_b2.isdigit() else 20
-            msg_bpp = await _ask(bot, user_id,
-                "<b>❪ STEP 10: BUTTONS PER POST ❫</b>\n\nHow many buttons per post?",
-                reply_markup=markup
-            )
-            if getattr(msg_bpp, 'text', None) and any(x in msg_bpp.text.lower() for x in ['cancel', 'cᴀɴᴄᴇʟ', '⛔']): return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
-        
-        raw_bpp = (msg_bpp.text or msg_bpp.caption or "10").strip()
-        bpp = int(raw_bpp) if raw_bpp.isdigit() else 10
-        if bpp < 1: bpp = 10
-        new_share_job[user_id]['buttons_per_post'] = bpp
-
-        if force_live:
-            msg_live = await _ask(bot, user_id, 
-                "<b>❪ STEP 11: LIVE MONITORING THRESHOLD ❫</b>\n\nHow many new episodes should arrive before posting a new batch automatically?\n\n<i>Send a number (e.g. <code>10</code>).</i>", 
-                reply_markup=markup
-            )
-            if getattr(msg_live, 'text', None) and any(x in msg_live.text.lower() for x in ['cancel', 'cᴀɴᴄᴇʟ', '⛔']): return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
-            raw_live = (msg_live.text or msg_live.caption or "10").strip()
-            thresh = int(raw_live) if raw_live.isdigit() else 10
-            if thresh < 1: thresh = 10
-            new_share_job[user_id]['live_threshold'] = thresh
-        else:
-            msg_live = await _ask(bot, user_id, 
-                "<b>❪ STEP 11: LIVE MONITORING ❫</b>\n\nHow many new episodes should arrive before posting a new batch automatically?\n\n<i>Send <code>0</code> or <code>Skip</code> to disable Live Monitoring. Send <code>10</code> to bundle 10 incoming files per batch.</i>", 
-                reply_markup=markup
-            )
-            if getattr(msg_live, 'text', None) and any(x in msg_live.text.lower() for x in ['cancel', 'cᴀɴᴄᴇʟ', '⛔']): return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
-            if getattr(msg_live, "text", None) and any(x in msg_live.text.lower() for x in ["/undo", "undo", "uɴᴅᴏ", "↩️"]):
-                return await bot.send_message(user_id, "<b>‣ Undo: Please restart the Batch Links flow from the menu.</b>", reply_markup=ReplyKeyboardRemove())
-            
-            raw_live = (msg_live.text or msg_live.caption or "0").strip()
-            new_share_job[user_id]['live_threshold'] = int(raw_live) if raw_live.isdigit() else 0
+        # ── Steps 9, 10, 11 are now asked AFTER the pre-scan inside _build_share_links ──
+        # This ensures users see the diagnosis BEFORE configuring batch sizes.
+        # Set placeholder defaults for now; _build_share_links will override them.
+        new_share_job[user_id].setdefault('batch_size', 20)
+        new_share_job[user_id].setdefault('buttons_per_post', 10)
+        new_share_job[user_id].setdefault('live_threshold', 0)
 
         sj = new_share_job[user_id]
-        
+        # Send a quick summary before starting the scan
         is_tp = sj.get('is_topic')
-        sub_str = f"<b>Source Topic ID:</b> {sj.get('topic_id', 'N/A')}\n" if is_tp else f"<b>Msg ID Range:</b> {sj['start_id']} → {sj['end_id']}\n"
-        live_str = f"<b>Live Monitor:</b> {sj['live_threshold']} eps per batch\n" if sj['live_threshold'] > 0 else f"<b>Live Monitor:</b> <code>Disabled</code>\n"
-        
-        target_str = f"<code>{sj['target']}</code>"
-        if sj.get('target_topic_id'):
-            target_str += f" (Topic: <code>{sj['target_topic_id']}</code>)"
-
-        markup_conf = ReplyKeyboardMarkup([["Gᴇɴᴇʀᴀᴛᴇ & Pᴏsᴛ Lɪɴᴋs"], ["‣  Cancel"]], resize_keyboard=True, one_time_keyboard=True)
-        conf_msg = await _ask(bot, user_id,
-            f"<b>»  CONFIRM SHARE BATCH</b>\n\n"
-            f"<b>Story Name:</b> {sj['story']}\n"
-            f"<b>Status:</b> {'Completed' if sj.get('is_completed') else 'Ongoing'}\n"
-            f"<b>Source:</b> <code>{sj['source']}</code> ({'Topic' if is_tp else 'Channel'})\n"
-            f"<b>Target:</b> {target_str}\n"
-            f"{sub_str}"
-            f"<b>Episodes/Button:</b> {sj['batch_size']}\n"
-            f"<b>Buttons/Post:</b> {sj['buttons_per_post']}\n"
-            f"{live_str}"
-            f"\n<i>»  Smart Parse active: Auto-groups duplicate eps smoothly.</i>",
-            reply_markup=markup_conf
+        sub_str = f"Source: {sj.get('topic_id', 'N/A')} (Topic)" if is_tp else f"Range: {sj.get('start_id')} → {sj.get('end_id')}"
+        notify_msg = await bot.send_message(
+            user_id,
+            f"<b>»  Starting Channel Scan…</b>\n\n"
+            f"<b>Story:</b> {sj['story']}\n"
+            f"<b>{sub_str}</b>\n\n"
+            f"<i>The Pre-Scan Diagnosis will appear next so you can review missing episodes before configuring button sizes.</i>",
+            reply_markup=ReplyKeyboardRemove()
         )
-        
-        if not conf_msg.text or (getattr(conf_msg, 'text', None) and any(x in conf_msg.text.lower() for x in ['cancel', 'cᴀɴᴄᴇʟ', '⛔'])) or "Cancel" in conf_msg.text:
-            new_share_job.pop(user_id, None)
-            return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
-            
-        if "Generate" in conf_msg.text or "Gᴇɴᴇʀᴀᴛᴇ" in conf_msg.text:
-            await _build_share_links(bot, user_id, sj, conf_msg)
+        await _build_share_links(bot, user_id, sj, notify_msg)
             
     except Exception as e:
         await bot.send_message(user_id, f"<b>Error during link setup:</b> {e}", reply_markup=ReplyKeyboardRemove())
@@ -1078,8 +995,54 @@ async def _build_share_links(bot, user_id, sj, info_msg):
                 await bot.send_message(user_id, "<b>❌ Process Cancelled during Pre-Scan.</b>", reply_markup=ReplyKeyboardRemove())
                 return await safe_edit("<b>❌ Process Cancelled during Pre-Scan.</b>")
                 
-            await bot.send_message(user_id, "<i>»  Pre-Scan Accepted. Generating unique secure links...</i>", reply_markup=ReplyKeyboardRemove())
-            await safe_edit("<i>»  Pre-Scan Accepted. Generating unique secure links...</i>")
+            await bot.send_message(user_id, "<i>»  Pre-Scan Accepted!</i>", reply_markup=ReplyKeyboardRemove())
+            await safe_edit("<i>»  Pre-Scan Accepted. Now collecting your batch settings...</i>")
+
+            # ── Ask Steps 9, 10, 11 NOW (after scan so user has all context) ──
+            from pyrogram.types import ReplyKeyboardMarkup as _RKM, ReplyKeyboardRemove as _RKR
+
+            def _is_cancel(m): return getattr(m, 'text', None) and any(x in (m.text or '').lower() for x in ['cancel', '⛔', '/cancel'])
+
+            # Step 9: Episodes per button
+            _m9 = await _ask(bot, user_id,
+                "<b>❪ STEP 9: EPISODES PER BUTTON ❫</b>\n\nHow many episodes per link button?\n"
+                f"<i>You have {total_count} files detected across {first_ep_num}–{last_ep_num}.</i>\n\nExample: <code>20</code>",
+                reply_markup=_RKM([["5", "10", "20"], ["25", "50", "⛔ Cancel"]], resize_keyboard=True, one_time_keyboard=True)
+            )
+            if _is_cancel(_m9):
+                await bot.send_message(user_id, "<i>Process Cancelled.</i>", reply_markup=_RKR())
+                return await safe_edit("<i>Process Cancelled.</i>")
+            _raw9 = (_m9.text or "20").strip()
+            sj['batch_size'] = int(_raw9) if _raw9.isdigit() and int(_raw9) > 0 else 20
+            batch_size = sj['batch_size']
+
+            # Step 10: Buttons per post
+            _m10 = await _ask(bot, user_id,
+                "<b>❪ STEP 10: BUTTONS PER POST ❫</b>\n\nHow many buttons per channel post?\nExample: <code>10</code>",
+                reply_markup=_RKM([["5", "10", "15"], ["20", "25", "⛔ Cancel"]], resize_keyboard=True, one_time_keyboard=True)
+            )
+            if _is_cancel(_m10):
+                await bot.send_message(user_id, "<i>Process Cancelled.</i>", reply_markup=_RKR())
+                return await safe_edit("<i>Process Cancelled.</i>")
+            _raw10 = (_m10.text or "10").strip()
+            sj['buttons_per_post'] = int(_raw10) if _raw10.isdigit() and int(_raw10) > 0 else 10
+            buttons_per_post = sj['buttons_per_post']
+
+            # Step 11: Live monitoring (only for non-force-live)
+            if not sj.get('live_threshold'):
+                _m11 = await _ask(bot, user_id,
+                    "<b>❪ STEP 11: LIVE MONITORING ❫</b>\n\nHow many new episodes should trigger auto-posting?\n"
+                    "Send <code>0</code> or <code>Skip</code> to disable.\nExample: <code>10</code>",
+                    reply_markup=_RKM([["0", "5", "10"], ["15", "25", "⛔ Cancel"]], resize_keyboard=True, one_time_keyboard=True)
+                )
+                if _is_cancel(_m11):
+                    await bot.send_message(user_id, "<i>Process Cancelled.</i>", reply_markup=_RKR())
+                    return await safe_edit("<i>Process Cancelled.</i>")
+                _raw11 = (_m11.text or "0").strip()
+                sj['live_threshold'] = int(_raw11) if _raw11.isdigit() else 0
+
+            await bot.send_message(user_id, "<i>»  Generating unique secure links...</i>", reply_markup=_RKR())
+            await safe_edit("<i>»  Generating unique secure links...</i>")
         except Exception:
             await bot.send_message(user_id, "<b>⏳ Pre-Scan Timed Out (30 mins). Job Cancelled.</b>", reply_markup=ReplyKeyboardRemove())
             return await safe_edit("<b>⏳ Pre-Scan Timed Out (30 mins). Job Cancelled.</b>")
@@ -1663,4 +1626,4 @@ async def cmd_deep_scan_batch(bot, message):
     except Exception:
         await bot.send_message(uid, final_txt)
 
-    await bot.send_document(uid, report_bytes_out, caption="📎 Full deep scan correction report", file_name=report_bytes_out.name)
+    await bot.send_document(uid, report_bytes_out, caption="📎 Full deep scan correction report", file_name=report_bytes_out.name)
