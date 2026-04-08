@@ -60,7 +60,46 @@ import concurrent.futures as _cf
 _FFMPEG_EXECUTOR = _cf.ThreadPoolExecutor(max_workers=1, thread_name_prefix="ffmpeg")
 
 
-# ─── Future-based ask ────────────────────────────────────────────────────────
+# ─── Client health-check / reconnect ────────────────────────────────────
+async def _mg_ensure_client_alive(client):
+    """
+    Verify the Pyrogram client is connected. If dead ('Client has not been
+    started yet', 'not connected', 'disconnected') attempt a cold restart
+    up to 3 times. Returns the (possibly new) live client or raises.
+    A merge job can run for hours — the TCP connection will silently die.
+    """
+    for attempt in range(3):
+        try:
+            await asyncio.wait_for(client.get_me(), timeout=15)
+            return client   # alive ✔️
+        except Exception as e:
+            err_str = str(e).lower()
+            is_conn = ("not been started" in err_str or "not connected" in err_str
+                       or "disconnected" in err_str or isinstance(e, asyncio.TimeoutError))
+            if is_conn:
+                logger.warning(f"[Merger] Client dead (attempt {attempt+1}): {e} — reconnecting…")
+                try:
+                    cname = getattr(client, 'name', None)
+                    if cname:
+                        from plugins.test import release_client as _rc_mg
+                        await _rc_mg(cname)
+                except Exception:
+                    pass
+                try:
+                    await client.stop()
+                except Exception:
+                    pass
+                try:
+                    client = await start_clone_bot(client)
+                    await asyncio.sleep(1)
+                    continue
+                except Exception as re_err:
+                    logger.error(f"[Merger] Restart attempt {attempt+1} failed: {re_err}")
+                    await asyncio.sleep(3)
+            else:
+                raise   # not a connection error — let caller handle it
+    raise RuntimeError("Merger client failed to reconnect after 3 attempts")
+
 @Client.on_message(filters.private, group=-14)
 async def _mg_input_router(bot, message):
     uid = message.from_user.id if message.from_user else None
@@ -1068,66 +1107,75 @@ async def _run_job(jid, uid, bot):
                 dlp = os.path.join(chunk_dir, seq_name)
 
                 fp = None
-                MAX_DL_RETRIES = 5  # 5 attempts is sufficient — valid files always download first try
+                MAX_DL_RETRIES = 8  # 8 attempts — covers transient CDN blips and network hiccups
                 for att in range(MAX_DL_RETRIES):
-                    # Use a fresh temp path every attempt to work around
-                    # Telegram CDN serving a cached empty/corrupt file
+                    # Fresh temp path per attempt so a corrupt partial file never re-used
                     temp_dlp = dlp if att == 0 else dlp.replace(ext, f"_r{att}{ext}")
                     try:
+                        # ALWAYS refresh the file reference on retry (att>0).
+                        # File references in Telegram expire after ~1 hour; on a long merge
+                        # this causes 400 FILE_REFERENCE_EXPIRED even on files that exist.
                         target_msg = msg
-                        # File references expire after 1 hour. Refresh if retrying or if old!
-                        if att > 0 or (time.time() - job.get("phase_start_ts", time.time())) > 2400:
+                        if att > 0:
                             try:
-                                fm = await client.get_messages(from_chat, msg.id)
+                                fm = await asyncio.wait_for(
+                                    client.get_messages(from_chat, msg.id), timeout=30)
                                 if fm and not getattr(fm, "empty", True):
                                     target_msg = fm
-                            except: pass
+                            except Exception:
+                                pass
+
+                        # Health-check client before every download attempt
+                        client = await _mg_ensure_client_alive(client)
 
                         fp = await client.download_media(target_msg, file_name=temp_dlp)
                         if fp and os.path.exists(fp):
                             await db.update_global_stats(total_files_downloaded=1)
                             fsz_check = os.path.getsize(fp)
                             expected_sz = getattr(media_obj, 'file_size', 0)
-                            
+
+                            # Only mark invalid if the download is significantly smaller
+                            # than Telegram's declared size (CDN partial downloads).
+                            # We intentionally skip ffprobe here — it falsely flags valid
+                            # files as corrupt if the codec is non-standard or the file
+                            # is an unusual format. Size check is sufficient and fast.
                             is_valid = fsz_check > 100
-                            # Allow up to 1% size difference — Telegram CDN metadata is
-                            # sometimes slightly inaccurate (off by a few bytes/KB).
-                            # Only fail if the file is significantly smaller (< 99% of expected).
-                            if expected_sz > 0 and fsz_check < int(expected_sz * 0.99):
+                            if expected_sz > 0 and fsz_check < int(expected_sz * 0.95):
                                 is_valid = False
-                                
-                            # Prevent FFmpeg "moov atom not found" corrupt headers
-                            if is_valid:
-                                p_info = _probe(fp)
-                                if not p_info.get("codec"):
-                                    logger.warning(f"[MG {jid}] Chunk {att+1} corrupted (ffprobe failed).")
-                                    is_valid = False
+                                logger.warning(f"[MG {jid}] Attempt {att+1}: partial download "
+                                               f"{fsz_check}B / {expected_sz}B, retrying.")
 
                             if is_valid:
-                                # Rename back to canonical path
                                 if fp != dlp:
                                     try:
                                         os.replace(fp, dlp)
                                         fp = dlp
-                                    except Exception: pass
+                                    except Exception:
+                                        pass
                                 break
                             else:
-                                # CDN returned empty/tiny/corrupt file — remove and retry
-                                logger.warning(f"[MG {jid}] Attempt {att+1}: {os.path.basename(fp)} is {fsz_check}B / {expected_sz}B, retrying (Corrupt/Partial)")
                                 try: os.remove(fp)
                                 except Exception: pass
                                 fp = None
-                                # Progressive back-off: 3s, 6s, 12s...
                                 await asyncio.sleep(min(3 * (att + 1), 30))
                     except FloodWait as fw:
                         await asyncio.sleep(fw.value + 2)
                     except Exception as e:
                         estr = str(e)
-                        if any(k in estr for k in ("Timeout", "Connection", "Read", "MessageNotModified", "reset")):
-                            await asyncio.sleep(min(3 * (att + 1), 30))
+                        is_transient = any(k in estr for k in (
+                            "Timeout", "Connection", "Read", "reset",
+                            "not been started", "not connected", "disconnected"
+                        ))
+                        if is_transient:
+                            # Try to heal the connection before next attempt
+                            try:
+                                client = await _mg_ensure_client_alive(client)
+                            except Exception:
+                                pass
+                            await asyncio.sleep(min(5 * (att + 1), 60))
                         else:
                             logger.error(f"[MG {jid}] Download error msg {msg.id}: {e}")
-                            if att >= 5: break  # give up on non-transient errors sooner
+                            await asyncio.sleep(min(3 * (att + 1), 30))
 
                 if not fp or not os.path.exists(fp) or os.path.getsize(fp) < 100:
                     # ── Download failed: ask user SKIP / RETRY / ABORT ─────────────
@@ -1172,13 +1220,31 @@ async def _run_job(jid, uid, bot):
                         return
 
                     elif choice == "retry":
-                        # Reset fp and retry the entire download loop again
+                        # Reset fp and retry the entire download loop again with fresh reference
                         fp = None
-                        for att2 in range(MAX_DL_RETRIES):
+                        RETRY_ATTEMPTS = 8
+                        for att2 in range(RETRY_ATTEMPTS):
                             temp_dlp2 = dlp.replace(ext, f"_r2_{att2}{ext}")
                             try:
+                                # Always refresh reference on user-triggered retry
+                                try:
+                                    fm2 = await asyncio.wait_for(
+                                        client.get_messages(from_chat, msg.id), timeout=30)
+                                    if fm2 and not getattr(fm2, "empty", True):
+                                        msg = fm2
+                                except Exception:
+                                    pass
+                                client = await _mg_ensure_client_alive(client)
                                 fp = await client.download_media(msg, file_name=temp_dlp2)
                                 if fp and os.path.exists(fp) and os.path.getsize(fp) > 100:
+                                    fsz2 = os.path.getsize(fp)
+                                    exp2 = getattr(media_obj, 'file_size', 0)
+                                    if exp2 > 0 and fsz2 < int(exp2 * 0.95):
+                                        try: os.remove(fp)
+                                        except: pass
+                                        fp = None
+                                        await asyncio.sleep(min(5 * (att2 + 1), 60))
+                                        continue
                                     if fp != dlp:
                                         try: os.replace(fp, dlp); fp = dlp
                                         except: pass
@@ -1186,9 +1252,9 @@ async def _run_job(jid, uid, bot):
                                 else:
                                     if fp and os.path.exists(fp): os.remove(fp)
                                     fp = None
-                                    await asyncio.sleep(min(3 * (att2 + 1), 30))
+                                    await asyncio.sleep(min(5 * (att2 + 1), 60))
                             except Exception:
-                                await asyncio.sleep(min(3 * (att2 + 1), 30))
+                                await asyncio.sleep(min(5 * (att2 + 1), 60))
                         if not fp or not os.path.exists(fp) or os.path.getsize(fp) < 100:
                             await bot.send_message(uid,
                                 f"⚠️ <b>Retry also failed for file #{global_seq+1}</b>. Skipping.")
@@ -1461,7 +1527,18 @@ async def _run_job(jid, uid, bot):
         replace_target = job.get("replace_target")
         if replace_target:
             dest = replace_target["chat_id"]
-            mid = replace_target["msg_id"]
+            mid  = replace_target["msg_id"]
+
+            # ─── Reconnect client before upload ─────────────────────────────────
+            # A merge job can run for 1–8 hours. The Telegram connection will
+            # silently die. We MUST verify/reconnect before any upload attempt.
+            try:
+                client = await _mg_ensure_client_alive(client)
+            except Exception as rc_err:
+                # If reconnect fails totally, try main bot for DM fallback
+                logger.error(f"[MG {jid}] Client reconnect failed before replace upload: {rc_err}")
+                raise Exception(f"Client reconnect failed before upload: {rc_err}")
+
             await _safe_resolve_peer(client, dest)
             
             # --- Robust Editing: Upload to 'me' first to bypass edit_message_media limits ---
@@ -1505,21 +1582,40 @@ async def _run_job(jid, uid, bot):
                     break
                 except FloodWait as fw: await asyncio.sleep(fw.value+2)
                 except Exception as e:
-                    if att < 2: await asyncio.sleep(5); continue
-                    # Fallback to uploading to DM instead of just losing the file
+                    if att < 2:
+                        # On connection errors, try to heal before retry
+                        estr = str(e).lower()
+                        if any(k in estr for k in ("not been started", "not connected", "disconnected")):
+                            try: client = await _mg_ensure_client_alive(client)
+                            except Exception: pass
+                        await asyncio.sleep(5)
+                        continue
+                    # All 3 attempts exhausted — fallback: send to DM via main bot
                     try:
-                        await bot.send_message(uid, f"<b>⚠️ Edit channel post failed! Uploading file to DM directly. Error:</b> <code>{e}</code>")
+                        await bot.send_message(uid,
+                            f"<b>⚠️ Edit channel post failed after 3 attempts.</b>\n"
+                            f"<b>Uploading merged file directly to your DM.</b>\n"
+                            f"<code>{e}</code>")
+                        # Use BOT (not dead clone client) for DM fallback
                         if mtype == "video":
-                            await client.send_video(chat_id=uid, video=out_path, caption=caption, thumb=thumb)
+                            await bot.send_video(chat_id=uid, video=out_path, caption=caption, thumb=thumb)
                         else:
                             kw = {"chat_id": uid, "audio": out_path, "caption": caption, "thumb": thumb}
                             if metadata.get("title"): kw["title"] = metadata["title"]
                             if metadata.get("artist"): kw["performer"] = metadata["artist"]
-                            await client.send_audio(**kw)
+                            await bot.send_audio(**kw)
+                        await db.update_global_stats(total_files_uploaded=1)
                     except Exception as fallback_e:
-                        raise Exception(f"Replace media failed: {e}. Fallback to DM also failed: {fallback_e}")
-                    raise Exception(f"Replace media failed (file sent to DM instead): {e}")
+                        await _db_up(jid, status="error",
+                            error=f"Replace failed and DM fallback also failed: {fallback_e}")
+                        raise Exception(f"Replace failed: {e}. DM fallback: {fallback_e}")
+                    raise Exception(f"Replace media failed (file saved to DM): {e}")
         else:
+            # ─── Reconnect before normal channel upload too ──────────────────────
+            try:
+                client = await _mg_ensure_client_alive(client)
+            except Exception as rc_err:
+                logger.warning(f"[MG {jid}] Client reconnect before send: {rc_err}")
             for dest in all_dests:
                 for att in range(3):
                     try:
@@ -1537,6 +1633,10 @@ async def _run_job(jid, uid, bot):
                         break
                     except FloodWait as fw: await asyncio.sleep(fw.value+2)
                     except Exception as e:
+                        estr = str(e).lower()
+                        if any(k in estr for k in ("not been started", "not connected", "disconnected")):
+                            try: client = await _mg_ensure_client_alive(client)
+                            except Exception: pass
                         if att < 2: await asyncio.sleep(5); continue
                         logger.warning(f"[MG {jid}] upload {dest}: {e}"); break
 
