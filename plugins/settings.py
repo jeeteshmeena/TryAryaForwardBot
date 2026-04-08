@@ -341,6 +341,10 @@ async def owners_cb(bot, query):
             InlineKeyboardButton(f"🔌 Fᴇᴀᴛᴜʀᴇs ({len(disabled)} ᴅɪsᴀʙʟᴇᴅ)", callback_data="settings#features"),
             InlineKeyboardButton("🖥️ Bɪɴᴅ Wᴏʀᴋᴇʀs", callback_data="settings#routing")
         ])
+        btns.append([
+            InlineKeyboardButton("📊 Sʏs Mᴏɴɪᴛᴏʀ", callback_data="sysmon#stats"),
+            InlineKeyboardButton("🔒 Pʀᴏᴛᴇᴄᴛᴇᴅ Cʜᴀᴛs", callback_data="settings#protected")
+        ])
         btns.append([InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#main")])
         txt = (
             "<b><u>👑 Owner / Admin Control Panel</u></b>\n\n"
@@ -354,7 +358,11 @@ async def owners_cb(bot, query):
             + ("  Disabled: " + ", ".join(FEATURE_LABELS.get(f, f) for f in disabled) if disabled else "  All features currently enabled.")
             + "\n\n<i>Co-owners have FULL backend admin control. Only primary owners can add/remove other owners.</i>"
         )
-        await query.message.edit_text(txt, reply_markup=InlineKeyboardMarkup(btns))
+        if getattr(query.message, "photo", None):
+            await query.message.delete()
+            await bot.send_message(query.message.chat.id, txt, reply_markup=InlineKeyboardMarkup(btns))
+        else:
+            await query.message.edit_text(txt, reply_markup=InlineKeyboardMarkup(btns))
 
     elif data == "owner_add":
         if not is_primary:
@@ -2304,8 +2312,6 @@ async def main_buttons(user_id=None):
            InlineKeyboardButton('EN/हि',
                         callback_data='settings#lang')
            ],[
-           InlineKeyboardButton('Sʏs Mᴏɴ',
-                        callback_data='sysmon#stats'),
            InlineKeyboardButton(('🖼✅ Mᴇɴᴜ Iᴍɢ' if menu_image_id else 'Mᴇɴᴜ Iᴍɢ'),
                         callback_data='settings#main_menu_img')
            ] + ([InlineKeyboardButton('🗑 Rᴇᴍ Iᴍɢ', callback_data='settings#main_menu_clr')] if menu_image_id else []),
@@ -2315,9 +2321,7 @@ async def main_buttons(user_id=None):
            InlineKeyboardButton('Lᴇᴛ\'s Eɴʜᴀɴᴄᴇ',
                         callback_data='settings#enhancer')
            ],[
-           InlineKeyboardButton('Pʀᴏᴛᴇᴄᴛᴇᴅ Cʜᴀᴛs',
-                        callback_data='settings#protected'),
-           InlineKeyboardButton('Oᴡɴᴇʀs',
+           InlineKeyboardButton('👑 Oᴡɴᴇʀ Pᴀɴᴇʟ',
                         callback_data='settings#owners')
            ],[
            InlineKeyboardButton('❮ Bᴀᴄᴋ', callback_data='back')
