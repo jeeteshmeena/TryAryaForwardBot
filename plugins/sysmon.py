@@ -89,7 +89,7 @@ def _level_emoji(pct: float) -> str:
 # ── System snapshot ───────────────────────────────────────────────────────────
 def _sys_snapshot() -> dict:
     ram    = psutil.virtual_memory()
-    cpu    = psutil.cpu_percent(interval=1)
+    cpu    = psutil.cpu_percent(interval=None)   # non-blocking — uses cached sample
     disk   = psutil.disk_usage("/")
     proc   = psutil.Process(os.getpid())
     bot_ram_mb = proc.memory_info().rss / 1024 / 1024
@@ -108,8 +108,8 @@ def _sys_snapshot() -> dict:
     }
 
 
-def _temp_dir_sizes() -> dict[str, float]:
-    """Return {dir_name: size_mb} for each temp directory."""
+def _temp_dir_sizes_sync() -> dict:
+    """Blocking disk scan — run via executor, never directly from async code."""
     result = {}
     for d in TEMP_DIRS:
         if os.path.exists(d):
@@ -122,6 +122,13 @@ def _temp_dir_sizes() -> dict[str, float]:
         else:
             result[d] = 0.0
     return result
+
+
+async def _temp_dir_sizes() -> dict:
+    """Async wrapper — runs blocking disk scan in thread pool so it never
+    freezes the event loop (merge_tmp with 800MB+ takes several seconds)."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _temp_dir_sizes_sync)
 
 
 # ── Running job counters ───────────────────────────────────────────────────────
@@ -345,12 +352,19 @@ def _build_stat_msg(snap: dict, jobs: dict, temps: dict, include_temps: bool = T
 # ── Monitor loop ──────────────────────────────────────────────────────────────
 async def _monitor_loop(bot):
     """Background task — checks system health every MONITOR_INTERVAL seconds."""
+    # Warm up psutil cpu_percent baseline so interval=None gives real values.
+    # The very first call with interval=None always returns 0.0 (no previous
+    # sample). By calling it once here (blocking is fine at startup, not in loop)
+    # all subsequent non-blocking calls will return accurate percentages.
+    psutil.cpu_percent(interval=1)
     await asyncio.sleep(15)  # Give the bot time to fully start
     logger.info("[SysMonitor] Background monitor started.")
 
     while True:
         try:
-            snap = _sys_snapshot()
+            # Run snapshot in executor to avoid any chance of blocking
+            loop = asyncio.get_event_loop()
+            snap = await loop.run_in_executor(None, _sys_snapshot)
             r, c = snap["ram_pct"], snap["cpu_pct"]
             now  = time.time()
             jobs = _count_running_jobs()
@@ -485,12 +499,45 @@ async def _monitor_loop(bot):
         await asyncio.sleep(MONITOR_INTERVAL)
 
 
+async def _stale_future_cleaner():
+    """
+    Periodically evict stale asyncio.Future objects from the _ask() waiting dicts.
+    When a user opens a wizard (create job / merger / cleaner) but never completes
+    it, a Future stays in the dict forever. Over 7-8 hours these accumulate,
+    consuming memory and, more critically, clogging the asyncio event loop's
+    ready-queue when they're polled. This causes the bot to stop responding to ALL
+    commands while futures are pending (the event loop starves real handlers).
+    """
+    while True:
+        await asyncio.sleep(600)   # run every 10 minutes
+        try:
+            from plugins.jobs      import _lj_waiting
+            from plugins.multijob  import _mj_waiting
+            from plugins.merger    import _mg_waiter
+            from plugins.cleaner   import _cl_waiter
+        except Exception:
+            continue
+
+        now = asyncio.get_event_loop().time()
+        for d, name in [(_lj_waiting, "lj"), (_mj_waiting, "mj"),
+                        (_mg_waiter, "mg"), (_cl_waiter, "cl")]:
+            stale = [uid for uid, fut in list(d.items())
+                     if fut.done() or getattr(fut, '_created_at', now) < now - 600]
+            for uid in stale:
+                fut = d.pop(uid, None)
+                if fut and not fut.done():
+                    fut.cancel()
+            if stale:
+                logger.info(f"[SysMonitor] Cleaned {len(stale)} stale futures from {name}_waiting")
+
+
 def start_monitor(bot):
     """Call this once from main/init to start the background monitor."""
     global _monitor_task
     if _monitor_task and not _monitor_task.done():
         return
     _monitor_task = asyncio.create_task(_monitor_loop(bot))
+    asyncio.create_task(_stale_future_cleaner())
     logger.info("[SysMonitor] Monitor task created.")
 
 
@@ -504,9 +551,10 @@ async def cmd_sysstat(bot, message: Message):
         return await message.reply_text("⛔ Owner-only command.")
 
     await message.reply_text("<i>Fetching system info...</i>")
-    snap  = _sys_snapshot()
+    loop = asyncio.get_event_loop()
+    snap  = await loop.run_in_executor(None, _sys_snapshot)
     jobs  = _count_running_jobs()
-    temps = _temp_dir_sizes()
+    temps = await _temp_dir_sizes()
     txt   = _build_stat_msg(snap, jobs, temps)
 
     btns = InlineKeyboardMarkup([
@@ -605,9 +653,10 @@ async def sysmon_cb(bot, query: CallbackQuery):
     await query.answer()
 
     if action == "stats":
-        snap  = _sys_snapshot()
+        loop = asyncio.get_event_loop()
+        snap  = await loop.run_in_executor(None, _sys_snapshot)
         jobs  = _count_running_jobs()
-        temps = _temp_dir_sizes()
+        temps = await _temp_dir_sizes()
         txt   = _build_stat_msg(snap, jobs, temps)
         btns  = InlineKeyboardMarkup([
             [
@@ -684,7 +733,8 @@ async def sysmon_cb(bot, query: CallbackQuery):
                     pass
 
         skip_note = f"\n⚠️ Skipped {len(skipped)} active merger folder(s)." if skipped else ""
-        snap = _sys_snapshot()
+        loop = asyncio.get_event_loop()
+        snap = await loop.run_in_executor(None, _sys_snapshot)
         txt = (
             f"<b>✅ Cleanup Complete!</b>\n\n"
             f"🗑 Freed: <code>{freed:.1f} MB</code>{skip_note}\n\n"
