@@ -37,6 +37,7 @@ _cl_tasks: dict[str, asyncio.Task] = {}
 _cl_paused: dict[str, asyncio.Event] = {}
 _cl_waiter: dict[int, asyncio.Future] = {}
 _cl_bot_ref: dict[str, object] = {}   # job_id -> bot instance for notifications
+_cl_cancel_users: set = set()          # user IDs that pressed Cancel mid-flow
 MAX_CONCURRENT = 1
 _cl_semaphore = asyncio.Semaphore(MAX_CONCURRENT)
 IST_OFFSET = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
@@ -72,6 +73,32 @@ async def _cl_save_default(uid: int, key: str, val):
 
 
 # ─── Ask Flow ────────────────────────────────────────────────────────────────
+
+# Dedicated cancel-command / cancel-button handler that ALSO kills the flow.
+@Client.on_message(filters.private & (filters.text | filters.command("cancel")), group=-15)
+async def _cl_cancel_handler(bot, message):
+    """Catch '⛔ Cancel' keyboard button or /cancel sent during a Cleaner wizard."""
+    uid = message.from_user.id if message.from_user else None
+    if uid is None or uid not in _cl_waiter:
+        raise ContinuePropagation   # nothing waiting — pass through
+    txt = (message.text or "").strip()
+    is_cancel = (
+        txt.startswith("/cancel")
+        or "⛔" in txt
+        or "Cᴀɴᴄᴇʟ" in txt
+        or txt.lower() == "cancel"
+    )
+    if not is_cancel:
+        raise ContinuePropagation   # not a cancel — let the router handle it
+    # Mark cancel intent so the flow function knows to abort
+    _cl_cancel_users.add(uid)
+    # Also resolve the waiting future so _cl_ask() unblocks immediately
+    fut = _cl_waiter.pop(uid, None)
+    if fut and not fut.done():
+        fut.set_result(message)
+    # Don't raise ContinuePropagation — swallow this message (it's already handled)
+
+
 @Client.on_message(filters.private, group=-16)
 async def _cl_input_router(bot, message):
     uid = message.from_user.id if message.from_user else None
@@ -81,13 +108,18 @@ async def _cl_input_router(bot, message):
             fut.set_result(message)
     raise ContinuePropagation
 
+
 async def _cl_ask(bot, user_id, text, reply_markup=None, timeout=300):
+    """Send `text` and await next private message from `user_id`.
+    Returns the message, or raises asyncio.TimeoutError.
+    Automatically checks _cl_cancel_users after resolving."""
     loop = asyncio.get_event_loop()
     fut = loop.create_future()
     old = _cl_waiter.pop(user_id, None)
     if old and not old.done(): old.cancel()
     _cl_waiter[user_id] = fut
-    await bot.send_message(user_id, text, reply_markup=reply_markup)
+    from pyrogram.enums import ParseMode
+    await bot.send_message(user_id, text, reply_markup=reply_markup, parse_mode=ParseMode.HTML)
     try:
         return await asyncio.wait_for(fut, timeout=timeout)
     except asyncio.TimeoutError:
@@ -352,6 +384,7 @@ async def _cl_run_job(job_id: str, bot=None):
             eid = job["end_id"]
             done = job.get("files_done", 0)
             curr_msg_id = job.get("current_msg_id", sid)
+            from_topic_id = job.get("from_topic_id", 0) or 0   # 0 = no topic filter
             
             base_name = job.get("base_name", "Cleaned")
             art = job.get("artist", "")
@@ -439,7 +472,14 @@ async def _cl_run_job(job_id: str, bot=None):
                     # Skip empty messages or non-audio content
                     if not msg or msg.empty:
                         continue
-                    
+
+                    # ── Topic filter: only process messages from the target thread ──
+                    if from_topic_id:
+                        msg_thread = getattr(msg, "message_thread_id", None)
+                        # The very first topic-creation message has msg.id == thread_id
+                        if msg_thread != from_topic_id and msg.id != from_topic_id:
+                            continue
+
                     is_audio = bool(msg.audio or msg.voice)
                     is_audio_doc = (msg.document and 
                                     'audio' in (getattr(msg.document, 'mime_type', '') or ''))
@@ -871,14 +911,37 @@ async def _cl_callbacks(bot, update: CallbackQuery):
 async def _create_cl_flow(bot, user_id):
     old = _cl_waiter.pop(user_id, None)
     if old and not old.done(): old.cancel()
+    # Clear any stale cancel flag from a previous flow
+    _cl_cancel_users.discard(user_id)
 
     CANCEL_BTN = KeyboardButton("⛔ Cᴀɴᴄᴇʟ")
     SKIP_BTN   = KeyboardButton("⏭ Sᴋɪᴘ")
     UNDO_BTN   = KeyboardButton("↩️ Uɴᴅᴏ")
     markup_b   = ReplyKeyboardMarkup([[UNDO_BTN, CANCEL_BTN]], resize_keyboard=True, one_time_keyboard=True)
     markup_s   = ReplyKeyboardMarkup([[SKIP_BTN, CANCEL_BTN]], resize_keyboard=True, one_time_keyboard=True)
+    markup_c   = ReplyKeyboardMarkup([[CANCEL_BTN]], resize_keyboard=True, one_time_keyboard=True)
 
-    def _cancel(txt): return txt.strip().startswith("/cancel") or "⛔" in txt or "Cᴀɴᴄᴇʟ" in txt
+    def _cancelled(r):
+        """Return True if user cancelled — checks both the flag and the message text."""
+        if user_id in _cl_cancel_users:
+            return True
+        if r is None:
+            return False
+        txt = (r.text or "").strip()
+        return (
+            txt.startswith("/cancel")
+            or "⛔" in txt
+            or "Cᴀɴᴄᴇʟ" in txt
+            or txt.lower() == "cancel"
+        )
+
+    async def _abort():
+        """Clean up and tell user the wizard was cancelled."""
+        _cl_cancel_users.discard(user_id)
+        _cl_waiter.pop(user_id, None)
+        await bot.send_message(user_id, "<i>❌ Cleaner wizard cancelled.</i>",
+                               reply_markup=ReplyKeyboardRemove())
+
     def _skip(txt):   return "⏭" in txt or "Sᴋɪᴘ" in txt or txt.strip().lower() == "/skip"
     def _undo(txt):   return "↩️" in txt or "Uɴᴅᴏ" in txt
 
@@ -894,30 +957,30 @@ async def _create_cl_flow(bot, user_id):
 
     acc_btns = [[KeyboardButton(_acc_label(a))] for a in accounts]
     acc_btns.append([CANCEL_BTN])
-    
+
     r_acc = await _cl_ask(bot, user_id,
-        "<b>🧹 Create Cleaner Job — Step 1/8</b>\n\nChoose the <b>account</b> to read from:",
+        "<b>🧹 Create Cleaner Job — Step 1/9</b>\n\nChoose the <b>account</b> to read from:",
         reply_markup=ReplyKeyboardMarkup(acc_btns, resize_keyboard=True, one_time_keyboard=True))
-    if _cancel(r_acc.text or ""): return await bot.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+    if _cancelled(r_acc): return await _abort()
 
     acc_id = None
     if "[" in (r_acc.text or "") and "]" in (r_acc.text or ""):
         try: acc_id = int(r_acc.text.split('[')[-1].split(']')[0])
         except: pass
     sel_acc = (await db.get_bot(user_id, acc_id)) if acc_id else accounts[0]
-    
+
     # ── Step 2: Start link ───────────────────────────────────────
     r_start = await _cl_ask(bot, user_id,
-        "<b>»  Step 2/8</b>\n\nSend the <b>Start Message Link</b> (first file):",
-        reply_markup=ReplyKeyboardMarkup([[CANCEL_BTN]], resize_keyboard=True, one_time_keyboard=True))
-    if _cancel(r_start.text or ""): return await bot.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+        "<b>»  Step 2/9</b>\n\nSend the <b>Start Message Link</b> (first file):",
+        reply_markup=markup_c)
+    if _cancelled(r_start): return await _abort()
     from_chat, sid = _parse_link(r_start.text or "")
 
     # ── Step 3: End link ─────────────────────────────────────────
     r_end = await _cl_ask(bot, user_id,
-        "<b>»  Step 3/8</b>\n\nSend the <b>End Message Link</b> (last file):",
+        "<b>»  Step 3/9</b>\n\nSend the <b>End Message Link</b> (last file):",
         reply_markup=markup_b)
-    if _cancel(r_end.text or ""): return await bot.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+    if _cancelled(r_end): return await _abort()
     _, eid = _parse_link(r_end.text or "")
     if sid and eid and sid > eid: sid, eid = eid, sid
 
@@ -936,30 +999,28 @@ async def _create_cl_flow(bot, user_id):
             "<b>»  Step 4/9</b>\n\nSelect <b>destination channel</b> for cleaned files:\n"
             "<i>Or choose <b>✏️ Replace/Edit Mode</b> to edit existing posts in-place.</i>",
             reply_markup=ReplyKeyboardMarkup(ch_kb, resize_keyboard=True, one_time_keyboard=True))
-        if _cancel(r_dest.text or ""): return await bot.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+        if _cancelled(r_dest): return await _abort()
 
         if "Replace/Edit" in (r_dest.text or ""):
             replace_mode = True
-            # Ask which channel to edit in
             edit_ch_kb = [[KeyboardButton(f"📢 {c['title']}")] for c in channels]
             edit_ch_kb.append([CANCEL_BTN])
             r_edit_ch = await _cl_ask(bot, user_id,
                 "<b>»  Step 4a/9 — Select Channel to Edit</b>\n\n"
                 "Which channel contains the existing audio posts to replace?",
                 reply_markup=ReplyKeyboardMarkup(edit_ch_kb, resize_keyboard=True, one_time_keyboard=True))
-            if _cancel(r_edit_ch.text or ""): return await bot.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+            if _cancelled(r_edit_ch): return await _abort()
             edit_title = (r_edit_ch.text or "").replace("📢 ", "").strip()
             ch = next((c for c in channels if c["title"] == edit_title), None)
             if ch:
                 dest_chat = int(ch["chat_id"])
 
-            # Ask for the first message ID to replace
             r_mid = await _cl_ask(bot, user_id,
                 "<b>»  Step 4b/9 — First Message ID to Replace</b>\n\n"
                 "Send the <b>message ID</b> of the first existing audio post that should be replaced.\n"
                 "<i>Each subsequent file will edit the next message ID automatically.</i>",
-                reply_markup=ReplyKeyboardMarkup([[CANCEL_BTN]], resize_keyboard=True, one_time_keyboard=True))
-            if _cancel(r_mid.text or ""): return await bot.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+                reply_markup=markup_c)
+            if _cancelled(r_mid): return await _abort()
             try:
                 replace_start_msg_id = int((r_mid.text or "0").strip())
             except ValueError:
@@ -972,20 +1033,43 @@ async def _create_cl_flow(bot, user_id):
     if not dest_chat:
         dest_chat = user_id
 
+    # ── Step 4c: Optional Topic ID (for group topics) ────────────
+    from_topic_id = 0
+    r_topic = await _cl_ask(bot, user_id,
+        "<b>»  Step 4c/9 — Source Topic (Optional)</b>\n\n"
+        "If the source is a <b>group with topics</b>, send the <b>Topic ID</b> or a "
+        "<b>message link</b> from that topic to clean only messages from that thread.\n\n"
+        "<i>Example:</i> <code>https://t.me/c/1234567890/123/456</code>\n"
+        "<i>The topic ID is the third number in the URL segment above.</i>\n\n"
+        "<b>Skip</b> if the source is a regular channel or you want all messages.",
+        reply_markup=markup_s)
+    if _cancelled(r_topic): return await _abort()
+    if not _skip(r_topic.text or ""):
+        # Try to parse topic ID from a link like /c/CHATID/TOPICID/MSGID
+        import re as _re_t
+        _tm = _re_t.search(r'https?://t\.me/c/\d+/(\d+)/\d+', r_topic.text or "")
+        if _tm:
+            from_topic_id = int(_tm.group(1))
+        else:
+            try:
+                from_topic_id = int((r_topic.text or "0").strip())
+            except ValueError:
+                from_topic_id = 0
+
     # ── Step 5: Base Name ────────────────────────────────────────
     r_base = await _cl_ask(bot, user_id,
-        "<b>»  Step 5/8</b>\n\nSend the <b>Base Name</b> for the files.\n"
+        "<b>»  Step 5/9</b>\n\nSend the <b>Base Name</b> for the files.\n"
         "<i>Example: Send <code>Saaya</code> → outputs <code>Saaya 1.mp3</code>, <code>Saaya 2.mp3</code>...</i>",
         reply_markup=markup_b)
-    if _cancel(r_base.text or ""): return await bot.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+    if _cancelled(r_base): return await _abort()
     base_name = re.sub(r'[<>:"/\\|?*]', '_', (r_base.text or "Cleaned").strip())
 
     # ── Step 6: Starting Number ──────────────────────────────────
     r_num = await _cl_ask(bot, user_id,
-        "<b>»  Step 6/8</b>\n\nSend the <b>Starting Number</b>.\n"
+        "<b>»  Step 6/9</b>\n\nSend the <b>Starting Number</b>.\n"
         "<i>Example: Send <code>1</code> for Saaya 1, or <code>201</code> for Saaya 201...</i>",
         reply_markup=markup_b)
-    if _cancel(r_num.text or ""): return await bot.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+    if _cancelled(r_num): return await _abort()
     start_num = int((r_num.text or "1").strip()) if (r_num.text or "").strip().isdigit() else 1
 
     # ── Step 7: Metadata (individual prompts) ────────────────────
@@ -997,39 +1081,39 @@ async def _create_cl_flow(bot, user_id):
     adv_cover  = df.get("cover", "")
 
     r_art = await _cl_ask(bot, user_id,
-        f"<b>»  Step 7a/8 — Artist Name</b>\n\n"
+        f"<b>»  Step 7a/9 — Artist Name</b>\n\n"
         f"Enter the <b>Artist</b> name.\n"
         f"<i>Default: {adv_artist or 'None'}. Skip to keep.</i>",
         reply_markup=markup_s)
-    if _cancel(r_art.text or ""): return await bot.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+    if _cancelled(r_art): return await _abort()
     if not _skip(r_art.text or ""): adv_artist = (r_art.text or "").strip()
 
     r_alb = await _cl_ask(bot, user_id,
-        f"<b>»  Step 7b/8 — Album Name</b>\n\n"
+        f"<b>»  Step 7b/9 — Album Name</b>\n\n"
         f"Enter the <b>Album</b> name.\n"
         f"<i>Default: Story name / artist. Skip to use Artist name.</i>",
         reply_markup=markup_s)
-    if _cancel(r_alb.text or ""): return await bot.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+    if _cancelled(r_alb): return await _abort()
     if not _skip(r_alb.text or ""): adv_album = (r_alb.text or "").strip()
     if not adv_album: adv_album = adv_artist
 
     r_yr = await _cl_ask(bot, user_id,
-        f"<b>»  Step 7c/8 — Year</b>\n\n"
+        f"<b>»  Step 7c/9 — Year</b>\n\n"
         f"Enter the <b>Release Year</b> (e.g. <code>2024</code>).\n"
         f"<i>Default: {adv_year or 'None'}. Skip to leave empty.</i>",
-        reply_markup=ReplyKeyboardMarkup([
-            ["2023", "2024", "2025", "2026"],
-            ["/skip"], ["/cancel"]
-        ], resize_keyboard=True))
-    if _cancel(r_yr.text or ""): return await bot.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+        reply_markup=ReplyKeyboardMarkup(
+            [["2023", "2024", "2025", "2026"],
+             [SKIP_BTN, CANCEL_BTN]],
+            resize_keyboard=True))
+    if _cancelled(r_yr): return await _abort()
     if not _skip(r_yr.text or ""): adv_year = (r_yr.text or "").strip()
 
     r_gen = await _cl_ask(bot, user_id,
-        f"<b>»  Step 7d/8 — Genre</b>\n\n"
+        f"<b>»  Step 7d/9 — Genre</b>\n\n"
         f"Enter the <b>Genre</b> (e.g. <code>Audiobook</code>, <code>Romance</code>, <code>Podcast</code>).\n"
         f"<i>Default: {adv_genre or 'None'}. Skip to leave empty.</i>",
         reply_markup=markup_s)
-    if _cancel(r_gen.text or ""): return await bot.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+    if _cancelled(r_gen): return await _abort()
     if not _skip(r_gen.text or ""): adv_genre = (r_gen.text or "").strip()
 
     # ── Step 8: Cover Image ──────────────────────────────────────
@@ -1039,8 +1123,8 @@ async def _create_cl_flow(bot, user_id):
         f"<i>{'Current default cover is set. ' if adv_cover else ''}Skip to {'keep existing' if adv_cover else 'use no cover'}.</i>",
         reply_markup=markup_s,
         timeout=300)
-    if _cancel((r_cov.text or "") if r_cov else ""): return await bot.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
-    
+    if _cancelled(r_cov): return await _abort()
+
     if r_cov and not _skip(r_cov.text or ""):
         if r_cov.photo:
             adv_cover = r_cov.photo.file_id
@@ -1051,10 +1135,10 @@ async def _create_cl_flow(bot, user_id):
     r_cap = await _cl_ask(bot, user_id,
         f"<b>»  Step 9/9 — Add Caption?</b>\n\n"
         f"Do you want to add the file name as the caption in the target channel/DM?\n",
-        reply_markup=ReplyKeyboardMarkup([
-            ["✅ Yes, Add Caption"], ["❌ No, Empty Caption"], ["/cancel"]
-        ], resize_keyboard=True, one_time_keyboard=True))
-    if _cancel((r_cap.text or "") if r_cap else ""): return await bot.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+        reply_markup=ReplyKeyboardMarkup(
+            [["✅ Yes, Add Caption"], ["❌ No, Empty Caption"], [CANCEL_BTN]],
+            resize_keyboard=True, one_time_keyboard=True))
+    if _cancelled(r_cap): return await _abort()
     use_caption = not ("no, empty caption" in (r_cap.text or "").lower())
 
     # ── Create Job ───────────────────────────────────────────────
@@ -1068,6 +1152,7 @@ async def _create_cl_flow(bot, user_id):
     job = {
         "job_id": job_id, "user_id": user_id, "status": "queued",
         "from_chat": from_chat, "dest_chat": dest_chat,
+        "from_topic_id": from_topic_id,
         "replace_mode": replace_mode,
         "replace_start_msg_id": replace_start_msg_id,
         "start_id": sid, "end_id": eid,
@@ -1086,6 +1171,7 @@ async def _create_cl_flow(bot, user_id):
         "phase_start_ts": 0,
     }
     await _cl_save_job(job)
+    _cl_cancel_users.discard(user_id)   # ensure clean state after successful completion
     
     run_msg = "" if should_run_locally else f"\nQueued for worker: <b>{target_node}</b>"
     
