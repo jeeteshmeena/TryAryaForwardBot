@@ -1035,7 +1035,7 @@ async def _run_job(job_id: str, user_id: int):
         _TRANSIENT_KEYS = (
             "CONNECTION", "TIMEOUT", "NETWORK", "PING", "SOCKET", "RESET",
             "NOT BEEN STARTED", "NOT CONNECTED", "DISCONNECTED",
-            "CONNECTION LOST",
+            "CONNECTION LOST", "FLOOD_WAIT",
             "LIVEJOB_RECONNECT_FAILED",   # raised by _lj_ensure_client_alive
         )
         
@@ -1050,14 +1050,20 @@ async def _run_job(job_id: str, user_id: int):
             # Don't mark job as error — just pause it so user can restart manually
             await _update_job(job_id, status="paused",
                               error="Session conflict (AUTH_KEY_DUPLICATED). Restart the job.")
-        elif any(kw in err_upper for kw in _TRANSIENT_KEYS):
+        elif any(kw in err_upper for kw in _TRANSIENT_KEYS) or isinstance(e, FloodWait):
             # Transient network/connection issue — DO NOT mark as error.
             # Auto-resume in 30s so the job stays green.
-            logger.warning(f"[Job {job_id}] Transient connection error: {err_str} - Auto-restarting in 30s")
+            slp = 30
+            if isinstance(e, FloodWait):
+                slp = e.value + 5
+            elif "FLOOD_WAIT" in err_upper:
+                slp = 60
+                
+            logger.warning(f"[Job {job_id}] Transient connection error: {err_str} - Auto-restarting in {slp}s")
             # Mark job as still running (not error) so UI stays green
             await _update_job(job_id, error=f"[Auto-reconnect] {err_str[:60]}")
             async def _auto_resume():
-                await __import__('asyncio').sleep(30)
+                await __import__('asyncio').sleep(slp)
                 _start_job_task(job_id, user_id)
             __import__('asyncio').create_task(_auto_resume())
         else:
