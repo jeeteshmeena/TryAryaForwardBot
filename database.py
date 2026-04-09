@@ -405,8 +405,8 @@ class Database:
         return count, bcount
 
     async def total_channels(self):
-        count = await self.chl.count_documents({})
-        return count
+        docs = await self.chl.distinct("chat_id")
+        return len(docs)
     
     async def remove_ban(self, id):
         ban_status = dict(

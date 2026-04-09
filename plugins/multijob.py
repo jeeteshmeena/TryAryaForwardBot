@@ -279,7 +279,9 @@ async def _mj_forward(
                             for _dl_try in range(3):
                                 try:
                                     fp = await client.download_media(msg, file_name=safe_name)
-                                    if fp: break
+                                    if fp: 
+                                        await db.update_global_stats(total_files_downloaded=1)
+                                        break
                                 except FloodWait as fw:
                                     await asyncio.sleep(fw.value + 2)
                                 except Exception as dl_e:
@@ -301,6 +303,7 @@ async def _mj_forward(
                             elif msg.animation: await client.send_animation(animation=fp, **up_kw)
                             elif msg.sticker:  await client.send_sticker(sticker=fp, **up_kw)
                             
+                            await db.update_global_stats(total_files_uploaded=1)
                             import os
                             if os.path.exists(fp): os.remove(fp)
                         else:

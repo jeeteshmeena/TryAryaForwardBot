@@ -339,7 +339,9 @@ async def _forward_message(
                     for dl_attempt in range(5):
                         try:
                             fp = await client.download_media(msg, file_name=safe_name)
-                            if fp: break
+                            if fp: 
+                                await db.update_global_stats(total_files_downloaded=1)
+                                break
                         except FloodWait as fw:
                             await asyncio.sleep(fw.value + 2)
                         except Exception as dl_e:
@@ -364,6 +366,7 @@ async def _forward_message(
                     elif getattr(msg, 'animation', None): await client.send_animation(animation=fp, **up_kw)
                     elif getattr(msg, 'sticker', None): await client.send_sticker(sticker=fp, **up_kw)
                     
+                    await db.update_global_stats(total_files_uploaded=1)
                     if os.path.exists(fp): os.remove(fp)
                     return True
                 else:
