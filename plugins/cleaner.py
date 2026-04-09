@@ -470,7 +470,7 @@ async def _cl_run_job(job_id: str, bot=None):
                 base_norm = base.replace('\u2013', '-').replace('\u2014', '-')
                 # Range: '388-389', '567 to 677', '466 and 476'
                 m = _re.search(
-                    r'\b(\d{1,4})\s*(?:-|to|and)\s*(\d{1,4})\b',
+                    r'\b(\d{1,4})\s*(?:-|to|and|&|_|~|,|/)\s*(\d{1,4})\b',
                     base_norm, _re.IGNORECASE)
                 if m:
                     a, b = int(m.group(1)), int(m.group(2))
@@ -492,7 +492,8 @@ async def _cl_run_job(job_id: str, bot=None):
                 return ''  # no episode found — fall back to sequential
 
             # Loop through all message IDs
-            for msg_id in range(curr_msg_id, eid + 1):
+            msg_id = curr_msg_id
+            while msg_id <= eid:
                 # Save the loop var as progress checkpoint
                 await _cl_update_job(job_id, {"current_msg_id": msg_id})
                 ev = _cl_paused.get(job_id)
@@ -507,6 +508,7 @@ async def _cl_run_job(job_id: str, bot=None):
                     msg = await client.get_messages(from_ch, msg_id)
                     # Skip empty messages or non-audio content
                     if not msg or msg.empty:
+                        msg_id += 1
                         continue
 
                     # ── Topic filter: only process messages from the target thread ──
@@ -514,6 +516,7 @@ async def _cl_run_job(job_id: str, bot=None):
                         msg_thread = getattr(msg, "message_thread_id", None)
                         # The very first topic-creation message has msg.id == thread_id
                         if msg_thread != from_topic_id and msg.id != from_topic_id:
+                            msg_id += 1
                             continue
 
                     # ── Detect media type ───────────────────────────────────────
@@ -531,6 +534,7 @@ async def _cl_run_job(job_id: str, bot=None):
                     media_obj = (msg.audio or msg.voice or msg.document
                                  or msg.video or msg.photo)
                     if not media_obj:
+                        msg_id += 1
                         continue   # truly no media (text-only / service)
 
                     # Should we run FFmpeg? Only for actual audio files.
@@ -548,16 +552,27 @@ async def _cl_run_job(job_id: str, bot=None):
                         elif msg.photo:  orig_ext = '.jpg'
                         else:            orig_ext = ''
 
-                    # ── Determine output title: preserve original episode/range label ──
+                    # ── Determine output title ──
+                    change_meta = job.get("change_metadata", True)
                     ep_label = _extract_ep_label(orig_fn) if orig_fn else ''
-                    if ep_label:
-                        clean_title = f"{base_name} {ep_label}"
-                        import re as _re_meta
-                        _tm = _re_meta.search(r'\d+', ep_label)
-                        track_num = _tm.group() if _tm else str(curr_num)
+                    
+                    if not change_meta:
+                        clean_title = os.path.splitext(orig_fn)[0] if orig_fn else f"Media {msg_id}"
+                        track_num = ""
+                        # Preserve existing performer and title if present
+                        if msg.audio:
+                            art = getattr(msg.audio, 'performer', art) or art
+                            alb = art
                     else:
-                        clean_title = f"{base_name} {curr_num}"
-                        track_num = str(curr_num)
+                        if ep_label:
+                            clean_title = f"{base_name} {ep_label}"
+                            import re as _re_meta
+                            _tm = _re_meta.search(r'\d+', ep_label)
+                            track_num = _tm.group() if _tm else str(curr_num)
+                        else:
+                            clean_title = f"{base_name} {curr_num}"
+                            track_num = str(curr_num)
+                    
                     # ALWAYS increment curr_num for every media file processed.
                     curr_num += 1
 
@@ -567,19 +582,26 @@ async def _cl_run_job(job_id: str, bot=None):
                     else:
                         clean_file = f"{clean_title}{orig_ext}" if orig_ext else clean_title
 
-                    meta = {
-                        "title":  clean_title,
-                        "artist": art,
-                        "album":  alb or art,
-                        "year":   yr,
-                        "genre":  gen,
-                        "track":  track_num,
-                        "comment": "Optimized & Cleaned by Arya Bot",
-                        "description": f"Processed by Arya Bot | Source: {base_name}",
-                        "publisher": "Arya Bot",
-                        "encoder": "Arya Bot",
-                        "encoded_by": "Arya Bot"
-                    }
+                    meta = {}
+                    if change_meta:
+                        meta = {
+                            "title":  clean_title,
+                            "artist": art,
+                            "album":  alb or art,
+                            "year":   yr,
+                            "genre":  gen,
+                            "track":  track_num,
+                            "comment": "Optimized & Cleaned by Arya Bot",
+                            "description": f"Processed by Arya Bot | Source: {base_name}",
+                            "publisher": "Arya Bot",
+                            "encoder": "Arya Bot",
+                            "encoded_by": "Arya Bot"
+                        }
+                    else:
+                        # Keep minimal metadata with original title
+                        meta = {"title": clean_title}
+                        if art: meta["artist"] = art
+                        if track_num: meta["track"] = track_num
 
                     # ── Health check before each download ──
                     try:
@@ -596,6 +618,7 @@ async def _cl_run_job(job_id: str, bot=None):
 
                     dl_path = await client.download_media(msg, file_name=in_path)
                     if not dl_path or not os.path.exists(str(dl_path)):
+                        msg_id += 1
                         continue
 
                     # Verify complete download
@@ -607,7 +630,7 @@ async def _cl_run_job(job_id: str, bot=None):
                         raise Exception(
                             f"Incomplete download: {dl_size} / {tg_size} bytes. Forcing retry.")
 
-                    await db.update_global_stats(total_files_downloaded=1)
+                    await db.update_global_stats(total_files_downloaded=1, total_data_usage_bytes=dl_size)
 
                     # ── Process ────────────────────────────────────────────────
                     if use_ffmpeg:
@@ -620,6 +643,7 @@ async def _cl_run_job(job_id: str, bot=None):
                             if "Invalid data found" in err:
                                 logger.error(f"[Cleaner {job_id}] Fatal decode error on "
                                              f"{msg_id}: Invalid data. Skipping.")
+                                msg_id += 1
                                 continue
                             raise Exception(f"FFmpeg failed: {err[:500]}")
                     else:
@@ -728,7 +752,7 @@ async def _cl_run_job(job_id: str, bot=None):
                                         caption=upload_caption,
                                         file_name=clean_file, thumb=thumb)
                             uploaded = True
-                            await db.update_global_stats(total_files_uploaded=1)
+                            await db.update_global_stats(total_files_uploaded=1, total_data_usage_bytes=out_size)
                             break
                         except FloodWait as fw:
                             await asyncio.sleep(fw.value + 2)
@@ -752,6 +776,7 @@ async def _cl_run_job(job_id: str, bot=None):
 
                     done += 1
                     fail_count = 0   # reset per successfully processed file
+                    msg_id += 1      # Advance to next message safely
                     await _cl_update_job(job_id, {"files_done": done})
                     logger.info(f"[Cleaner {job_id}] Done {done}: {clean_title}")
                     # Brief cooldown after each file — lets the event loop run other tasks
@@ -763,10 +788,10 @@ async def _cl_run_job(job_id: str, bot=None):
                     continue  # retry same msg
                 except Exception as e:
                     err_str_lower = str(e).lower()
-                    # Connection/network errors: don't penalise fail_count as hard
+                    # Connection/network/transient errors
                     is_transient = any(k in err_str_lower for k in (
-                        "not been started", "not connected", "disconnected",
-                        "connection", "timeout", "network", "flood_wait"
+                        "not connected", "disconnected",
+                        "connection", "timeout", "network", "flood_wait", "forcing retry"
                     ))
                     if is_transient:
                         logger.warning(f"[Cleaner {job_id}] Transient error at msg {msg_id}: {e} — retrying in 10s")
@@ -812,14 +837,21 @@ async def _cl_run_job(job_id: str, bot=None):
                 await _cl_update_job(job_id, {"status": "completed", "error": ""})
                 if bot:
                     try:
-                        await bot.send_message(
-                            uid,
-                            f"<b>🎉 Cleaner Job Completed!</b>\n\n"
-                            f"<b>🧹 Job Name:</b> {base_name}\n"
-                            f"<b>📄 Files Cleaned & Renamed:</b> {done} / {job.get('total_files', 0)}\n"
-                            f"<b>🎯 Range Covered:</b> <code>{base_name} {job.get('starting_number')}</code> ➠ <code>{base_name} {curr_num - 1}</code>\n\n"
-                            f"<i>All files scrubbed, re-encoded (128kbps), metadata sanitized, and uploaded.</i>"
-                        )
+                        if done == 0:
+                            await bot.send_message(
+                                uid,
+                                f"<b>⚠️ Cleaner Job Finished!</b>\n\n"
+                                f"No files were successfully processed. This may happen if the selected message(s) did not contain compatible media, or the client lacked access."
+                            )
+                        else:
+                            await bot.send_message(
+                                uid,
+                                f"<b>🎉 Cleaner Job Completed!</b>\n\n"
+                                f"<b>🧹 Job Name:</b> {base_name}\n"
+                                f"<b>📄 Files Cleaned & Renamed:</b> {done} / {job.get('total_files', 0)}\n"
+                                f"<b>🎯 Range Covered:</b> <code>{base_name} {job.get('starting_number')}</code> ➠ <code>{base_name} {curr_num - 1}</code>\n\n"
+                                f"<i>All files scrubbed, re-encoded (128kbps), metadata sanitized, and uploaded.</i>"
+                            )
                     except Exception as e:
                         logger.warning(f"Failed to send cleaner report: {e}")
             
@@ -1332,6 +1364,7 @@ Do you want to change the file metadata (artist, album, cover image, year, etc.)
         "album": adv_album,
         "genre": adv_genre,
         "cover_file_id": adv_cover,
+        "change_metadata": change_metadata,
         "use_caption": use_caption,
         "account_id": sel_acc.get("id") or acc_id,
         "is_bot": sel_acc.get("is_bot", True),

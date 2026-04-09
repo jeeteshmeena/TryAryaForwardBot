@@ -1020,7 +1020,7 @@ async def settings_query(bot, query):
 
           final_file_id = media_obj.file_id
           import os
-          from pyrogram import Client
+          import pyrogram as _pyro
           from plugins.share_bot import share_clients
           from config import Config
 
@@ -1031,7 +1031,7 @@ async def settings_query(bot, query):
               bot_info = next((bx for bx in await db.get_bots(user_id) if str(bx['id']) == b_id), None)
               if bot_info:
                   try:
-                      sb_client = Client(name=f"tmp_{b_id}", bot_token=bot_info['token'], in_memory=True, api_id=Config.API_ID, api_hash=Config.API_HASH)
+                      sb_client = _pyro.Client(name=f"tmp_{b_id}", bot_token=bot_info['token'], in_memory=True, api_id=Config.API_ID, api_hash=Config.API_HASH)
                       await sb_client.start()
                       should_stop = True
                   except Exception:

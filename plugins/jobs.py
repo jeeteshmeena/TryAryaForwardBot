@@ -340,7 +340,7 @@ async def _forward_message(
                         try:
                             fp = await client.download_media(msg, file_name=safe_name)
                             if fp: 
-                                await db.update_global_stats(total_files_downloaded=1)
+                                await db.update_global_stats(total_files_downloaded=1, total_data_usage_bytes=os.path.getsize(str(fp)))
                                 break
                         except FloodWait as fw:
                             await asyncio.sleep(fw.value + 2)
@@ -366,7 +366,7 @@ async def _forward_message(
                     elif getattr(msg, 'animation', None): await client.send_animation(animation=fp, **up_kw)
                     elif getattr(msg, 'sticker', None): await client.send_sticker(sticker=fp, **up_kw)
                     
-                    await db.update_global_stats(total_files_uploaded=1)
+                    await db.update_global_stats(total_files_uploaded=1, total_data_usage_bytes=os.path.getsize(str(fp)))
                     if os.path.exists(fp): os.remove(fp)
                     return True
                 else:

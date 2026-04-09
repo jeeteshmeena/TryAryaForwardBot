@@ -280,7 +280,8 @@ async def _mj_forward(
                                 try:
                                     fp = await client.download_media(msg, file_name=safe_name)
                                     if fp: 
-                                        await db.update_global_stats(total_files_downloaded=1)
+                                        import os
+                                        await db.update_global_stats(total_files_downloaded=1, total_data_usage_bytes=os.path.getsize(str(fp)))
                                         break
                                 except FloodWait as fw:
                                     await asyncio.sleep(fw.value + 2)
@@ -303,8 +304,8 @@ async def _mj_forward(
                             elif msg.animation: await client.send_animation(animation=fp, **up_kw)
                             elif msg.sticker:  await client.send_sticker(sticker=fp, **up_kw)
                             
-                            await db.update_global_stats(total_files_uploaded=1)
                             import os
+                            await db.update_global_stats(total_files_uploaded=1, total_data_usage_bytes=os.path.getsize(str(fp)) if fp and os.path.exists(str(fp)) else 0)
                             if os.path.exists(fp): os.remove(fp)
                         else:
                             await client.send_message(chat_id=chat, text=new_text if new_text is not None else getattr(msg.text, "html", str(msg.text)) if msg.text else "", **kw)

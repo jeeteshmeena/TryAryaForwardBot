@@ -101,20 +101,6 @@ async def ping_server():
         except Exception as e:
             logging.error(f"Self-ping failed: {e}")
 
-async def stats_tracker():
-    import psutil
-    from database import db
-    last_io = psutil.net_io_counters()
-    while True:
-        await asyncio.sleep(60)
-        curr_io = psutil.net_io_counters()
-        diff = (curr_io.bytes_recv - last_io.bytes_recv) + (curr_io.bytes_sent - last_io.bytes_sent)
-        if diff > 0:
-            try:
-                await db.update_global_stats(total_data_usage_bytes=diff)
-            except Exception as e:
-                logging.error(f"Global stats update error: {e}")
-        last_io = curr_io
 
 async def main():
     bot = Bot()
@@ -154,9 +140,6 @@ async def main():
 
     # Start self-ping task
     asyncio.create_task(ping_server())
-
-    # Start stats tracking task
-    asyncio.create_task(stats_tracker())
 
     # Start system resource monitor (auto-pause on RAM/CPU overload)
     try:

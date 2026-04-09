@@ -191,10 +191,15 @@ async def _post_live_batch(sb_client, job: dict, chunk_msgs: list):
             # User requirement: DELETE the last incomplete post, and CREATE a NEW post.
             # If idx is within old_mids, it means we are replacing a previously sent incomplete block.
             if idx < len(old_mids):
-                try:
-                    await sb_client.delete_messages(target_ch, old_mids[idx])
-                except Exception:
-                    pass
+                for d_attempt in range(5):
+                    try:
+                        await sb_client.delete_messages(target_ch, old_mids[idx])
+                        break
+                    except FloodWait as dfw:
+                        logger.info(f"[LiveBatch] Flood {dfw.value}s on delete")
+                        await asyncio.sleep(dfw.value + 2)
+                    except Exception:
+                        break
             
             for attempt in range(5):
                 try:
@@ -298,7 +303,7 @@ async def _lb_run_job(job_id: str):
                         f"📡 <b>Bᴀᴛᴄʜ Lɪɴᴋs Lɪᴠᴇ Aᴜᴛᴏ-Gᴇɴᴇʀᴀᴛᴏʀ</b>\n\n"
                         f"✅ Auto-Generated Blocks: <code>{fwd_count}</code>\n"
                         f"»  Last updated: <code>{time.strftime('%H:%M:%S')}</code>\n\n"
-                        f"<i>This message updates every 60s. Powered by Arya Forward Bot</i>"
+                        f"<i>This message updates every 60s. Powered by Arya Bot</i>"
                     )
                     prog_id = p.id
                     await _lb_update_job(job_id, {"prog_id": prog_id})
@@ -324,6 +329,13 @@ async def _lb_run_job(job_id: str):
 
             except Exception as e:
                 logger.error(f"Live Batch get_messages error: {e}")
+                err_str = str(e).lower()
+                if "connection" in err_str or "timeout" in err_str:
+                    logger.warning("[LiveBatch] Connection instability detected. Forcing reconnection in next cycle.")
+                    if getattr(src_client, "session_name", None) != "bot":
+                        try: await src_client.disconnect()
+                        except: pass
+                    src_client = None
                 # msgs stays as [] — the loop below safely produces no results
             valid = []
             for m in msgs:
