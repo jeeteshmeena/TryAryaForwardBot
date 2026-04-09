@@ -68,7 +68,7 @@ async def _lj_ensure_client_alive(client):
                     await asyncio.sleep(3)
             else:
                 raise   # not a connection error
-    raise RuntimeError("LiveJob client failed to reconnect after 3 attempts")
+    raise RuntimeError("LIVEJOB_RECONNECT_FAILED: client failed to reconnect after 3 attempts")
 
 
 @Client.on_message(filters.private, group=-12)
@@ -176,9 +176,9 @@ def _passes_filters(msg, disabled_types: list) -> bool:
     return True
 
 
-def _passes_size_limit(msg, max_size_mb: int, max_duration_secs: int) -> bool:
+def _passes_size_limit(msg, max_size_mb: int, max_duration_secs: int, min_dur_secs: int = 0) -> bool:
     """Return True if message is within the per-job size/duration limits.
-    0 means no limit.
+    0 means no limit. min_dur_secs: skip files SHORTER than this value.
     """
     if max_size_mb > 0:
         max_bytes = max_size_mb * 1024 * 1024
@@ -200,6 +200,19 @@ def _passes_size_limit(msg, max_size_mb: int, max_duration_secs: int) -> bool:
                 if dur > max_duration_secs:
                     return False
                 break
+
+    # Min-duration filter: skip files shorter than threshold (e.g. skip 10-sec clips)
+    if min_dur_secs > 0:
+        found_media_with_dur = False
+        for attr in ('video', 'audio', 'voice', 'video_note'):
+            media_obj = getattr(msg, attr, None)
+            if media_obj:
+                dur = getattr(media_obj, 'duration', 0) or 0
+                found_media_with_dur = True
+                if dur < min_dur_secs:
+                    return False
+                break
+        # If the message has no duration-bearing media, don't apply min_dur filter
 
     return True
 
@@ -460,6 +473,8 @@ async def _run_job(job_id: str, user_id: int):
         to_thread_2  = job.get("to_thread_id_2", None)
         max_size_mb  = int(job.get("max_size_mb", 0) or 0)
         max_dur_secs = int(job.get("max_duration_secs", 0) or 0)
+        min_dur_secs = int(job.get("min_duration_secs", 0) or 0)
+        notify_large_mb = int(job.get("notify_large_file_mb", 0) or 0)
         last_seen    = job.get("last_seen_id", 0)
 
         #  First-run init: snapshot latest ID 
@@ -499,9 +514,14 @@ async def _run_job(job_id: str, user_id: int):
                     is_dm_source = True
                     
         try:
-            await client.get_chat(to_chat)
-            if to_chat_2:
-                await client.get_chat(to_chat_2)
+            for _chat in [to_chat] + ([to_chat_2] if to_chat_2 else []):
+                try:
+                    await client.get_chat(_chat)
+                except FloodWait as fw:
+                    logger.warning(f"[Job {job_id}] FloodWait {fw.value}s on get_chat({_chat})")
+                    await asyncio.sleep(fw.value + 2)
+                except Exception:
+                    pass
         except Exception:
             pass
 
@@ -937,11 +957,35 @@ async def _run_job(job_id: str, user_id: int):
                     last_seen = max(last_seen, msg.id)
                     await _update_job(job_id, last_seen_id=last_seen)
                     continue
-                if not _passes_size_limit(msg, max_size_mb, max_dur_secs):
+                if not _passes_size_limit(msg, max_size_mb, max_dur_secs, min_dur_secs):
                     logger.debug(f"[Job {job_id}] Live: skipping msg {msg.id} (size/duration limit)")
                     last_seen = max(last_seen, msg.id)
                     await _update_job(job_id, last_seen_id=last_seen)
                     continue
+
+                # Large-file owner notification
+                if notify_large_mb > 0 and msg.media:
+                    media_obj = None
+                    for _attr in ('document', 'video', 'audio', 'voice', 'animation'):
+                        media_obj = getattr(msg, _attr, None)
+                        if media_obj: break
+                    if media_obj:
+                        file_size_mb = (getattr(media_obj, 'file_size', 0) or 0) / 1024 / 1024
+                        if file_size_mb >= notify_large_mb:
+                            fname = getattr(media_obj, 'file_name', None) or 'file'
+                            dur   = getattr(media_obj, 'duration', 0) or 0
+                            dur_s = f" ({dur//60}m {dur%60}s)" if dur else ""
+                            try:
+                                from config import Config
+                                for _owner in Config.BOT_OWNER_ID:
+                                    await bot.send_message(_owner,
+                                        f"📦 <b>Large File Detected</b> — Live Job <code>{job_id[-6:]}</code>\n\n"
+                                        f"<b>File:</b> <code>{fname}</code>{dur_s}\n"
+                                        f"<b>Size:</b> <code>{file_size_mb:.1f} MB</code> "
+                                        f"(limit: {notify_large_mb} MB)\n"
+                                        f"<b>Source:</b> {job.get('from_title','?')}\n"
+                                        f"<b>Msg ID:</b> <code>{msg.id}</code>")
+                            except Exception: pass
                 try:
                     success = await _forward_message(client, msg, to_chat, remove_caption, cap_tpl, forward_tag,
                                            to_thread, to_chat_2, to_thread_2, replacements, remove_links)
@@ -1000,8 +1044,9 @@ async def _run_job(job_id: str, user_id: int):
         # Define all known transient/connection error signatures
         _TRANSIENT_KEYS = (
             "CONNECTION", "TIMEOUT", "NETWORK", "PING", "SOCKET", "RESET",
-            "NOT BEEN STARTED", "NOT CONNECTED", "DISCONNECTED",  # Pyrogram client dead
-            "CONNECTION LOST"   # explicit string from Pyrogram
+            "NOT BEEN STARTED", "NOT CONNECTED", "DISCONNECTED",
+            "CONNECTION LOST",
+            "LIVEJOB_RECONNECT_FAILED",   # raised by _lj_ensure_client_alive
         )
         
         if "AUTH_KEY_DUPLICATED" in err_str:
@@ -1138,6 +1183,7 @@ async def _render_jobs_list(bot, user_id: int, message_or_query):
                 row.append(InlineKeyboardButton(f"Sᴛᴀʀᴛ [{short}]", callback_data=f"job#start#{jid}"))
                 row.append(InlineKeyboardButton(f"🔁 Rᴇsᴇᴛ [{short}]", callback_data=f"job#reset#{jid}"))
             row.append(InlineKeyboardButton(f"Iɴғᴏ [{short}]", callback_data=f"job#info#{jid}"))
+            row.append(InlineKeyboardButton(f"⚙️ Lɪᴍɪᴛs [{short}]", callback_data=f"job#limits#{jid}"))
             row.append(InlineKeyboardButton(f"✏️ Nᴀᴍᴇ [{short}]", callback_data=f"job#rename#{jid}"))
             row.append(InlineKeyboardButton(f"Dᴇʟᴇᴛᴇ [{short}]",  callback_data=f"job#del#{jid}"))
             btns_list.append(row)
@@ -1234,6 +1280,12 @@ async def job_info_cb(bot, query):
         mins = job['max_duration_secs'] // 60
         secs = job['max_duration_secs'] % 60
         size_lbl += f"\n<b>Max duration:</b> {mins}m {secs}s"
+    if job.get("min_duration_secs"):
+        mins = job['min_duration_secs'] // 60
+        secs = job['min_duration_secs'] % 60
+        size_lbl += f"\n<b>Min duration:</b> {mins}m {secs}s (shorter files skipped)"
+    if job.get("notify_large_file_mb"):
+        size_lbl += f"\n<b>Large file alert:</b> ≥ {job['notify_large_file_mb']} MB → DM to owner"
 
     text = (
         f"<b>»  Live Job Info</b>\n\n"
@@ -1322,6 +1374,76 @@ async def job_del_cb(bot, query):
     await _delete_job_db(job_id)
     await query.answer("»  Job deleted.", show_alert=False)
     await _render_jobs_list(bot, user_id, query)
+
+
+@Client.on_callback_query(filters.regex(r'^job#limits#'))
+async def job_limits_cb(bot, query):
+    """Edit size/duration/notification limits for an existing live job."""
+    job_id  = query.data.split("#", 2)[2]
+    user_id = query.from_user.id
+    job = await _get_job(job_id)
+    if not job or job.get("user_id") != user_id:
+        return await query.answer("⛔ Unauthorized.", show_alert=True)
+    await query.message.delete()
+
+    cur_max_sz  = job.get("max_size_mb", 0) or 0
+    cur_max_dur = (job.get("max_duration_secs", 0) or 0) // 60
+    cur_min_dur = (job.get("min_duration_secs", 0) or 0) // 60
+    cur_notify  = job.get("notify_large_file_mb", 0) or 0
+
+    r = await _ask(bot, user_id,
+        f"<b>⚙️ Edit Limits — Job {job_id[-6:]}</b>\n\n"
+        f"<b>Current settings:</b>\n"
+        f"• Max size: <code>{cur_max_sz} MB</code>\n"
+        f"• Max duration: <code>{cur_max_dur} min</code>\n"
+        f"• Min duration: <code>{cur_min_dur} min</code> (skip shorter files)\n"
+        f"• Large file alert: <code>{cur_notify} MB</code> (0 = off)\n\n"
+        "<b>Send new limits in format:</b>\n"
+        "<code>max_mb : max_min : min_min : alert_mb</code>\n\n"
+        "Examples:\n"
+        "• <code>0:0:0:0</code> — remove all limits\n"
+        "• <code>200:0:1:0</code> — max 200MB, skip files under 1 min, no alert\n"
+        "• <code>0:60:1:300</code> — max 60min, skip files under 1 min, alert at 300MB\n"
+        "• <code>500:0:2:400</code> — max 500MB, min 2min, alert owner at 400MB+\n\n"
+        "<i>Send 0 for any field to remove that limit.</i>",
+        reply_markup=ReplyKeyboardMarkup(
+            [[KeyboardButton(f"{cur_max_sz}:{cur_max_dur}:{cur_min_dur}:{cur_notify}")],
+             [KeyboardButton("⛔ Cᴀɴᴄᴇʟ")]],
+            resize_keyboard=True, one_time_keyboard=True)
+    )
+
+    txt = r.text.strip() if r and r.text else ""
+    if "⛔" in txt or "/cancel" in txt.lower():
+        await bot.send_message(user_id, "<i>Cancelled.</i>", reply_markup=ReplyKeyboardRemove())
+        return await _render_jobs_list(bot, user_id, r)
+
+    parts = [p.strip() for p in txt.split(":")]
+    def _int(v, default=0):
+        try: return max(0, int(v))
+        except: return default
+
+    new_max_sz  = _int(parts[0] if len(parts) > 0 else 0)
+    new_max_dur = _int(parts[1] if len(parts) > 1 else 0) * 60
+    new_min_dur = _int(parts[2] if len(parts) > 2 else 0) * 60
+    new_notify  = _int(parts[3] if len(parts) > 3 else 0)
+
+    await _update_job(job_id,
+        max_size_mb=new_max_sz,
+        max_duration_secs=new_max_dur,
+        min_duration_secs=new_min_dur,
+        notify_large_file_mb=new_notify
+    )
+
+    summary = (
+        f"✅ <b>Limits updated for Job {job_id[-6:]}</b>\n\n"
+        f"• Max size: <code>{'No limit' if not new_max_sz else str(new_max_sz)+' MB'}</code>\n"
+        f"• Max duration: <code>{'No limit' if not new_max_dur else str(new_max_dur//60)+' min'}</code>\n"
+        f"• Min duration: <code>{'Off' if not new_min_dur else str(new_min_dur//60)+' min (shorter files skipped)'}</code>\n"
+        f"• Large file alert: <code>{'Off' if not new_notify else '≥ '+str(new_notify)+' MB → DM owner'}</code>\n\n"
+        f"<i>Changes take effect on the next poll cycle.</i>"
+    )
+    await bot.send_message(user_id, summary, reply_markup=ReplyKeyboardRemove())
+    await _render_jobs_list(bot, user_id, r)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1636,16 +1758,16 @@ async def _create_job_flow(bot, user_id: int):
     # ── Step 7: Size / Duration Limit ─────────────────────────────
     while True:
         limit_r = await _ask(bot, user_id,
-            "<b>Step 7/7 — Per-Job Size/Duration Limit</b>\n\n"
-            "Set a maximum file size and/or duration for this job.\n"
-            "Files above the limit will be <b>silently skipped</b>.\n\n"
+            "<b>Step 7/7 — Size / Duration Limits</b>\n\n"
+            "Set limits for this job. Files outside the limits will be <b>silently skipped</b>.\n\n"
             "<blockquote expandable>"
-            "Format options:\n"
-            "• <code>0</code> — no limit (forward everything)\n"
-            "• <code>50</code> — skip files larger than 50 MB\n"
-            "• <code>50:10</code> — skip files larger than 50 MB <b>or</b> longer than 10 minutes\n"
-            "• <code>0:5</code> — no size limit, but skip files longer than 5 minutes\n\n"
-            "Format: <b>max_mb:max_minutes</b>  (0 = no limit)"
+            "Format: <code>max_mb : max_min : min_min</code>\n\n"
+            "• <code>0</code> — no limits (forward everything)\n"
+            "• <code>200</code> — skip files larger than 200 MB\n"
+            "• <code>200:60</code> — max 200MB, max 60 minutes\n"
+            "• <code>200:60:1</code> — max 200MB, max 60min, <b>skip files under 1 minute</b>\n"
+            "• <code>0:0:2</code> — no size/max-dur limit, but skip files shorter than 2 min\n\n"
+            "<b>Tip:</b> Use min_min to skip short clips (e.g. 10-second files)"
             "</blockquote>",
             reply_markup=ReplyKeyboardMarkup(
                 [[KeyboardButton("0 (No limit)")], [UNDO_BTN, CANCEL_BTN]],
@@ -1669,17 +1791,16 @@ async def _create_job_flow(bot, user_id: int):
 
     max_size_mb     = 0
     max_duration_s  = 0
+    min_duration_s  = 0
     ltext = limit_r.text.strip()
-    if ltext != "0":
-        if ":" in ltext:
-            parts = ltext.split(":", 1)
-            try: max_size_mb    = int(parts[0].strip())
-            except Exception: pass
-            try: max_duration_s = int(parts[1].strip()) * 60
-            except Exception: pass
-        else:
-            try: max_size_mb = int(ltext)
-            except Exception: pass
+    if ltext not in ("0", "0 (No limit)"):
+        parts_l = [p.strip() for p in ltext.split(":")]
+        def _lim_int(v):
+            try: return max(0, int(v))
+            except: return 0
+        max_size_mb   = _lim_int(parts_l[0] if len(parts_l) > 0 else "0")
+        max_duration_s = _lim_int(parts_l[1] if len(parts_l) > 1 else "0") * 60
+        min_duration_s = _lim_int(parts_l[2] if len(parts_l) > 2 else "0") * 60
 
     # ── Save & Start ──────────────────────────────────────────────
     job_id = f"{user_id}-{int(time.time())}"
@@ -1704,6 +1825,8 @@ async def _create_job_flow(bot, user_id: int):
         "batch_done":         False,
         "max_size_mb":        max_size_mb,
         "max_duration_secs":  max_duration_s,
+        "min_duration_secs":  min_duration_s,
+        "notify_large_file_mb": 0,
         "status":             "running",
         "created":            int(time.time()),
         "forwarded":          0,
