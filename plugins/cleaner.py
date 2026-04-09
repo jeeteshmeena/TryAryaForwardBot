@@ -286,8 +286,16 @@ async def _ensure_client_alive(client, acc, uid):
             # A lightweight ping — if the client is dead this will raise
             await asyncio.wait_for(client.get_me(), timeout=15)
             return client   # alive
+        except FloodWait as fw:
+            # API rate limit — wait and retry WITHOUT restarting the client
+            logger.warning(f"[Cleaner] FloodWait {fw.value}s during health check")
+            await asyncio.sleep(fw.value + 2)
+            continue
         except Exception as e:
             err_str = str(e).lower()
+            if "flood_wait" in err_str or "flood wait" in err_str:
+                await asyncio.sleep(60)
+                continue
             if "not been started" in err_str or "not connected" in err_str or "disconnected" in err_str or isinstance(e, asyncio.TimeoutError):
                 logger.warning(f"[Cleaner] Client dead on attempt {attempt+1}: {e} — reconnecting…")
                 # Evict from cache and restart
@@ -466,9 +474,16 @@ async def _cl_run_job(job_id: str, bot=None):
                     base_norm, _re.IGNORECASE)
                 if m:
                     a, b = int(m.group(1)), int(m.group(2))
-                    if 0 < a < 5000 and a <= b < 5000:
-                        # Return the original (un-normalized) slice to preserve en-dash styling
-                        return base[m.start():m.end()].strip()
+                    # a <= b+1 so equal numbers like "30-30" are preserved too
+                    if 0 < a < 5000 and a <= b + 1 < 5001:
+                        # Use base_norm offsets — safe because en/em-dash→hyphen is 1:1 char substitution
+                        start_pos, end_pos = m.start(), m.end()
+                        # Re-map to original base preserving en-dash styling
+                        orig_slice = base[start_pos:end_pos].strip()
+                        # If the extracted slice doesn't look like a range, just join a-b
+                        if orig_slice:
+                            return orig_slice
+                        return f"{a}-{b}" if a != b else str(a)
                 # Single episode number (not a year, not a huge number)
                 nums = [int(x) for x in _re.findall(r'\b(\d{1,4})\b', base_norm)
                         if 0 < int(x) < 5000 and not (1900 <= int(x) <= 2100)]
@@ -747,9 +762,24 @@ async def _cl_run_job(job_id: str, bot=None):
                     await asyncio.sleep(fw.value + 2)
                     continue  # retry same msg
                 except Exception as e:
+                    err_str_lower = str(e).lower()
+                    # Connection/network errors: don't penalise fail_count as hard
+                    is_transient = any(k in err_str_lower for k in (
+                        "not been started", "not connected", "disconnected",
+                        "connection", "timeout", "network", "flood_wait"
+                    ))
+                    if is_transient:
+                        logger.warning(f"[Cleaner {job_id}] Transient error at msg {msg_id}: {e} — retrying in 10s")
+                        try:
+                            client = await _ensure_client_alive(client, None, uid)
+                        except Exception:
+                            pass
+                        await asyncio.sleep(10)
+                        continue  # retry the same msg without incrementing fail_count
+
                     fail_count += 1
                     logger.error(f"[Cleaner {job_id}] Error at msg {msg_id}: {e}")
-                    if fail_count > 3:
+                    if fail_count > 5:
                         err_msg = f"Failed {fail_count}x at msg {msg_id}: {str(e)[:200]}"
                         await _cl_update_job(job_id, {"status": "failed", "error": err_msg})
                         if bot:
@@ -1186,56 +1216,89 @@ async def _create_cl_flow(bot, user_id):
     adv_genre  = df.get("genre", "")
     adv_cover  = df.get("cover", "")
 
-    r_art = await _cl_ask(bot, user_id,
-        f"<b>»  Step 7a/9 — Artist Name</b>\n\n"
-        f"Enter the <b>Artist</b> name.\n"
-        f"<i>Default: {adv_artist or 'None'}. Skip to keep.</i>",
-        reply_markup=markup_s)
-    if _cancelled(r_art): return await _abort()
-    if not _skip(r_art.text or ""): adv_artist = (r_art.text or "").strip()
+    # ── Ask: Change metadata? ────────────────────────────────────
+    # Defaults are already loaded. If user says No, skip all metadata steps
+    # and keep the original file title/name intact.
+    has_defaults = any([adv_artist, adv_year, adv_album, adv_genre, adv_cover])
+    change_meta_info = (
+        f"Current defaults:\n"
+        f"  Artist: {adv_artist or '—'}  |  Year: {adv_year or '—'}  |  Genre: {adv_genre or '—'}\n"
+        f"  Album: {adv_album or '—'}  |  Cover: {'✅ Set' if adv_cover else '—'}\n\n"
+        if has_defaults else ""
+    )
+    r_meta_toggle = await _cl_ask(bot, user_id,
+        f"""<b>»  Step 7/9 — Change Metadata?</b>
 
-    r_alb = await _cl_ask(bot, user_id,
-        f"<b>»  Step 7b/9 — Album Name</b>\n\n"
-        f"Enter the <b>Album</b> name.\n"
-        f"<i>Default: Story name / artist. Skip to use Artist name.</i>",
-        reply_markup=markup_s)
-    if _cancelled(r_alb): return await _abort()
-    if not _skip(r_alb.text or ""): adv_album = (r_alb.text or "").strip()
-    if not adv_album: adv_album = adv_artist
+Do you want to change the file metadata (artist, album, cover image, year, etc.)?
 
-    r_yr = await _cl_ask(bot, user_id,
-        f"<b>»  Step 7c/9 — Year</b>\n\n"
-        f"Enter the <b>Release Year</b> (e.g. <code>2024</code>).\n"
-        f"<i>Default: {adv_year or 'None'}. Skip to leave empty.</i>",
+{change_meta_info}<i>Select <b>Yes</b> to configure metadata, or <b>No</b> to keep the original file title/name unchanged.</i>""",
         reply_markup=ReplyKeyboardMarkup(
-            [["2023", "2024", "2025", "2026"],
-             [SKIP_BTN, CANCEL_BTN]],
-            resize_keyboard=True))
-    if _cancelled(r_yr): return await _abort()
-    if not _skip(r_yr.text or ""): adv_year = (r_yr.text or "").strip()
+            [[KeyboardButton("✅ Yes, Change Metadata"), KeyboardButton("❌ No, Keep Original")],
+             [CANCEL_BTN]],
+            resize_keyboard=True, one_time_keyboard=True))
+    if _cancelled(r_meta_toggle): return await _abort()
+    change_metadata = "yes" in (r_meta_toggle.text or "").lower()
 
-    r_gen = await _cl_ask(bot, user_id,
-        f"<b>»  Step 7d/9 — Genre</b>\n\n"
-        f"Enter the <b>Genre</b> (e.g. <code>Audiobook</code>, <code>Romance</code>, <code>Podcast</code>).\n"
-        f"<i>Default: {adv_genre or 'None'}. Skip to leave empty.</i>",
-        reply_markup=markup_s)
-    if _cancelled(r_gen): return await _abort()
-    if not _skip(r_gen.text or ""): adv_genre = (r_gen.text or "").strip()
+    if change_metadata:
+        r_art = await _cl_ask(bot, user_id,
+            f"<b>»  Step 7a/9 — Artist Name</b>\n\n"
+            f"Enter the <b>Artist</b> name.\n"
+            f"<i>Default: {adv_artist or 'None'}. Skip to keep.</i>",
+            reply_markup=markup_s)
+        if _cancelled(r_art): return await _abort()
+        if not _skip(r_art.text or ""): adv_artist = (r_art.text or "").strip()
 
-    # ── Step 8: Cover Image ──────────────────────────────────────
-    r_cov = await _cl_ask(bot, user_id,
-        f"<b>»  Step 8/9 — Cover Image</b>\n\n"
-        f"Send a <b>photo/image</b> to use as the album cover art for all files.\n"
-        f"<i>{'Current default cover is set. ' if adv_cover else ''}Skip to {'keep existing' if adv_cover else 'use no cover'}.</i>",
-        reply_markup=markup_s,
-        timeout=300)
-    if _cancelled(r_cov): return await _abort()
+        r_alb = await _cl_ask(bot, user_id,
+            f"<b>»  Step 7b/9 — Album Name</b>\n\n"
+            f"Enter the <b>Album</b> name.\n"
+            f"<i>Default: Story name / artist. Skip to use Artist name.</i>",
+            reply_markup=markup_s)
+        if _cancelled(r_alb): return await _abort()
+        if not _skip(r_alb.text or ""): adv_album = (r_alb.text or "").strip()
+        if not adv_album: adv_album = adv_artist
 
-    if r_cov and not _skip(r_cov.text or ""):
-        if r_cov.photo:
-            adv_cover = r_cov.photo.file_id
-        elif r_cov.document and 'image' in (r_cov.document.mime_type or ''):
-            adv_cover = r_cov.document.file_id
+        r_yr = await _cl_ask(bot, user_id,
+            f"<b>»  Step 7c/9 — Year</b>\n\n"
+            f"Enter the <b>Release Year</b> (e.g. <code>2024</code>).\n"
+            f"<i>Default: {adv_year or 'None'}. Skip to leave empty.</i>",
+            reply_markup=ReplyKeyboardMarkup(
+                [["2023", "2024", "2025", "2026"],
+                 [SKIP_BTN, CANCEL_BTN]],
+                resize_keyboard=True))
+        if _cancelled(r_yr): return await _abort()
+        if not _skip(r_yr.text or ""): adv_year = (r_yr.text or "").strip()
+
+        r_gen = await _cl_ask(bot, user_id,
+            f"<b>»  Step 7d/9 — Genre</b>\n\n"
+            f"Enter the <b>Genre</b> (e.g. <code>Audiobook</code>, <code>Romance</code>, <code>Podcast</code>).\n"
+            f"<i>Default: {adv_genre or 'None'}. Skip to leave empty.</i>",
+            reply_markup=markup_s)
+        if _cancelled(r_gen): return await _abort()
+        if not _skip(r_gen.text or ""): adv_genre = (r_gen.text or "").strip()
+
+        # ── Step 8: Cover Image ─────────────────────────────────
+        r_cov = await _cl_ask(bot, user_id,
+            f"<b>»  Step 8/9 — Cover Image</b>\n\n"
+            f"Send a <b>photo/image</b> to use as the album cover art for all files.\n"
+            f"<i>{'Current default cover is set. ' if adv_cover else ''}Skip to {'keep existing' if adv_cover else 'use no cover'}.</i>",
+            reply_markup=markup_s,
+            timeout=300)
+        if _cancelled(r_cov): return await _abort()
+
+        if r_cov and not _skip(r_cov.text or ""):
+            if r_cov.photo:
+                adv_cover = r_cov.photo.file_id
+            elif r_cov.document and 'image' in (r_cov.document.mime_type or ''):
+                adv_cover = r_cov.document.file_id
+    else:
+        # User chose not to change metadata — skip all metadata steps
+        # Also clear metadata so the original file name/title is preserved
+        adv_artist = ""
+        adv_year   = ""
+        adv_album  = ""
+        adv_genre  = ""
+        adv_cover  = ""
+
 
     # ── Step 9: Caption Option ───────────────────────────────────
     r_cap = await _cl_ask(bot, user_id,

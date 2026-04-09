@@ -808,7 +808,9 @@ async def settings_query(bot, query):
               )
 
           # Validate token by starting a temp client
-          test_app = Client(
+          # NOTE: bare 'Client' is rebound to CLIENT() singleton at module level
+          import pyrogram as _pyrogram
+          test_app = _pyrogram.Client(
               f"test_sb_{tk[:8]}", bot_token=tk,
               api_id=_Cfg.API_ID, api_hash=_Cfg.API_HASH, in_memory=True
           )
@@ -1596,7 +1598,8 @@ async def settings_query(bot, query):
       b_id = type.split("sb_about_reset_")[1]
       await db.set_share_bot_about(b_id, {})
       await query.answer("About reset to defaults.")
-      return await edit_settings(client, query, f"sb_about_{b_id}")
+      query.data = f"settings#sb_about_{b_id}"
+      return await settings_query(bot, query)
 
   #  Per-bot Force-Subscribe 
   elif type.startswith("sb_fsub_") and not any(type.startswith(f"sb_fsub_{p}_") for p in ['add', 'jr', 'del']):
@@ -1645,7 +1648,8 @@ async def settings_query(bot, query):
           await db.set_bot_fsub_channels(b_id, fsub_chs)
           status = "ON » " if new_jr else "OFF ‣ "
           await query.answer(f"JR: {status}")
-      return await edit_settings(client, query, f"sb_fsub_{b_id}")
+      query.data = f"settings#sb_fsub_{b_id}"
+      return await settings_query(bot, query)
 
   elif type.startswith("sb_fsub_del_"):
       rest = type[len("sb_fsub_del_"):]
@@ -1656,7 +1660,8 @@ async def settings_query(bot, query):
           fsub_chs.pop(idx)
           await db.set_bot_fsub_channels(b_id, fsub_chs)
           await query.answer("Removed.")
-      return await edit_settings(client, query, f"sb_fsub_{b_id}")
+      query.data = f"settings#sb_fsub_{b_id}"
+      return await settings_query(bot, query)
 
   elif type.startswith("sb_fsub_msg_"):
       b_id = type.split("sb_fsub_msg_")[1]
@@ -1712,7 +1717,8 @@ async def settings_query(bot, query):
       await db.remove_share_bot(b_id)
       await db.remove_share_bot_config(b_id)  # clean up per-bot config too
       await query.answer("Bot Removed!")
-      return await edit_settings(client, query, "sbt_manage")
+      query.data = "settings#sbt_manage"
+      return await settings_query(bot, query)
 
 
 
@@ -1822,7 +1828,8 @@ async def settings_query(bot, query):
          await db.set_share_fsub_channels(fsub_chs)
          status = "ON » " if new_jr else "OFF ‣ "
          await query.answer(f"Join-Request mode: {status}")
-     return await edit_settings(client, query, "sharefsub")
+     query.data = "settings#sharefsub"
+     return await settings_query(bot, query)
 
   elif type.startswith("sharefsub_del_"):
      idx      = int(type.split("_")[-1])
@@ -1831,7 +1838,8 @@ async def settings_query(bot, query):
          removed = fsub_chs.pop(idx)
          await db.set_share_fsub_channels(fsub_chs)
          await query.answer(f"Removed: {removed.get('title','?')}")
-     return await edit_settings(client, query, "sharefsub")
+     query.data = "settings#sharefsub"
+     return await settings_query(bot, query)
 
   elif type == "share_autodelete":
      opts   = [0, 5, 10, 30, 60, 1440]           # minutes; 0 = OFF
@@ -1842,7 +1850,8 @@ async def settings_query(bot, query):
      nxt_idx = (cur_idx + 1) % len(opts)
      await db.set_share_autodelete_global(opts[nxt_idx])
      await query.answer(f"Auto-Delete: {labels[nxt_idx]}")
-     return await edit_settings(client, query, "sharebot")
+     query.data = "settings#sharebot"
+     return await settings_query(bot, query)
 
   elif type == "editsharebot":
      import re
