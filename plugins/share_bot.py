@@ -20,6 +20,17 @@ logger = logging.getLogger(__name__)
 share_clients: dict = {}   # { bot_id_str: Client }
 active_downloads: set = set()
 
+# Peer cache: tracks already-resolved chat_ids per client session.
+# Avoids redundant get_chat() calls on every delivery request.
+_peer_cache: dict = {}    # { (client_id, chat_id): timestamp }
+_PEER_CACHE_TTL = 3600    # 1 hour — re-warm after this long
+
+# Join-request tracking: records that a user has a pending join request.
+# Format: "{chat_id}_{user_id}": timestamp_of_first_request
+# TTL extended to 24h because admin approval can take days.
+_jr_approved: dict = {}
+_JR_TTL = 86400           # 24 hours
+
 # 
 # Arya Bot Font constants
 # 
@@ -103,12 +114,34 @@ async def delete_later(client, chat_id, msg_ids: list, notice_id: int, delay_sec
         pass
 
 
+async def _warm_peer(client, chat_id) -> None:
+    """
+    Resolve chat_id in the client's peer cache.
+    Skips the network call if we've resolved it in the past hour.
+    This avoids the 200-400ms latency spike on every delivery request.
+    """
+    import time
+    client_id = getattr(client, 'me', None)
+    client_id = client_id.id if client_id else id(client)
+    key = (client_id, int(chat_id))
+    if key in _peer_cache and (time.time() - _peer_cache[key]) < _PEER_CACHE_TTL:
+        return   # already warm — skip the network call
+    try:
+        await client.get_chat(int(chat_id))
+        _peer_cache[key] = time.time()
+    except Exception:
+        pass
+
+
 async def check_all_subscriptions(client, user_id: int, fsub_channels: list, bot_id: str = None) -> list:
     """
     Returns list of channel dicts the user has NOT joined.
     For Join-Request channels: if the user already has a PENDING join request
-    (detected by the auto-approve handler), they are treated as joined.
+    (recorded by the JR handler), they are treated as joined for _JR_TTL seconds.
+    Includes 'has_left' flag for users who previously joined but then left,
+    vs 'never_joined' for users who have never been a member.
     """
+    import time
     not_joined = []
     for ch in fsub_channels:
         chat_id = ch.get('chat_id')
@@ -116,41 +149,34 @@ async def check_all_subscriptions(client, user_id: int, fsub_channels: list, bot
             continue
         is_jr = ch.get('join_request', False)
         try:
-            # Pre-warm peer cache (in_memory client)
-            try:
-                await client.get_chat(int(chat_id))
-            except Exception:
-                pass
             member = await client.get_chat_member(int(chat_id), user_id)
             if member.status in (enums.ChatMemberStatus.LEFT, enums.ChatMemberStatus.BANNED):
                 ch_copy = dict(ch)
-                ch_copy['has_left'] = True
+                ch_copy['has_left'] = True    # was a member, explicitly left/banned
                 not_joined.append(ch_copy)
-            # MEMBER / ADMINISTRATOR / OWNER / RESTRICTED = they're in → allow
+            # MEMBER / ADMINISTRATOR / OWNER / RESTRICTED = allow
         except UserNotParticipant:
             if is_jr:
-                # For JR channels: check if this user was already recorded
-                # (JR handler added them to the pending set for instant access)
-                import time
                 uid_key = f"{chat_id}_{user_id}"
-                if uid_key in _jr_approved and (time.time() - _jr_approved[uid_key] < 600):
-                    # Already sent join request recently → treat as joined temporarily
+                if uid_key in _jr_approved and (time.time() - _jr_approved[uid_key] < _JR_TTL):
+                    # Has a pending join request that's still within TTL— treat as joined.
                     pass
                 else:
                     ch_copy = dict(ch)
-                    ch_copy['needs_request'] = True
+                    ch_copy['needs_request'] = True   # never joined JR channel
                     not_joined.append(ch_copy)
             else:
-                not_joined.append(ch)
+                # Non-JR channel: UserNotParticipant = never joined OR left.
+                # We mark it as 'never_joined=True'; the has_left path above
+                # covers the case where they were previously a member.
+                ch_copy = dict(ch)
+                ch_copy['never_joined'] = True
+                not_joined.append(ch_copy)
         except Exception as e:
             logger.warning(f"FSub check skipped for {chat_id}: {e}")
             # Can't verify — fail-open (don't block)
     return not_joined
 
-
-# In-memory dict: tracks users who have sent join requests (to JR channels)
-# Format: "{chat_id}_{user_id}": timestamp
-_jr_approved: dict = {}
 
 
 # 
@@ -160,8 +186,10 @@ _jr_approved: dict = {}
 async def _fsub_record_jr(client, request):
     """
     Record that a user has sent a join request to a JR channel.
-    This grants them instant access to files WITHOUT auto-approving their request.
+    This grants them instant access WITHOUT auto-approving their request.
+    The entry is kept for _JR_TTL (24h) so they don't need to re-send.
     """
+    import time
     bot_id = str(client.me.id) if client.me else None
     fsub_chs = await db.get_bot_fsub_channels(bot_id) if bot_id else []
     if not fsub_chs:
@@ -169,14 +197,13 @@ async def _fsub_record_jr(client, request):
 
     for ch in fsub_chs:
         if str(request.chat.id) == ch.get('chat_id') and ch.get('join_request'):
-            try:
-                # Mark user as having requested to join so FSub check knows they're cleared for 10 minutes
-                import time
-                uid_key = f"{request.chat.id}_{request.from_user.id}"
+            uid_key = f"{request.chat.id}_{request.from_user.id}"
+            # Only update if not already recorded (don't reset the timestamp
+            # on duplicate triggers — we want the FIRST request time)
+            if uid_key not in _jr_approved:
                 _jr_approved[uid_key] = time.time()
-                logger.info(f"Recorded JR for instant access: user {request.from_user.id} in {request.chat.id}")
-            except Exception as e:
-                logger.error(f"FSub JR record failed: {e}")
+                logger.info(f"JR recorded for user {request.from_user.id} in {request.chat.id} (TTL: 24h)")
+            return
 
 
 async def _process_start(client, message):
@@ -225,9 +252,8 @@ async def _process_start(client, message):
     if fsub_channels:
         not_joined = await check_all_subscriptions(client, user_id, fsub_channels, bot_id)
         if not_joined:
-            f_buttons = []  # User needs to join more channels
+            f_buttons = []
             channel_num = 1
-            # Ordinal labels in delivery bot small-caps font style
             _ordinal_sfx = ['ꜱᴛ','ɴᴅ','ʀᴅ','ᴛʜ','ᴛʜ','ᴛʜ','ᴛʜ','ᴛʜ']
             for ch in not_joined:
                 invite  = ch.get('invite_link', '')
@@ -248,21 +274,24 @@ async def _process_start(client, message):
                 )
             ])
 
-            # FSub message from DB or default
+            # FSub message: custom DB text or auto-generated based on situation
             fsub_msg = await db.get_share_bot_text(bot_id, "fsub_msg") if bot_id else ""
             if not fsub_msg:
                 fsub_msg = await db.get_share_text("fsub_msg", "")
             if fsub_msg:
                 txt = format_msg(fsub_msg, message.from_user)
             else:
-                has_jr = any(ch.get('join_request') for ch in not_joined)
                 user_name = message.from_user.first_name or "User"
-                
-                if any(ch.get('has_left') for ch in not_joined):
+                has_jr       = any(ch.get('needs_request') for ch in not_joined)
+                has_left     = any(ch.get('has_left') for ch in not_joined)
+                never_joined = any(ch.get('never_joined') for ch in not_joined)
+
+                if has_left:
+                    # User was previously a member but left — playful/firm reminder
                     import random
                     savage_replies = [
                         "<b>😏 Arey wah! Bade smart ban rahe the?</b>\nChannel chhod ke wapas aa gaye content ke liye? Pehle dobara join karo, phir access milega!",
-                        "<b>🏃‍♂️ Bhag kahan rahe ho?</b>\nSocha channel leave karke files download kar loge? System update ho gaya hai bhai, chup chap join button dabao!",
+                        "<b>🏃\u200d♂️ Bhag kahan rahe ho?</b>\nSocha channel leave karke files download kar loge? System update ho gaya hai bhai, chup chap join button dabao!",
                         "<b>🤡 You thought you could outsmart me?</b>\nYou literally joined, grabbed what you wanted, and LEFT. Well, the door is locked now. Join again if you want the files!",
                         "<b>😹 Ek baar join karke nikal lene se kaam nahi chalta!</b>\nPermanent access chahiye toh permanent ban ke raho. Go click that join button again!",
                         "<b>💀 Caught in 4k!</b>\nYou left the channel but still want the files? It doesn't work like that here. Join us back to proceed.",
@@ -271,31 +300,29 @@ async def _process_start(client, message):
                     ]
                     txt = random.choice(savage_replies)
                 elif has_jr:
+                    # JR channel — join request already pending or needs to be sent
                     txt = (
                         f"<b>🔒  Aᴄᴄᴇss Dᴇɴɪᴇᴅ</b>\n\n"
                         f"Hey <b>{user_name}</b>,\n"
-                        f"You must send a <b>Jᴏɪɴ Rᴇǫᴜᴇsᴛ</b> to the channel(s) below to view this content.\n\n"
-                        f"<i>Once you've sent your request, click <b>Tʀʏ Aɢᴀɪɴ</b> below for instant access!</i>"
+                        f"You must send a <b>Jᴏɪɴ Rᴇǫᴜᴇsᴛ</b> to the channel(s) below."
+                        f" Once your request is approved by the admin you will get access automatically.\n\n"
+                        f"<i>Already sent a request? Tap <b>Tʀʏ Aɢᴀɪɴ</b> — your request is being reviewed!</i>"
                     )
                 else:
+                    # Normal channel — never joined
                     txt = (
                         f"<b>🔒  Aᴄᴄᴇss Dᴇɴɪᴇᴅ</b>\n\n"
                         f"Hey <b>{user_name}</b>,\n"
-                        f"You must join our update channel(s) before you can access these files.\n\n"
-                        f"<i>Once you've joined, click <b>Tʀʏ Aɢᴀɪɴ</b> below to unlock your files!</i>"
+                        f"You must join our update channel(s) below to access these files.\n\n"
+                        f"<b>Steps:</b>\n"
+                        f"① Tap the channel button → Join\n"
+                        f"② Tap <b>Tʀʏ Aɢᴀɪɴ</b> below to unlock your files instantly!"
                     )
             await message.reply_text(txt, reply_markup=InlineKeyboardMarkup(rows))
             return
 
-    # 3. Resolve source channel in this bot's peer cache via get_chat()
-    try:
-        await client.get_chat(source_chat)
-    except Exception as peer_err:
-        logger.warning(f"get_chat peer resolution failed: {peer_err}")
-
-    # Mark user as FSub approved for this bot (they've either passed check or had no FSub requirement)
-    # Don't cache here anymore — user must be checked every time.
-    pass
+    # 3. Warm peer cache for source channel (cached — near-instant on repeat requests)
+    await _warm_peer(client, source_chat)
 
     # Send actual files
     sent_ids = []
