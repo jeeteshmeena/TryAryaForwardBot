@@ -886,6 +886,19 @@ async def _run_job(jid, uid, bot):
         client = await start_clone_bot(_CLIENT.client(acc))
 
         from_chat  = job["from_chat"]
+        
+        # ── Protected Chat Guard ───────────────────────────────────────────────
+        from plugins.utils import check_chat_protection
+        prot_err = await check_chat_protection(uid, from_chat)
+        if prot_err:
+            await _db_up(jid, status="error", error=prot_err)
+            try:
+                await bot.send_message(uid, prot_err)
+            except Exception:
+                pass
+            return
+        # ──────────────────────────────────────────────────────────────────────
+
         start_id   = job["start_id"]
         end_id     = job["end_id"]
         out_name   = job.get("output_name", "merged")

@@ -91,3 +91,53 @@ def format_tg_error(e, context="Scan Error"):
     if "FLOOD_WAIT" in err_str or "420" in err_str:
         return f"<b>‣ {context}: Telegram API Rate Limit</b>\n<i>Too many requests. Please wait a few minutes before trying again.</i>\n\n<code>{err_str}</code>"
     return f"<b>‣ {context}:</b>\n<code>{err_str}</code>"
+
+
+async def check_chat_protection(user_id: int, chat_id) -> str | None:
+    """
+    Checks if the source chat_id is protected from the given user_id.
+    Returns an error message HTML string if blocked, else None.
+    Enforces 'Last Protection' rules where owners/co-owners bypass checks,
+    but normal users are blocked from explicitly protected chats OR any chat
+    registered to an owner/co-owner account.
+    """
+    if not chat_id:
+        return None
+        
+    try:
+        chat_id_int = int(chat_id)
+    except (ValueError, TypeError):
+        chat_id_int = str(chat_id)
+
+    from config import Config
+    
+    user_id_int = int(user_id)
+    is_owner = (user_id_int in Config.BOT_OWNER_ID)
+    is_co_owner = await db.is_co_owner(user_id_int)
+    
+    if is_owner or is_co_owner:
+        return None
+
+    # 1. Globally protected chats (explicitly added by owner)
+    prot = await db.is_chat_protected(chat_id_int)
+    if prot:
+        reason_txt = prot.get('reason', '') or 'Owner has protected this chat.'
+        title_txt  = prot.get('title', str(chat_id_int))
+        return (
+            f"🔒 Protection Active: <b>{title_txt}</b>\n\n"
+            f"This source chat is protected by the owner and cannot be used "
+            f"as a forwarding source.\n\n"
+            f"<i>Reason: {reason_txt}</i>"
+        )
+        
+    # 2. Implicit protection: Channels registered to Owner/Co-owners
+    owners = list(Config.BOT_OWNER_ID) + await db.get_co_owners()
+    for oid in set(owners):
+        if await db.in_channel(oid, chat_id_int):
+            return (
+                f"🔒 Protection Active\n\n"
+                f"This source chat belongs to the bot's administrators. "
+                f"You are not allowed to forward content from it."
+            )
+
+    return None

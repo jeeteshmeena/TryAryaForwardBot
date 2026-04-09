@@ -311,18 +311,18 @@ async def _mj_forward(
                         return False
 
                 # If transient, try to heal before retrying
-                is_transient = any(k in err for k in ("TIMEOUT", "CONNECTION", "READ", "RESET", "NOT BEEN STARTED", "DISCONNECTED", "NOT CONNECTED"))
+                is_transient = any(k in err for k in ("TIMEOUT", "CONNECTION", "READ", "RESET", "NOT BEEN STARTED", "DISCONNECTED", "NOT CONNECTED", "PING", "FLOOD"))
                 if is_transient:
                     try:
-                        # Attempt healing (note we use global _mj_ensure_client_alive or just basic wait here)
-                        # We don't have job_id here but we can heal the client
-                        pass # Actually we'll handle healing right before _mj_forward in the main loop to keep it simple
+                        pass 
                     except Exception:
                         pass
                 
                 # For transient errors, retry up to 4 attempts
                 if _send_attempt >= 3:
                     logger.warning(f"[MultiJob _send_one] All retries exhausted for msg {msg.id} to {chat}: {exc}")
+                    if is_transient:
+                        raise ConnectionError(f"Transient error persisted after 4 retries: {exc}")
                     return False
                 await asyncio.sleep(5 * (_send_attempt + 1))
                 continue
@@ -394,6 +394,19 @@ async def _run_multijob(job_id: str, user_id: int, bot=None):
         to_thread   = job.get("to_thread_id")
         to_chat_2   = job.get("to_chat_2")
         to_thread_2 = job.get("to_thread_id_2")
+        
+        # ── Protected Chat Guard ───────────────────────────────────────────────
+        from plugins.utils import check_chat_protection
+        prot_err = await check_chat_protection(job["user_id"], from_chat)
+        if prot_err:
+            await _mj_update(job_id, status="error", error=prot_err)
+            try:
+                await bot.send_message(job["user_id"], prot_err)
+            except Exception:
+                pass
+            return
+        # ──────────────────────────────────────────────────────────────────────
+
         end_id      = int(job.get("end_id") or 0)
         current     = int(job.get("current_id") or job.get("start_id") or 1)
 

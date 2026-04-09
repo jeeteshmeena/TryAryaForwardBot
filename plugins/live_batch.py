@@ -228,6 +228,19 @@ async def _lb_run_job(job_id: str):
         try:
             source = job["source"]
             target = job["target"]
+            
+            # ── Protected Chat Guard ───────────────────────────────────────────────
+            from plugins.utils import check_chat_protection
+            prot_err = await check_chat_protection(job["user_id"], source)
+            if prot_err:
+                await _lb_update_job(job_id, status="error", error=prot_err)
+                try:
+                    await BOT_INSTANCE.send_message(job["user_id"], prot_err)
+                except Exception:
+                    pass
+                return
+            # ──────────────────────────────────────────────────────────────────────
+            
             thresh = job["threshold"]
             last_seen = job.get("last_seen_id", 0)
             buffer_mids = job.get("buffer_mids", [])

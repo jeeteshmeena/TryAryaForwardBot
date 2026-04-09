@@ -2252,13 +2252,14 @@ async def settings_query(bot, query):
     btn.append([InlineKeyboardButton('Rᴇᴍᴏᴠᴇ Aʟʟ', 'settings#rmve_all_extension')])
     btn.append([InlineKeyboardButton('❮ Bᴀᴄᴋ', 'settings#main')])
     await query.message.edit_text(
-        text='<b><u>EXTENSIONS</u></b>\n\n**Files with these extiontions will not forward**',
+        text='<b><u>EXTENSIONS</u></b>\n\n**Files with these extensions will not forward**',
         reply_markup=InlineKeyboardMarkup(btn))
-  
+      
   elif type == "rmve_all_extension":
     await update_configs(user_id, 'extension', None)
     await query.message.edit_text(text="**successfully deleted**",
                                    reply_markup=InlineKeyboardMarkup(buttons))
+                                   
   elif type == "add_keyword":
     await query.message.delete()
     ask = await bot.ask(user_id, text="**please send the keywords (seperete by space)**")
@@ -2277,7 +2278,7 @@ async def settings_query(bot, query):
     await ask.reply_text(
         f"**successfully updated**",
         reply_markup=InlineKeyboardMarkup(buttons))
-  
+        
   elif type == "get_keyword":
     keywords = (await get_configs(user_id))['keywords']
     btn = extract_btn(keywords)
@@ -2287,8 +2288,6 @@ async def settings_query(bot, query):
     await query.message.edit_text(
         text='<b><u>KEYWORDS</u></b>\n\n**File with these keywords in file name will forwad**',
         reply_markup=InlineKeyboardMarkup(btn))
-      
-  elif type == "rmve_all_keyword":
     await update_configs(user_id, 'keywords', None)
     await query.message.edit_text(text="**successfully deleted**",
                                    reply_markup=InlineKeyboardMarkup(buttons))

@@ -623,7 +623,14 @@ async def _cl_run_job(job_id: str, bot=None):
                     # ── Upload with media-type awareness ────────────────────────
                     replace_mode   = job.get("replace_mode", False)
                     replace_msg_id = job.get("replace_start_msg_id", 0)
-                    upload_client  = bot if (dest_ch == uid and bot) else client
+                    
+                    # Prevent Bot API 50MB limit issues by forcing userbot for large files
+                    out_size = os.path.getsize(out_path) if os.path.exists(out_path) else 0
+                    if (dest_ch == uid and bot) and out_size < (45 * 1024 * 1024) and not replace_mode:
+                        upload_client = bot
+                    else:
+                        upload_client = client
+                        
                     thumb = local_cover if (local_cover and os.path.exists(local_cover)) else None
                     uploaded = False
                     upload_caption = f"**{clean_file}**" if job.get("use_caption", True) else ""

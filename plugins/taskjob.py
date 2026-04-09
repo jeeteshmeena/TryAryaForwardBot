@@ -315,6 +315,22 @@ async def _run_task_job(job_id: str, user_id: int):
         end_id    = job.get("end_id", 0)   # 0 = no fixed end (all messages)
         current   = job.get("current_id", job.get("start_id", 1))
 
+        # ── Protected Chat Guard ───────────────────────────────────────────────
+        from plugins.utils import check_chat_protection
+        prot_err = await check_chat_protection(job["user_id"], from_chat)
+        if prot_err:
+            await _tj_update(job_id, status="error", error=prot_err)
+            try:
+                # Use bot instead of clone client to notify user since clone is busy or err
+                from .test import CLIENT
+                _fallback_bot = CLIENT().client(acc) if not is_bot else client
+                await _fallback_bot.send_message(job["user_id"], prot_err)
+            except Exception:
+                pass
+            return
+        # ──────────────────────────────────────────────────────────────────────
+
+
         await _tj_update(job_id, status="running", error="", start_time=time.time(), forwarded=job.get("forwarded", 0))
         logger.info(f"[TaskJob {job_id}] Started. current={current} end={end_id}")
 

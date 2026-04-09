@@ -133,48 +133,60 @@ async def _warm_peer(client, chat_id) -> None:
         pass
 
 
+_fsub_user_cache = {}  # { "uid_chatid": expiration_timestamp }
+
 async def check_all_subscriptions(client, user_id: int, fsub_channels: list, bot_id: str = None) -> list:
     """
     Returns list of channel dicts the user has NOT joined.
-    For Join-Request channels: if the user already has a PENDING join request
-    (recorded by the JR handler), they are treated as joined for _JR_TTL seconds.
-    Includes 'has_left' flag for users who previously joined but then left,
-    vs 'never_joined' for users who have never been a member.
+    For Join-Request channels: if the user already has a PENDING join request,
+    they are treated as joined for 24h.
     """
     import time
     not_joined = []
+    now = time.time()
     for ch in fsub_channels:
         chat_id = ch.get('chat_id')
         if not chat_id:
             continue
+            
+        # Fast local cache check
+        cache_key = f"{user_id}_{chat_id}"
+        if cache_key in _fsub_user_cache and _fsub_user_cache[cache_key] > now:
+            continue
+            
         is_jr = ch.get('join_request', False)
+        # Try to resolve numeric chat_id if username
         try:
-            member = await client.get_chat_member(int(chat_id), user_id)
+            numeric_chat_id = await client.resolve_peer(chat_id)
+            c_int = await client.get_chat(chat_id)
+            ch_id_int = c_int.id
+        except Exception:
+            ch_id_int = int(chat_id) if str(chat_id).lstrip('-').isdigit() else chat_id
+
+        try:
+            member = await client.get_chat_member(ch_id_int, user_id)
             if member.status in (enums.ChatMemberStatus.LEFT, enums.ChatMemberStatus.BANNED):
                 ch_copy = dict(ch)
-                ch_copy['has_left'] = True    # was a member, explicitly left/banned
+                ch_copy['has_left'] = True
                 not_joined.append(ch_copy)
-            # MEMBER / ADMINISTRATOR / OWNER / RESTRICTED = allow
+            else:
+                _fsub_user_cache[cache_key] = now + 120  # Cache success for 2 mins
         except UserNotParticipant:
             if is_jr:
-                uid_key = f"{chat_id}_{user_id}"
-                if uid_key in _jr_approved and (time.time() - _jr_approved[uid_key] < _JR_TTL):
-                    # Has a pending join request that's still within TTL— treat as joined.
-                    pass
+                # Check persistent DB for join requests
+                jr_doc = await db.db["pending_jrs"].find_one({"user_id": user_id, "chat_id": ch_id_int})
+                if jr_doc and (now - jr_doc.get("timestamp", 0) < _JR_TTL):
+                    _fsub_user_cache[cache_key] = now + 120
                 else:
                     ch_copy = dict(ch)
-                    ch_copy['needs_request'] = True   # never joined JR channel
+                    ch_copy['needs_request'] = True
                     not_joined.append(ch_copy)
             else:
-                # Non-JR channel: UserNotParticipant = never joined OR left.
-                # We mark it as 'never_joined=True'; the has_left path above
-                # covers the case where they were previously a member.
                 ch_copy = dict(ch)
                 ch_copy['never_joined'] = True
                 not_joined.append(ch_copy)
         except Exception as e:
             logger.warning(f"FSub check skipped for {chat_id}: {e}")
-            # Can't verify — fail-open (don't block)
     return not_joined
 
 
@@ -185,9 +197,7 @@ async def check_all_subscriptions(client, user_id: int, fsub_channels: list, bot
 
 async def _fsub_record_jr(client, request):
     """
-    Record that a user has sent a join request to a JR channel.
-    This grants them instant access WITHOUT auto-approving their request.
-    The entry is kept for _JR_TTL (24h) so they don't need to re-send.
+    Record that a user has sent a join request to a JR channel in persistent DB.
     """
     import time
     bot_id = str(client.me.id) if client.me else None
@@ -196,13 +206,16 @@ async def _fsub_record_jr(client, request):
         fsub_chs = await db.get_share_fsub_channels()
 
     for ch in fsub_chs:
-        if str(request.chat.id) == ch.get('chat_id') and ch.get('join_request'):
-            uid_key = f"{request.chat.id}_{request.from_user.id}"
-            # Only update if not already recorded (don't reset the timestamp
-            # on duplicate triggers — we want the FIRST request time)
-            if uid_key not in _jr_approved:
-                _jr_approved[uid_key] = time.time()
-                logger.info(f"JR recorded for user {request.from_user.id} in {request.chat.id} (TTL: 24h)")
+        # Match chat ID
+        ch_id = ch.get('chat_id')
+        req_ch_id = request.chat.id
+        if ((str(req_ch_id) == str(ch_id)) or (str(request.chat.username).lower() == str(ch_id).strip('@').lower())) and ch.get('join_request'):
+            await db.db["pending_jrs"].update_one(
+                {"user_id": request.from_user.id, "chat_id": req_ch_id},
+                {"$setOnInsert": {"timestamp": time.time()}},  # only set if inserting (preserves first request time)
+                upsert=True
+            )
+            logger.info(f"JR recorded for user {request.from_user.id} in {req_ch_id} (TTL: 24h)")
             return
 
 
