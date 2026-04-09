@@ -75,7 +75,7 @@ async def _mj_ensure_client_alive(client):
                     await asyncio.sleep(3)
             else:
                 raise   # not a connection error — let caller handle it
-    raise RuntimeError("MultiJob client failed to reconnect after 3 attempts")
+    raise RuntimeError("MULTIJOB_RECONNECT_FAILED: client failed to reconnect after 3 attempts")
 
 
 from pyrogram import ContinuePropagation
@@ -418,9 +418,14 @@ async def _run_multijob(job_id: str, user_id: int, bot=None):
                     is_dm_source = True
         
         try:
-            await client.get_chat(to_chat)
-            if to_chat_2:
-                await client.get_chat(to_chat_2)
+            for _wchat in [to_chat] + ([to_chat_2] if to_chat_2 else []):
+                try:
+                    await client.get_chat(_wchat)
+                except FloodWait as fw:
+                    logger.warning(f"[MultiJob {job_id}] FloodWait {fw.value}s on get_chat({_wchat})")
+                    await asyncio.sleep(fw.value + 2)
+                except Exception:
+                    pass
         except Exception:
             pass
 
@@ -517,12 +522,14 @@ async def _run_multijob(job_id: str, user_id: int, bot=None):
                 if not fresh2 or fresh2.get("status") in ("stopped",):
                     return
                 if not _passes_filters(msg, disabled_types):
-                        current = msg.id + 1
-                        await _mj_update(job_id, current_id=current)
-                        continue
+                    current = msg.id + 1
+                    await _mj_update(job_id, current_id=current)
+                    continue
                 _remove_links = 'links' in disabled_types
-                
-                # Heal client connection before forward to avoid failure skipping!
+
+                # CHECKPOINT: record we're AT this message before forwarding
+                await _mj_update(job_id, current_id=msg.id)
+
                 client = await _mj_ensure_client_alive(client)
                 success = await _mj_forward(client, msg, to_chat, remove_caption, cap_tpl, forward_tag,
                                    to_thread, to_chat_2, to_thread_2, replacements, _remove_links)
@@ -530,6 +537,8 @@ async def _run_multijob(job_id: str, user_id: int, bot=None):
                 await _mj_update(job_id, current_id=current)
                 if success:
                     await _mj_inc(job_id, 1)
+                else:
+                    logger.warning(f"[MultiJob {job_id}] DM: Forward of msg {msg.id} failed — advancing past")
 
                 now_mj = time.time()
                 if mj_prog_msg_id and (now_mj - mj_last_prog_update) >= 10:
@@ -664,21 +673,24 @@ async def _run_multijob(job_id: str, user_id: int, bot=None):
                     await _mj_update(job_id, status="error", error=f"Source Invalid: {e}")
                     break
                     
-                is_transient = any(k in err_str for k in ("TIMEOUT", "CONNECTION", "READ", "RESET", "NOT BEEN STARTED", "DISCONNECTED", "NOT CONNECTED"))
+                is_transient = any(k in err_str for k in (
+                    "TIMEOUT", "CONNECTION", "READ", "RESET", "DISCONNECT",
+                    "NOT BEEN STARTED", "NOT CONNECTED", "CLOSED DATABASE",
+                    "NETWORK", "SOCKET", "PING", "MULTIJOB_RECONNECT_FAILED"
+                ))
                 if is_transient:
-                    logger.warning(f"[MultiJob {job_id}] Client connection issue at {current}: {e}. Healing...")
+                    logger.warning(f"[MultiJob {job_id}] Transient fetch error at {current}: {e}. Healing client...")
                     try:
                         client = await _mj_ensure_client_alive(client)
                     except Exception: pass
-                    # Do NOT advance current! Wait and retry the same batch.
-                    await asyncio.sleep(5)
+                    # CRITICAL: Do NOT advance current — retry the same batch.
+                    await asyncio.sleep(10)
                     continue
-                    
-                logger.warning(f"[MultiJob {job_id}] Unknown fetch error at {current}: {e}")
-                await asyncio.sleep(10)
-                # For non-transient API errors, skip the faulty batch to prevent infinite freezing
-                current += BATCH_SIZE
-                await _mj_update(job_id, current_id=current)
+
+                # Unknown / non-transient API error — do NOT skip hundreds of IDs.
+                # Sleep and retry; if it keeps happening the outer handler will catch it.
+                logger.warning(f"[MultiJob {job_id}] Unknown fetch error at {current}: {e} — retrying batch in 30s")
+                await asyncio.sleep(30)
                 continue
 
             valid = [m for m in msgs if m and not m.empty]
@@ -759,19 +771,33 @@ async def _run_multijob(job_id: str, user_id: int, bot=None):
                     await _mj_update(job_id, current_id=current)
                     continue
 
-                # Heal client connection before forward to avoid failure skipping!
+                # ── CHECKPOINT before forwarding ──────────────────────────────────
+                # Write current_id = msg.id BEFORE attempting the forward.
+                # If the bot crashes or the connection dies mid-forward, the DB
+                # still points AT this message so restart will retry it — not skip it.
+                # old code wrote msg.id+1 AFTER forward; if forward failed and the
+                # job then crashed, the cursor was already past the failed message.
+                await _mj_update(job_id, current_id=msg.id)
+                # ─────────────────────────────────────────────────────────────────
+
+                # Heal client connection before forward
                 client = await _mj_ensure_client_alive(client)
 
-                # Get links-filter flag for caption stripping
                 _remove_links = 'links' in disabled_types
                 success = await _mj_forward(client, msg, to_chat, remove_caption, cap_tpl, forward_tag,
                                    to_thread, to_chat_2, to_thread_2, replacements, _remove_links)
-                
+
+                # Advance cursor past this message in all cases.
+                # If success=False it means _mj_forward exhausted its 4 retries
+                # (permanently skippable content — protected/restricted/wrong type).
+                # We still advance so the job doesn't stall on unforwardable content.
                 current = msg.id + 1
                 await _mj_update(job_id, current_id=current)
                 if success:
                     await _mj_inc(job_id, 1)
-                
+                else:
+                    logger.warning(f"[MultiJob {job_id}] Forward of msg {msg.id} failed after retries — advancing past it")
+
                 await asyncio.sleep(sleep_secs)
 
             # Advance cursor — guard against valid being empty after topic-filter
@@ -809,14 +835,41 @@ async def _run_multijob(job_id: str, user_id: int, bot=None):
                 asyncio.create_task(_del_cancelled_prog())
             except Exception: pass
     except Exception as e:
-        logger.error(f"[MultiJob {job_id}] Fatal: {e}", exc_info=True)
-        await _mj_update(job_id, status="error", error=str(e))
-        if client and mj_prog_msg_id:
+        err_str = str(e)
+        err_upper = err_str.upper()
+        _MJ_TRANSIENT = (
+            "CONNECTION", "TIMEOUT", "NETWORK", "PING", "SOCKET", "RESET",
+            "NOT BEEN STARTED", "NOT CONNECTED", "DISCONNECTED",
+            "CONNECTION LOST", "CLOSED DATABASE",
+            "MULTIJOB_RECONNECT_FAILED",   # raised by _mj_ensure_client_alive
+        )
+        if any(kw in err_upper for kw in _MJ_TRANSIENT):
+            # Transient network / connection error — auto-restart instead of
+            # permanently marking the job as error so no files are missed.
+            logger.warning(f"[MultiJob {job_id}] Transient outer error: {err_str} — auto-restarting in 30s")
+            await _mj_update(job_id, error=f"[Auto-reconnect] {err_str[:80]}")
+            # Keep status=running so the UI stays green and the job resumes.
+            async def _mj_auto_resume():
+                await asyncio.sleep(30)
+                _mj_start_task(job_id, user_id, bot=bot)
+            asyncio.create_task(_mj_auto_resume())
+        elif "AUTH_KEY_DUPLICATED" in err_str:
+            logger.warning(f"[MultiJob {job_id}] AUTH_KEY_DUPLICATED — pausing")
+            await _mj_update(job_id, status="paused",
+                             error="Session conflict (AUTH_KEY_DUPLICATED). Restart the job.")
+        else:
+            logger.error(f"[MultiJob {job_id}] Fatal: {e}", exc_info=True)
+            await _mj_update(job_id, status="error", error=err_str[:120])
+        # Only mark progress bar as error for truly fatal failures.
+        # For transient/AUTH errors, the job is auto-restarting — keep current bar state.
+        is_transient_outer = any(kw in err_upper for kw in _MJ_TRANSIENT)
+        if client and mj_prog_msg_id and not is_transient_outer and "AUTH_KEY_DUPLICATED" not in err_str:
             try:
                 fj = await _mj_get(job_id)
                 _fwd = fj.get("forwarded", 0) if fj else 0
                 await client.edit_message_text(to_chat, mj_prog_msg_id, _mj_prog_text(_fwd, mj_total, "error"), parse_mode=__import__("pyrogram.enums", fromlist=["ParseMode"]).ParseMode.HTML)
             except Exception: pass
+
     finally:
         _mj_tasks.pop(job_id, None)
         _mj_paused.pop(job_id, None)
