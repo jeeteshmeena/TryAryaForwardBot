@@ -547,9 +547,18 @@ class Database:
        bot = await self.bot.find_one({'user_id': user_id})
        return bool(bot)
                                           
-    async def in_channel(self, user_id: int, chat_id: int) -> bool:
-       channel = await self.chl.find_one({"user_id": int(user_id), "chat_id": int(chat_id)})
-       return bool(channel)
+    async def in_channel(self, user_id, chat_id) -> bool:
+       try:
+           channel = await self.chl.find_one({"user_id": int(user_id), "chat_id": int(chat_id)})
+           return bool(channel)
+       except (ValueError, TypeError):
+           # If chat_id is a string (e.g. username), check by username
+           clean_username = str(chat_id).replace("@", "").replace("https://t.me/", "").strip()
+           channel = await self.chl.find_one({
+               "user_id": int(user_id), 
+               "username": {"$regex": f"^{clean_username}$", "$options": "i"}
+           })
+           return bool(channel)
     
     async def add_channel(self, user_id: int, chat_id: int, title, username):
        channel = await self.in_channel(user_id, chat_id)
@@ -662,7 +671,14 @@ class Database:
         """Returns the protected chat doc if chat_id is protected, else None."""
         chats = await self.get_protected_chats()
         for c in chats:
-            if str(c['chat_id']) == str(chat_id):
+            db_cid = str(c['chat_id'])
+            query_cid = str(chat_id)
+            if db_cid == query_cid:
+                return c
+            # Soft match for usernames
+            db_clean = db_cid.replace("@", "").replace("https://t.me/", "").strip().lower()
+            q_clean = query_cid.replace("@", "").replace("https://t.me/", "").strip().lower()
+            if db_clean and q_clean and db_clean == q_clean:
                 return c
         return None
 

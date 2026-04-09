@@ -40,6 +40,15 @@ async def pub_(bot, message):
     download_mode = data.get('download', False)
     if not _bot:
       return await msg_edit(m, "<code>You didn't added any bot. Please add a bot using /settings !</code>", wait=True)
+      
+    # ── Protected Chat Guard ───────────────────────────────────────────────
+    from plugins.utils import check_chat_protection
+    prot_err = await check_chat_protection(user, sts.get("FROM"))
+    if prot_err:
+        await msg_edit(m, prot_err)
+        return
+    # ──────────────────────────────────────────────────────────────────────
+    
     try:
       client = await start_clone_bot(CLIENT.client(_bot))
     except Exception as e:  

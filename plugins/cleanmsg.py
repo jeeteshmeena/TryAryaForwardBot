@@ -491,6 +491,14 @@ async def cleanmsg_confirm(bot, query):
 
     for chat_id in selected_chats:
         try:
+            # ── Protected Chat Guard ───────────────────────────────────────────────
+            from plugins.utils import check_chat_protection
+            prot_err = await check_chat_protection(user_id, chat_id)
+            if prot_err:
+                failed_chats.append(f"{chat_id} (Protected/Denied)")
+                continue
+            # ──────────────────────────────────────────────────────────────────────
+            
             await status_msg.edit_text(
                 f"<b>🗑 Cleaning…\n✅ Deleted so far: <code>{grand_total}</code></b>"
             )

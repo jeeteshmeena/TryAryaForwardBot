@@ -380,6 +380,18 @@ async def _cl_run_job(job_id: str, bot=None):
             # Setup
             from_ch = job["from_chat"]
             dest_ch = job["dest_chat"]
+            
+            # ── Protected Chat Guard ───────────────────────────────────────────────
+            from plugins.utils import check_chat_protection
+            prot_err = await check_chat_protection(uid, from_ch)
+            if prot_err:
+                await _cl_update_job(job_id, {"status": "failed", "error": prot_err})
+                if bot:
+                    try: await bot.send_message(uid, prot_err)
+                    except Exception: pass
+                return
+            # ──────────────────────────────────────────────────────────────────────
+
             sid = job["start_id"]
             eid = job["end_id"]
             done = job.get("files_done", 0)

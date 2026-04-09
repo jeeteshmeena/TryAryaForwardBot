@@ -199,7 +199,9 @@ async def run(bot, message):
 
     if chat_id != "me":
         try:
-            title = (await bot.get_chat(chat_id)).title
+            _chat = await bot.get_chat(chat_id)
+            title = _chat.title
+            chat_id = _chat.id
       #  except ChannelInvalid:
             #return await fromid.reply("**Given source chat is copyrighted channel/group. you can't forward messages from there**")
         except (PrivateChat, ChannelPrivate, ChannelInvalid):
