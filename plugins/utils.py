@@ -97,28 +97,61 @@ async def check_chat_protection(user_id: int, chat_id) -> str | None:
     """
     Checks if the source chat_id is protected from the given user_id.
     Returns an error message HTML string if blocked, else None.
-    Enforces 'Last Protection' rules where owners/co-owners bypass checks,
-    but normal users are blocked from explicitly protected chats OR any chat
-    registered to an owner/co-owner account.
+
+    Enforcement rules:
+    1. Owners/co-owners always bypass all checks.
+    2. If the BOT itself (numeric ID from BOT_TOKEN, or its username) is in the
+       protected_chats list → ALL non-owner forwarding is blocked globally.
+    3. If the source chat_id is in the protected_chats list → blocked.
+    4. If the source chat is registered to an owner/co-owner → blocked.
     """
     if not chat_id:
         return None
-        
+
     try:
         chat_id_int = int(chat_id)
     except (ValueError, TypeError):
         chat_id_int = str(chat_id)
 
     from config import Config
-    
+
     user_id_int = int(user_id)
     is_owner = (user_id_int in Config.BOT_OWNER_ID)
     is_co_owner = await db.is_co_owner(user_id_int)
-    
+
     if is_owner or is_co_owner:
         return None
 
-    # 1. Globally protected chats (explicitly added by owner)
+    # ── Global Bot Lock: bot ID or username in the protection list ────────────
+    # If the owner adds the bot's own ID/username to the protected list,
+    # it acts as a global forwarding lock — no non-owner can run any job.
+    # Bot numeric ID = the number before ':' in BOT_TOKEN (e.g. 123456789:ABC...)
+    try:
+        bot_numeric_id = int(Config.BOT_TOKEN.split(":")[0])
+        bot_global_lock = await db.is_chat_protected(bot_numeric_id)
+        if not bot_global_lock:
+            # Also check for any stored username like "@aryabot" or "aryabot"
+            # by scanning the protected list for entries that look like usernames (no -)
+            protected_list = await db.get_protected_chats()
+            for entry in protected_list:
+                cid = str(entry.get("chat_id", "")).lstrip("@").strip().lower()
+                # Username entries: no leading '-', not purely numeric
+                if cid and not cid.lstrip("-").isdigit():
+                    # This is a username entry — treat it as a global bot lock
+                    # (owner added @botusername to signify global block)
+                    bot_global_lock = entry
+                    break
+        if bot_global_lock:
+            reason_txt = bot_global_lock.get('reason', '') or 'The bot owner has disabled forwarding.'
+            return (
+                f"🔒 <b>Forwarding Disabled</b>\n\n"
+                f"The bot owner has temporarily disabled forwarding for all users.\n\n"
+                f"<i>Reason: {reason_txt}</i>"
+            )
+    except Exception:
+        pass  # Never block due to parsing errors
+
+    # ── 1. Globally protected source chats ────────────────────────────────────
     prot = await db.is_chat_protected(chat_id_int)
     if prot:
         reason_txt = prot.get('reason', '') or 'Owner has protected this chat.'
@@ -129,8 +162,8 @@ async def check_chat_protection(user_id: int, chat_id) -> str | None:
             f"as a forwarding source.\n\n"
             f"<i>Reason: {reason_txt}</i>"
         )
-        
-    # 2. Implicit protection: Channels registered to Owner/Co-owners
+
+    # ── 2. Implicit protection: channels registered to Owner/Co-owners ────────
     owners = list(Config.BOT_OWNER_ID) + await db.get_co_owners()
     for oid in set(owners):
         if await db.in_channel(oid, chat_id_int):
@@ -141,6 +174,7 @@ async def check_chat_protection(user_id: int, chat_id) -> str | None:
             )
 
     return None
+
 
 
 # ── Channel Search Picker (shared across all jobs/wizards) ────────────────────
