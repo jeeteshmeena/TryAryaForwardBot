@@ -626,25 +626,29 @@ async def _cl_run_job(job_id: str, bot=None):
 
                     # ── Determine output title ──
                     change_meta = job.get("change_metadata", True)
+                    rename_files = job.get("rename_files", True)  # True = use base_name, False = keep original
                     ep_label = _extract_ep_label(orig_fn) if orig_fn else ''
-                    
-                    # Title always comes from original filename (user preserves it)
-                    if orig_fn:
-                        clean_title = os.path.splitext(orig_fn)[0]
+
+                    if rename_files:
+                        # User wants renaming: use base_name + episode/number
+                        if ep_label:
+                            clean_title = f"{base_name} {ep_label}"
+                        else:
+                            clean_title = f"{base_name} {curr_num}"
                     else:
-                        clean_title = f"{base_name} {curr_num}" if not ep_label else f"{base_name} {ep_label}"
-                    # Track number for sorting
+                        # User wants to keep original filename/title
+                        if orig_fn:
+                            clean_title = os.path.splitext(orig_fn)[0]
+                        else:
+                            clean_title = f"{base_name} {curr_num}"  # fallback if no orig filename
+
+                    # Track number (used for sorting in music apps)
                     if ep_label:
                         import re as _re_meta
                         _tm = _re_meta.search(r'\d+', ep_label)
                         track_num = _tm.group() if _tm else str(curr_num)
                     else:
                         track_num = str(curr_num)
-                    if not change_meta:
-                        # Preserve existing performer/title tags from original audio
-                        if msg.audio:
-                            art = getattr(msg.audio, 'performer', art) or art
-                            alb = art
                     
                     # ALWAYS increment curr_num for every media file processed.
                     curr_num += 1
@@ -655,26 +659,16 @@ async def _cl_run_job(job_id: str, bot=None):
                     else:
                         clean_file = f"{clean_title}{orig_ext}" if orig_ext else clean_title
 
-                    meta = {}
-                    if change_meta:
-                        meta = {
-                            "title":  clean_title,
-                            "artist": art,
-                            "album":  alb or art,
-                            "year":   yr,
-                            "genre":  gen,
-                            "track":  track_num,
-                            "comment": "Optimized & Cleaned by Arya Bot",
-                            "description": f"Processed by Arya Bot | Source: {base_name}",
-                            "publisher": "Arya Bot",
-                            "encoder": "Arya Bot",
-                            "encoded_by": "Arya Bot"
-                        }
-                    else:
-                        # Keep minimal metadata with original title
-                        meta = {"title": clean_title}
-                        if art: meta["artist"] = art
-                        if track_num: meta["track"] = track_num
+                    # Always apply metadata (title + whatever user configured).
+                    # rename_files controls the title; other fields are always set.
+                    meta = {
+                        "title":  clean_title,
+                    }
+                    if art:        meta["artist"]      = art
+                    if alb or art: meta["album"]       = alb or art
+                    if yr:         meta["year"]        = yr
+                    if gen:        meta["genre"]       = gen
+                    if track_num:  meta["track"]       = track_num
 
                     # ── Health check before each download ──
                     try:
@@ -1316,21 +1310,39 @@ async def _create_cl_flow(bot, user_id):
             except ValueError:
                 from_topic_id = 0
 
-    # ── Step 5: Base Name ────────────────────────────────────────
-    r_base = await _cl_ask(bot, user_id,
-        "<b>»  Step 5/9</b>\n\nSend the <b>Base Name</b> for the files.\n"
-        "<i>Example: Send <code>Saaya</code> → outputs <code>Saaya 1.mp3</code>, <code>Saaya 2.mp3</code>...</i>",
-        reply_markup=markup_b)
-    if _cancelled(r_base): return await _abort()
-    base_name = re.sub(r'[<>:"/\\|?*]', '_', (r_base.text or "Cleaned").strip())
+    # ── Step 5: Rename Files? ───────────────────────────────────
+    r_rename = await _cl_ask(bot, user_id,
+        "<b>»  Step 5/10 — Rename Files?</b>\n\n"
+        "Do you want to <b>rename</b> the files?\n\n"
+        "• <b>Yes</b> → You'll set a base name and starting number. Files will be renamed "
+        "like <code>Saaya 1.mp3</code>, <code>Saaya 2.mp3</code>, etc.\n"
+        "• <b>No</b>  → Original file names and titles are kept exactly as-is. "
+        "You can still update artist, year, genre, cover, etc.",
+        reply_markup=ReplyKeyboardMarkup(
+            [["✅ Yes, Rename Files", "❌ No, Keep Original Names"],
+             [CANCEL_BTN]],
+            resize_keyboard=True, one_time_keyboard=True))
+    if _cancelled(r_rename): return await _abort()
+    rename_files = "yes" in (r_rename.text or "").lower()
 
-    # ── Step 6: Starting Number ──────────────────────────────────
-    r_num = await _cl_ask(bot, user_id,
-        "<b>»  Step 6/9</b>\n\nSend the <b>Starting Number</b>.\n"
-        "<i>Example: Send <code>1</code> for Saaya 1, or <code>201</code> for Saaya 201...</i>",
-        reply_markup=markup_b)
-    if _cancelled(r_num): return await _abort()
-    start_num = int((r_num.text or "1").strip()) if (r_num.text or "").strip().isdigit() else 1
+    base_name = "Cleaned"
+    start_num = 1
+    if rename_files:
+        # ── Step 5a: Base Name ──────────────────────────────────
+        r_base = await _cl_ask(bot, user_id,
+            "<b>»  Step 5a/10 — Base Name</b>\n\nSend the <b>Base Name</b> for the files.\n"
+            "<i>Example: Send <code>Saaya</code> → outputs <code>Saaya 1.mp3</code>, <code>Saaya 2.mp3</code>...</i>",
+            reply_markup=markup_b)
+        if _cancelled(r_base): return await _abort()
+        base_name = re.sub(r'[<>:"/\\|?*]', '_', (r_base.text or "Cleaned").strip())
+
+        # ── Step 5b: Starting Number ──────────────────────────────
+        r_num = await _cl_ask(bot, user_id,
+            "<b>»  Step 5b/10 — Starting Number</b>\n\nSend the <b>Starting Number</b>.\n"
+            "<i>Example: Send <code>1</code> for Saaya 1, or <code>201</code> for Saaya 201...</i>",
+            reply_markup=markup_b)
+        if _cancelled(r_num): return await _abort()
+        start_num = int((r_num.text or "1").strip()) if (r_num.text or "").strip().isdigit() else 1
 
     # ── Step 7: Metadata (individual prompts) ────────────────────
     df = await _cl_get_defaults(user_id)
@@ -1431,6 +1443,7 @@ async def _create_cl_flow(bot, user_id):
         "start_id": sid, "end_id": eid,
         "total_files": total_range, "files_done": 0,
         "base_name": base_name, "starting_number": start_num,
+        "rename_files": rename_files,
         "artist": adv_artist,
         "year": adv_year,
         "album": adv_album,
