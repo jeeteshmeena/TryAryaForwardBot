@@ -356,6 +356,12 @@ async def _cl_run_job(job_id: str, bot=None):
                 _cl_bot_ref[job_id] = bot
             
             # ── Init correct download client ──
+            # KEY: if the user selected a normal *bot* account (is_bot=True), we
+            # MUST use the already-running main `bot` instance directly.
+            # A fresh in-memory clone of a bot token starts with ZERO peer cache,
+            # so get_messages() immediately fails with CHANNEL_INVALID.
+            # The main bot is already connected, holds all access hashes from its
+            # persistent session, and is admin in both channels — use it directly.
             acc_id = job.get("account_id")
             client = None
             try:
@@ -366,17 +372,25 @@ async def _cl_run_job(job_id: str, bot=None):
                         try: await bot.send_message(uid, "⚠️ <b>Cleaner failed:</b> Account not found in DB.")
                         except: pass
                     return
-                pyrogram_client = _CLIENT.client(acc)
-                try:
-                    client = await start_clone_bot(pyrogram_client)
-                except Exception as start_err:
-                    # If already started, try to use as-is
-                    if "already" in str(start_err).lower() or "connected" in str(start_err).lower():
-                        client = pyrogram_client
-                    else:
-                        raise
-                # Verify connection immediately after obtaining client
-                client = await _ensure_client_alive(client, acc, uid)
+
+                is_bot_account = acc.get("is_bot", True)  # True = normal bot, False = userbot
+
+                if is_bot_account and bot:
+                    # Use the main bot directly — already running, has full peer cache
+                    client = bot
+                    logger.info(f"[Cleaner {job_id}] Using main bot client directly (bot account selected)")
+                else:
+                    # Userbot (session string) — needs a separate clone client
+                    pyrogram_client = _CLIENT.client(acc)
+                    try:
+                        client = await start_clone_bot(pyrogram_client)
+                    except Exception as start_err:
+                        if "already" in str(start_err).lower() or "connected" in str(start_err).lower():
+                            client = pyrogram_client
+                        else:
+                            raise
+                    # Verify connection immediately after obtaining client
+                    client = await _ensure_client_alive(client, acc, uid)
             except Exception as e:
                 err_msg = f"Client init failed: {e}"
                 await _cl_update_job(job_id, {"status": "failed", "error": err_msg})
@@ -384,6 +398,7 @@ async def _cl_run_job(job_id: str, bot=None):
                     try: await bot.send_message(uid, f"⚠️ <b>Cleaner failed:</b> <code>{err_msg[:300]}</code>")
                     except: pass
                 return
+
 
             # Setup
             from_ch = job["from_chat"]
@@ -894,7 +909,7 @@ async def _cl_run_job(job_id: str, bot=None):
             # ── End of loop logic ──
             if job_failed:
                 # Fatal failure already logged above, break outer loop
-                if client:
+                if client and client is not bot:
                     try:
                         from plugins.test import release_client
                         cname = getattr(client, 'name', None)
@@ -938,7 +953,7 @@ async def _cl_run_job(job_id: str, bot=None):
             except: pass
             _cl_bot_ref.pop(job_id, None)
             
-            if client:
+            if client and client is not bot:
                 try:
                     from plugins.test import release_client
                     cname = getattr(client, 'name', None)
