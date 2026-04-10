@@ -224,10 +224,7 @@ def _make_cl_run(cmd):
                     except Exception:
                         pass
                 kwargs["preexec_fn"] = _preexec
-                if _sh.which("cpulimit"):
-                    cmd_run = ["cpulimit", "-l", str(CL_FFMPEG_CPU_LIMIT), "-f", "--"] + cmd
-                else:
-                    cmd_run = cmd
+                cmd_run = cmd
             else:
                 cmd_run = cmd
 

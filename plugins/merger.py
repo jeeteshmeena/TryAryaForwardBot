@@ -473,11 +473,7 @@ async def _ffmpeg_merge(file_list, output_path, metadata=None, mtype="audio", co
                             pass
                     kwargs["preexec_fn"] = _preexec
 
-                    # Prefer cpulimit wrapper (hard CPU cap) if installed on VPS
-                    if _sh.which("cpulimit"):
-                        actual_cmd = ["cpulimit", "-l", str(FFMPEG_CPU_LIMIT), "-f", "--"] + cmd_list
-                    else:
-                        actual_cmd = cmd_list
+                    actual_cmd = cmd_list
                 else:
                     actual_cmd = cmd_list
 
