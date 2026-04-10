@@ -931,16 +931,32 @@ def _mj_start_task(job_id: str, user_id: int, bot=None) -> asyncio.Task:
 # Resume on bot restart
 # ══════════════════════════════════════════════════════════════════════════════
 
-async def resume_multi_jobs(user_id: int = None, bot=None):
+async def resume_multi_jobs(user_id: int = None, bot=None, stagger_secs: float = 3.0):
+    """
+    Resume all 'running' Multi Jobs after bot restart.
+    Jobs are started with a `stagger_secs` delay between each to prevent
+    simultaneous Telegram API flood and connection errors.
+    """
     query = {"status": "running"}
     if user_id:
         query["user_id"] = user_id
+    jobs_to_resume = []
     async for job in db.db[COLL].find(query):
         jid = job["job_id"]
         uid = job["user_id"]
         if jid not in _mj_tasks:
-            _mj_start_task(jid, uid, bot=bot)
-            logger.info(f"[MultiJob] Resumed {jid} for user {uid}")
+            jobs_to_resume.append((jid, uid))
+
+    total = len(jobs_to_resume)
+    if total:
+        logger.info(f"[MultiJob] Resuming {total} multi-job(s) with {stagger_secs}s stagger...")
+    for i, (jid, uid) in enumerate(jobs_to_resume):
+        _mj_start_task(jid, uid, bot=bot)
+        logger.info(f"[MultiJob] Resumed {i+1}/{total}: {jid} (user {uid})")
+        if i < total - 1:
+            await asyncio.sleep(stagger_secs)  # stagger to avoid Telegram flood
+
+
 
 
 # ══════════════════════════════════════════════════════════════════════════════

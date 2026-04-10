@@ -577,22 +577,23 @@ async def _cl_run_job(job_id: str, bot=None):
                     change_meta = job.get("change_metadata", True)
                     ep_label = _extract_ep_label(orig_fn) if orig_fn else ''
                     
+                    # Title always comes from original filename (user preserves it)
+                    if orig_fn:
+                        clean_title = os.path.splitext(orig_fn)[0]
+                    else:
+                        clean_title = f"{base_name} {curr_num}" if not ep_label else f"{base_name} {ep_label}"
+                    # Track number for sorting
+                    if ep_label:
+                        import re as _re_meta
+                        _tm = _re_meta.search(r'\d+', ep_label)
+                        track_num = _tm.group() if _tm else str(curr_num)
+                    else:
+                        track_num = str(curr_num)
                     if not change_meta:
-                        clean_title = os.path.splitext(orig_fn)[0] if orig_fn else f"Media {msg_id}"
-                        track_num = ""
-                        # Preserve existing performer and title if present
+                        # Preserve existing performer/title tags from original audio
                         if msg.audio:
                             art = getattr(msg.audio, 'performer', art) or art
                             alb = art
-                    else:
-                        if ep_label:
-                            clean_title = f"{base_name} {ep_label}"
-                            import re as _re_meta
-                            _tm = _re_meta.search(r'\d+', ep_label)
-                            track_num = _tm.group() if _tm else str(curr_num)
-                        else:
-                            clean_title = f"{base_name} {curr_num}"
-                            track_num = str(curr_num)
                     
                     # ALWAYS increment curr_num for every media file processed.
                     curr_num += 1
@@ -1271,88 +1272,68 @@ async def _create_cl_flow(bot, user_id):
     adv_genre  = df.get("genre", "")
     adv_cover  = df.get("cover", "")
 
-    # ── Ask: Change metadata? ────────────────────────────────────
-    # Defaults are already loaded. If user says No, skip all metadata steps
-    # and keep the original file title/name intact.
-    has_defaults = any([adv_artist, adv_year, adv_album, adv_genre, adv_cover])
-    change_meta_info = (
-        f"Current defaults:\n"
-        f"  Artist: {adv_artist or '—'}  |  Year: {adv_year or '—'}  |  Genre: {adv_genre or '—'}\n"
-        f"  Album: {adv_album or '—'}  |  Cover: {'✅ Set' if adv_cover else '—'}\n\n"
-        if has_defaults else ""
-    )
-    r_meta_toggle = await _cl_ask(bot, user_id,
-        f"""<b>»  Step 7/9 — Change Metadata?</b>
+    # ── Steps 7-8: Metadata fields (filename/title is ALWAYS preserved) ──────
+    # The original filename is kept as-is. Only embedded metadata tags
+    # (artist, year, genre, cover) can be optionally changed.
 
-Do you want to change the file metadata (artist, album, cover image, year, etc.)?
+    r_art = await _cl_ask(bot, user_id,
+        f"<b>>  Step 7/10 — Artist Name</b>\n\n"
+        f"Enter the <b>Artist</b> name to embed in all files.\n"
+        f"<i>Current: {adv_artist or 'None'}. Skip to keep as-is.</i>",
+        reply_markup=markup_s)
+    if _cancelled(r_art): return await _abort()
+    if not _skip(r_art.text or ""): adv_artist = (r_art.text or "").strip()
 
-{change_meta_info}<i>Select <b>Yes</b> to configure metadata, or <b>No</b> to keep the original file title/name unchanged.</i>""",
+    r_alb = await _cl_ask(bot, user_id,
+        f"<b>>  Step 7b/10 — Album Name</b>\n\n"
+        f"Enter the <b>Album</b> name (shown in music apps).\n"
+        f"<i>Current: {adv_album or 'None'}. Skip to use Artist name.</i>",
+        reply_markup=markup_s)
+    if _cancelled(r_alb): return await _abort()
+    if not _skip(r_alb.text or ""): adv_album = (r_alb.text or "").strip()
+    if not adv_album: adv_album = adv_artist
+
+    r_yr = await _cl_ask(bot, user_id,
+        f"<b>>  Step 7c/10 — Year</b>\n\n"
+        f"Select a preset year or <b>type any custom year</b> (e.g. <code>2021</code>).\n"
+        f"<i>Current: {adv_year or 'None'}. Skip to leave unchanged.</i>",
         reply_markup=ReplyKeyboardMarkup(
-            [[KeyboardButton("✅ Yes, Change Metadata"), KeyboardButton("❌ No, Keep Original")],
-             [CANCEL_BTN]],
-            resize_keyboard=True, one_time_keyboard=True))
-    if _cancelled(r_meta_toggle): return await _abort()
-    change_metadata = "yes" in (r_meta_toggle.text or "").lower()
+            [["2022", "2023", "2024", "2025", "2026"],
+             [SKIP_BTN, CANCEL_BTN]],
+            resize_keyboard=True))
+    if _cancelled(r_yr): return await _abort()
+    yr_text = (r_yr.text or "").strip()
+    if not _skip(yr_text):
+        adv_year = yr_text  # accept any user input (preset button or custom typed year)
 
-    if change_metadata:
-        r_art = await _cl_ask(bot, user_id,
-            f"<b>»  Step 7a/9 — Artist Name</b>\n\n"
-            f"Enter the <b>Artist</b> name.\n"
-            f"<i>Default: {adv_artist or 'None'}. Skip to keep.</i>",
-            reply_markup=markup_s)
-        if _cancelled(r_art): return await _abort()
-        if not _skip(r_art.text or ""): adv_artist = (r_art.text or "").strip()
+    r_gen = await _cl_ask(bot, user_id,
+        f"<b>>  Step 7d/10 — Genre</b>\n\n"
+        f"Enter the <b>Genre</b> tag (or tap a preset).\n"
+        f"<i>Current: {adv_genre or 'None'}. Skip to leave unchanged.</i>",
+        reply_markup=ReplyKeyboardMarkup(
+            [["Audiobook", "Romance", "Podcast"],
+             ["Thriller", "Comedy", "Drama"],
+             [SKIP_BTN, CANCEL_BTN]],
+            resize_keyboard=True))
+    if _cancelled(r_gen): return await _abort()
+    if not _skip(r_gen.text or ""): adv_genre = (r_gen.text or "").strip()
 
-        r_alb = await _cl_ask(bot, user_id,
-            f"<b>»  Step 7b/9 — Album Name</b>\n\n"
-            f"Enter the <b>Album</b> name.\n"
-            f"<i>Default: Story name / artist. Skip to use Artist name.</i>",
-            reply_markup=markup_s)
-        if _cancelled(r_alb): return await _abort()
-        if not _skip(r_alb.text or ""): adv_album = (r_alb.text or "").strip()
-        if not adv_album: adv_album = adv_artist
+    # ── Step 8: Cover Image ──────────────────────────────────────────────────
+    r_cov = await _cl_ask(bot, user_id,
+        f"<b>>  Step 8/10 — Cover Image</b>\n\n"
+        f"Send a <b>photo/image</b> to embed as album cover art in all files.\n"
+        f"<i>{'Current default cover is set. ' if adv_cover else ''}Skip to {'keep existing' if adv_cover else 'skip (no cover)'}.</i>",
+        reply_markup=markup_s,
+        timeout=300)
+    if _cancelled(r_cov): return await _abort()
+    if r_cov and not _skip(r_cov.text or ""):
+        if r_cov.photo:
+            adv_cover = r_cov.photo.file_id
+        elif r_cov.document and 'image' in (r_cov.document.mime_type or ''):
+            adv_cover = r_cov.document.file_id
 
-        r_yr = await _cl_ask(bot, user_id,
-            f"<b>»  Step 7c/9 — Year</b>\n\n"
-            f"Enter the <b>Release Year</b> (e.g. <code>2024</code>).\n"
-            f"<i>Default: {adv_year or 'None'}. Skip to leave empty.</i>",
-            reply_markup=ReplyKeyboardMarkup(
-                [["2023", "2024", "2025", "2026"],
-                 [SKIP_BTN, CANCEL_BTN]],
-                resize_keyboard=True))
-        if _cancelled(r_yr): return await _abort()
-        if not _skip(r_yr.text or ""): adv_year = (r_yr.text or "").strip()
-
-        r_gen = await _cl_ask(bot, user_id,
-            f"<b>»  Step 7d/9 — Genre</b>\n\n"
-            f"Enter the <b>Genre</b> (e.g. <code>Audiobook</code>, <code>Romance</code>, <code>Podcast</code>).\n"
-            f"<i>Default: {adv_genre or 'None'}. Skip to leave empty.</i>",
-            reply_markup=markup_s)
-        if _cancelled(r_gen): return await _abort()
-        if not _skip(r_gen.text or ""): adv_genre = (r_gen.text or "").strip()
-
-        # ── Step 8: Cover Image ─────────────────────────────────
-        r_cov = await _cl_ask(bot, user_id,
-            f"<b>»  Step 8/9 — Cover Image</b>\n\n"
-            f"Send a <b>photo/image</b> to use as the album cover art for all files.\n"
-            f"<i>{'Current default cover is set. ' if adv_cover else ''}Skip to {'keep existing' if adv_cover else 'use no cover'}.</i>",
-            reply_markup=markup_s,
-            timeout=300)
-        if _cancelled(r_cov): return await _abort()
-
-        if r_cov and not _skip(r_cov.text or ""):
-            if r_cov.photo:
-                adv_cover = r_cov.photo.file_id
-            elif r_cov.document and 'image' in (r_cov.document.mime_type or ''):
-                adv_cover = r_cov.document.file_id
-    else:
-        # User chose not to change metadata — skip all metadata steps
-        # Also clear metadata so the original file name/title is preserved
-        adv_artist = ""
-        adv_year   = ""
-        adv_album  = ""
-        adv_genre  = ""
-        adv_cover  = ""
+    # Always apply metadata fields; title/filename is preserved in job execution
+    change_metadata = True
 
 
     # ── Step 9: Caption Option ───────────────────────────────────

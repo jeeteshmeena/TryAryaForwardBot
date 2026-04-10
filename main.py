@@ -149,6 +149,24 @@ async def main():
     except Exception as e:
         logging.warning(f"Could not start system monitor: {e}")
 
+    # ── Staggered job resumption (prevents FloodWait on restart) ────────────
+    async def _staggered_resume():
+        await asyncio.sleep(5)   # let bot fully connect first
+        try:
+            from plugins.jobs import resume_live_jobs
+            await resume_live_jobs(stagger_secs=2.0)
+        except Exception as e:
+            logging.warning(f"LiveJob resume error: {e}")
+        await asyncio.sleep(5)   # gap between job types
+        try:
+            from plugins.multijob import resume_multi_jobs
+            await resume_multi_jobs(stagger_secs=3.0)
+        except Exception as e:
+            logging.warning(f"MultiJob resume error: {e}")
+        logging.info("Staggered job resumption complete.")
+
+    asyncio.create_task(_staggered_resume())
+
     await idle()
     try:
         from plugins.share_bot import share_clients

@@ -1096,16 +1096,31 @@ def _start_job_task(job_id: str, user_id: int) -> asyncio.Task:
 # Resume all running jobs on bot restart
 # ══════════════════════════════════════════════════════════════════════════════
 
-async def resume_live_jobs(user_id: int = None):
+async def resume_live_jobs(user_id: int = None, stagger_secs: float = 2.0):
+    """
+    Resume all 'running' Live Jobs after bot restart.
+    Jobs are started with a `stagger_secs` delay between each to prevent
+    simultaneous FloodWait and connection errors.
+    """
     query: dict = {"status": "running"}
     if user_id:
         query["user_id"] = user_id
+    jobs_to_resume = []
     async for job in db.db.jobs.find(query):
         jid = job["job_id"]
         uid = job["user_id"]
         if jid not in _job_tasks:
-            _start_job_task(jid, uid)
-            logger.info(f"[Jobs] Resumed job {jid} for user {uid}")
+            jobs_to_resume.append((jid, uid))
+
+    total = len(jobs_to_resume)
+    if total:
+        logger.info(f"[Jobs] Resuming {total} live job(s) with {stagger_secs}s stagger...")
+    for i, (jid, uid) in enumerate(jobs_to_resume):
+        _start_job_task(jid, uid)
+        logger.info(f"[Jobs] Resumed job {i+1}/{total}: {jid} (user {uid})")
+        if i < total - 1:
+            await asyncio.sleep(stagger_secs)  # stagger to avoid Telegram flood
+
 
 
 # ══════════════════════════════════════════════════════════════════════════════

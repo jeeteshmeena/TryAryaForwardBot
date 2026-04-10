@@ -593,17 +593,18 @@ async def settings_query(bot, query):
   elif type=="channels":
      buttons = []
      channels = await db.get_user_channels(user_id)
+     ch_count = len(channels)
      for channel in channels:
         buttons.append([InlineKeyboardButton(f"{channel['title']}",
                          callback_data=f"settings#editchannels_{channel['chat_id']}")])
-     buttons.append([InlineKeyboardButton('Aᴅᴅ Cʜᴀɴɴᴇʟ', 
-                      callback_data="settings#addchannel"),
-                    InlineKeyboardButton('🗑 Mᴜʟᴛɪ-Dᴇʟᴇᴛᴇ',
-                      callback_data="settings#ch_multi")])
-     buttons.append([InlineKeyboardButton('❮ Bᴀᴄᴋ', 
-                      callback_data="settings#main")])
-     await query.message.edit_text( 
-       "<b><u>My Channels</b></u>\n\n<b>you can manage your target chats in here</b>",
+     buttons.append([InlineKeyboardButton('Add Channel', callback_data='settings#addchannel'),
+                     InlineKeyboardButton('Multi-Delete', callback_data='settings#ch_multi'),
+                     InlineKeyboardButton('Sync Names', callback_data='settings#ch_sync')])
+     buttons.append([InlineKeyboardButton('Back', callback_data='settings#main')])
+     await query.message.edit_text(
+       f"<b><u>My Channels</u></b>  (<code>{ch_count}/40</code>)\n\n"
+       "<b>Manage your source / destination chats here.</b>\n"
+       "<i>Tip: Use Sync Names to refresh channel titles from Telegram.</i>",
        reply_markup=InlineKeyboardMarkup(buttons))
 
   elif type == "ch_multi":
@@ -633,12 +634,33 @@ async def settings_query(bot, query):
       selected = _ch_multi_state.get(user_id, [])
       if cid in selected:
           selected.remove(cid)
+
+
       else:
           selected.append(cid)
       _ch_multi_state[user_id] = selected
       query.data = "settings#ch_multi"
       return await settings_query(bot, query)
 
+  elif type == 'ch_sync':
+       channels = await db.get_user_channels(user_id)
+       updated = failed = 0
+       for ch in channels:
+           try:
+               info = await bot.get_chat(ch['chat_id'])
+               new_title = getattr(info, 'title', None) or ch['title']
+               new_un = ('@' + info.username) if getattr(info, 'username', None) else ch.get('username', 'private')
+               if new_title != ch['title'] or new_un != ch.get('username', ''):
+                   await db.chl.update_one(
+                       {'user_id': int(user_id), 'chat_id': int(ch['chat_id'])},
+                       {'$set': {'title': new_title, 'username': new_un}}
+                   )
+                   updated += 1
+           except Exception:
+               failed += 1
+       await query.answer(f'Sync: {updated} updated, {failed} failed', show_alert=True)
+       query.data = 'settings#channels'
+       return await settings_query(bot, query)
   elif type == "ch_m_del":
       selected = _ch_multi_state.get(user_id, [])
       if not selected:
@@ -693,10 +715,15 @@ async def settings_query(bot, query):
          except Exception:
              pass
              
+         existing_chs = await db.get_user_channels(user_id)
+         if len(existing_chs) >= 40:
+             await chat_ids.delete()
+             return await text.edit_text('<b>Maximum 40 channels reached.</b> Remove some first.',
+                                         reply_markup=InlineKeyboardMarkup(buttons))
          chat = await db.add_channel(user_id, chat_id, title, username)
          await chat_ids.delete()
          await text.edit_text(
-            "<b>Successfully updated</b>" if chat else "<b>This channel is already added</b>",
+            "<b>Successfully added!</b>" if chat else "<b>This channel is already added</b>",
             reply_markup=InlineKeyboardMarkup(buttons))
      except asyncio.exceptions.TimeoutError:
          await text.edit_text('Process has been automatically cancelled', reply_markup=InlineKeyboardMarkup(buttons))
