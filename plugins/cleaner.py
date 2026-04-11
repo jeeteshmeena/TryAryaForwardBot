@@ -648,6 +648,9 @@ async def _cl_run_job(job_id: str, bot=None):
                     meta = {
                         "title":  clean_title,
                     }
+                    note = job.get("metadata_note", "")
+                    if note:       meta["comment"]     = note
+                    if note:       meta["description"] = note
                     if art:        meta["artist"]      = art
                     if alb or art: meta["album"]       = alb or art
                     if yr:         meta["year"]        = yr
@@ -994,7 +997,10 @@ async def _cl_callbacks(bot, update: CallbackQuery):
 
     elif action == "cfg":
         cfg_type = data[2]
-        ask_txt = f"Send the new default <b>{cfg_type.title()}</b>" + (" (send a Photo/image for cover art)" if cfg_type == "cover" else "") + "\n<i>Send /skip to clear.</i>"
+        if cfg_type == "artist":
+            ask_txt = f"Send the new default <b>Artist</b>\n<i>Send multiple artists separated by | (e.g. Artist 1 | Artist 2)</i>\n<i>Send /skip to clear.</i>"
+        else:
+            ask_txt = f"Send the new default <b>{cfg_type.title()}</b>" + (" (send a Photo/image for cover art)" if cfg_type == "cover" else "") + "\n<i>Send /skip to clear.</i>"
         try:
             resp = await _cl_ask(bot, uid, ask_txt, timeout=120)
             if not resp: raise asyncio.TimeoutError
@@ -1341,7 +1347,8 @@ async def _create_cl_flow(bot, user_id):
 
     # ── Step 7: Metadata (individual prompts) ────────────────────
     df = await _cl_get_defaults(user_id)
-    adv_artist = df.get("artist", "")
+    adv_artist_raw = df.get("artist", "")
+    adv_artists = [a.strip() for a in str(adv_artist_raw).split("|") if a.strip()]
     adv_year   = df.get("year", "")
     adv_album  = df.get("album", "")
     adv_genre  = df.get("genre", "")
@@ -1349,15 +1356,24 @@ async def _create_cl_flow(bot, user_id):
 
     # ── Steps 7-8: Metadata fields (filename/title is ALWAYS preserved) ──────
     # The original filename is kept as-is. Only embedded metadata tags
-    # (artist, year, genre, cover) can be optionally changed.
+    # (artist, year, genre, cover, note) can be optionally changed.
+
+    artist_kb = [[KeyboardButton(a)] for a in adv_artists]
+    artist_kb.append([SKIP_BTN, CANCEL_BTN])
 
     r_art = await _cl_ask(bot, user_id,
-        f"<b>>  Step 7/10 — Artist Name</b>\n\n"
-        f"Enter the <b>Artist</b> name to embed in all files.\n"
-        f"<i>Current: {adv_artist or 'None'}. Skip to keep as-is.</i>",
-        reply_markup=markup_s)
+        f"<b>>  Step 7.1/10 — Artist Name</b>\n\n"
+        f"Select an Artist, or type a custom name to embed in all files.\n"
+        f"<i>Current presets: {', '.join(adv_artists) if adv_artists else 'None'}</i>",
+        reply_markup=ReplyKeyboardMarkup(artist_kb, resize_keyboard=True))
     if _cancelled(r_art): return await _abort()
-    if not _skip(r_art.text or ""): adv_artist = (r_art.text or "").strip()
+    
+    adv_artist = ""
+    if not _skip(r_art.text or ""):
+        adv_artist = (r_art.text or "").strip()
+        if adv_artist and adv_artist not in adv_artists:
+            adv_artists.append(adv_artist)
+            await _cl_save_default(user_id, "artist", "|".join(adv_artists))
 
     r_alb = await _cl_ask(bot, user_id,
         f"<b>>  Step 7b/10 — Album Name</b>\n\n"
@@ -1406,6 +1422,22 @@ async def _create_cl_flow(bot, user_id):
             adv_cover = r_cov.photo.file_id
         elif r_cov.document and 'image' in (r_cov.document.mime_type or ''):
             adv_cover = r_cov.document.file_id
+            
+    # ── Step 8.5: Metadata Note ────────────────────────────────────────────────
+    me = await bot.get_me() if getattr(bot, "get_me", None) else None
+    default_note = f"@{me.username}" if me and getattr(me, "username", None) else "@tryaryabot"
+    
+    r_note = await _cl_ask(bot, user_id,
+        f"<b>>  Step 8.5/10 — Metadata Note</b>\n\n"
+        f"Enter a <b>Note / Comment</b> to embed inside the file's metadata.\n"
+        f"<i>By default, the bot's username ( {default_note} ) will be used.</i>\n"
+        f"<i>Send /skip to use the default username.</i>",
+        reply_markup=markup_s)
+    if _cancelled(r_note): return await _abort()
+    
+    adv_note = default_note
+    if not _skip(r_note.text or ""):
+        adv_note = (r_note.text or "").strip()
 
     # Always apply metadata fields; title/filename is preserved in job execution
     change_metadata = True
@@ -1445,6 +1477,7 @@ async def _create_cl_flow(bot, user_id):
         "album": adv_album,
         "genre": adv_genre,
         "cover_file_id": adv_cover,
+        "metadata_note": adv_note,
         "change_metadata": change_metadata,
         "use_caption": use_caption,
         "account_id": sel_acc.get("id") or acc_id,
