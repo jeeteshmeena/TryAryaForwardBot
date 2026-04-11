@@ -739,6 +739,9 @@ async def resume_live_batches():
         jobs.append(j)
     for j in jobs:
         jid = j["job_id"]
+        if jid in _lb_tasks and not _lb_tasks[jid].done():
+            continue  # Already running
+            
         _lb_paused[jid] = asyncio.Event()
         _lb_paused[jid].set()
         _lb_tasks[jid] = asyncio.create_task(_lb_run_job(jid))
