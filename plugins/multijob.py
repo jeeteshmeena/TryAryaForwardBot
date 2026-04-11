@@ -945,7 +945,7 @@ async def _render_mj_list(bot, user_id: int, msg_or_query):
 
     if not jobs:
         text = (
-            "<b>»  Multi Jobs</b>\n\n"
+            "<b>Multi Jobs</b>\n\n"
             "<i>No jobs yet.\n\n"
             "A <b>Multi Job</b> copies a specific range of messages from any "
             "source channel/group to your target — fully in the background.\n\n"
@@ -961,7 +961,7 @@ async def _render_mj_list(bot, user_id: int, msg_or_query):
             [InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="back")]
         ])
     else:
-        lines = ["<b>»  Your Multi Jobs</b>\n"]
+        lines = ["<b>Your Multi Jobs</b>\n"]
         for j in jobs:
             st   = _mj_emoji(j.get("status", "stopped"))
             fwd  = j.get("forwarded", 0)
@@ -976,7 +976,7 @@ async def _render_mj_list(bot, user_id: int, msg_or_query):
             lines.append(
                 f"{st} <b>{name}</b>\n"
                 f"  └ <i>{j.get('from_title','?')} → {j.get('to_title','?')}{d2}</i>\n"
-                f"  └ <code>[{j['job_id'][-6:]}]</code>  ✅{fwd}  » {fetched}  » {cur}/{end}{err}\n"
+                f"  └ <code>[{j['job_id'][-6:]}]</code>  ✅{fwd}  {fetched}  {cur}/{end}{err}\n"
             )
         import datetime
         now_str = datetime.datetime.now().strftime("%I:%M:%S %p")
@@ -1099,7 +1099,7 @@ async def mj_info_cb(bot, query):
         dest2_lbl = f"\n<b>Dest 2:</b> {job.get('to_title_2','?')}{tp2}"
 
     text = (
-        f"<b>»  Multi Job Info</b>\n\n"
+        f"<b>Multi Job Info</b>\n\n"
         f"<b>ID:</b> <code>{job_id[-6:]}</code>\n"
         f"<b>Name:</b> {job.get('name', 'Default')}\n"
         f"<b>Status:</b> {st} {job.get('status','?')}\n"
@@ -1112,7 +1112,7 @@ async def mj_info_cb(bot, query):
         f"<b>Created:</b> {created}\n"
     )
     if job.get("error"):
-        text += f"\n<b>‣  Error:</b> <code>{job['error']}</code>"
+        text += f"\n<b>Error:</b>\n<blockquote><code>{job['error']}</code></blockquote>"
 
     await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup([[
         InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="mj#list")
@@ -1340,7 +1340,7 @@ async def _create_mj_flow(bot, user_id: int):
 
     # ── Step 1: Name ──────────────────────────────────────────────
     name_r = await _mj_ask(bot, user_id,
-        "<b>»  Create Multi Job — Step 1/6</b>\n\n"
+        "<b>Create Multi Job — Step 1/6</b>\n\n"
         "Send a <b>name</b> for this job, or press <b>Default</b>.",
         reply_markup=ReplyKeyboardMarkup(
             [[KeyboardButton("Default")], [CANCEL_BTN]],
@@ -1367,7 +1367,7 @@ async def _create_mj_flow(bot, user_id: int):
     acc_btns.append([CANCEL_BTN])
 
     acc_r = await _mj_ask(bot, user_id,
-        "<b>»  Create Multi Job — Step 2/6</b>\n\n"
+        "<b>Create Multi Job — Step 2/6</b>\n\n"
         "Choose which <b>account</b> to use:\n\n"
         "<blockquote expandable>"
         "🤖 <b>Bot</b> — works for public channels and groups where the bot is admin.\n"
@@ -1585,7 +1585,7 @@ async def _create_mj_flow(bot, user_id: int):
     await bot.send_message(
         user_id,
         f"<b>✅ Multi Job Created!</b>\n\n"
-        f"»  <b>{from_title}</b> → <b>{to_title}</b>{thread_lbl}\n"
+        f"<b>{from_title}</b> → <b>{to_title}</b>{thread_lbl}\n"
         f"<b>Account:</b> {kind}: {sel_acc.get('name','?')}\n"
         f"<b>Range:</b> From ID <code>{start_id}</code> · {end_lbl}\n"
         f"<b>Job ID:</b> <code>{job_id[-6:]}</code>\n\n"

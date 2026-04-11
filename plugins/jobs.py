@@ -18,6 +18,7 @@ import time
 import asyncio
 import logging
 from database import db
+from bot import BOT_INSTANCE
 from .test import CLIENT, start_clone_bot, release_client
 from pyrogram import Client, filters
 from pyrogram.errors import FloodWait
@@ -495,9 +496,8 @@ async def _run_job(job_id: str, user_id: int):
         from plugins.utils import safe_resolve_peer
         
         if str(from_chat).lower() in ("me", "saved"):
-            is_dm_source = True
-        else:
-            await safe_resolve_peer(client, from_chat, bot=bot)
+            prot_err = await check_chat_protection(user_id, from_chat)
+            await safe_resolve_peer(client, from_chat, bot=BOT_INSTANCE)
             try:
                 peer_chat = await client.get_chat(from_chat)
                 if peer_chat.type in (ChatType.PRIVATE, ChatType.BOT):
@@ -509,8 +509,9 @@ async def _run_job(job_id: str, user_id: int):
                     is_dm_source = True
                     
         try:
-            for _chat in [to_chat] + ([to_chat_2] if to_chat_2 else []):
-                await safe_resolve_peer(client, _chat, bot=bot)
+            dest_chats = [to_chat] + ([to_chat_2] if to_chat_2 else [])
+            for _chat in dest_chats:
+                await safe_resolve_peer(client, _chat, bot=BOT_INSTANCE)
         except Exception:
             pass
 
@@ -929,6 +930,15 @@ async def _run_job(job_id: str, user_id: int):
                         client = await _lj_ensure_client_alive(client)
                     except Exception as heal_e:
                         logger.error(f"[Job {job_id}] Client heal failed: {heal_e}")
+                        # Report explicitly to admin if everything breaks
+                        try:
+                            from config import Config
+                            for _owner in Config.BOT_OWNER_ID:
+                                await BOT_INSTANCE.send_message(_owner,
+                                    f"🚨 <b>Fatal Crash in Live Job {job_id}</b>\n"
+                                    f"<code>{heal_e}</code>")
+                        except:
+                            pass
                     await asyncio.sleep(15)
                 else:
                     logger.warning(f"[Job {job_id}] Fetch error: {err_fetch}")
@@ -1111,11 +1121,12 @@ async def resume_live_jobs(user_id: int = None, stagger_secs: float = 2.0):
     total = len(jobs_to_resume)
     if total:
         logger.info(f"[Jobs] Resuming {total} live job(s) with {stagger_secs}s stagger...")
+        await asyncio.sleep(15)  # initial wait to unblock pyrogram core auth bounds
     for i, (jid, uid) in enumerate(jobs_to_resume):
         _start_job_task(jid, uid)
         logger.info(f"[Jobs] Resumed job {i+1}/{total}: {jid} (user {uid})")
         if i < total - 1:
-            await asyncio.sleep(stagger_secs)  # stagger to avoid Telegram flood
+            await asyncio.sleep(23.0)  # Heavy stagger to avoid Telegram flood on restart
 
 
 
@@ -1124,7 +1135,7 @@ async def resume_live_jobs(user_id: int = None, stagger_secs: float = 2.0):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _status_emoji(status: str) -> str:
-    return {"running": "🟢", "stopped": "🔴", "error": "❌"}.get(status, "» ")
+    return {"running": "🟢", "stopped": "🔴", "error": "❌"}.get(status, " ")
 
 
 def _batch_progress(job: dict) -> str:
@@ -1132,10 +1143,10 @@ def _batch_progress(job: dict) -> str:
     if not job.get("batch_mode"):
         return ""
     if job.get("batch_done"):
-        return "  » ✅"
+        return "  ✅"
     cursor  = job.get("batch_cursor") or job.get("batch_start_id") or "?"
     end_id  = job.get("batch_end_id") or "?"
-    return f"  » {cursor}/{end_id}"
+    return f"  {cursor}/{end_id}"
 
 
 async def _render_jobs_list(bot, user_id: int, message_or_query):
@@ -1144,7 +1155,7 @@ async def _render_jobs_list(bot, user_id: int, message_or_query):
 
     if not jobs:
         text = (
-            "<b>»  Live Jobs</b>\n\n"
+            "<b>Live Jobs</b>\n\n"
             "<i>No jobs yet. A Live Job continuously watches a source chat\n"
             "and forwards new messages to your target — running in the background.\n\n"
             "✅ Batch mode: copy old messages first, then watch live\n"
@@ -1157,7 +1168,7 @@ async def _render_jobs_list(bot, user_id: int, message_or_query):
             [InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="back")]
         ])
     else:
-        lines = ["<b>»  Your Live Jobs</b>\n"]
+        lines = ["<b>Your Live Jobs</b>\n"]
         for j in jobs:
             st  = _status_emoji(j.get("status", "stopped"))
             fwd = j.get("forwarded", 0)
@@ -1174,8 +1185,8 @@ async def _render_jobs_list(bot, user_id: int, message_or_query):
             job_name = j.get("name", f"Live Job {j['job_id'][-6:]}")
             lines.append(
                 f"{st} <b>{job_name}</b>\n"
-                f"  └ <i>{j.get('from_title','?')} → {j.get('to_title','?')}{dest2}</i>\n"
-                f"  └ <code>[{j['job_id'][-6:]}]</code>  ✅{fwd}  » {fetched}{bp}{err}\n"
+                f"  └ <i>{j.get('from_title','?')} ➝ {j.get('to_title','?')}{dest2}</i>\n"
+                f"  └ <code>[{j['job_id'][-6:]}]</code>  ✅{fwd}   {fetched}{bp}{err}\n"
             )
         import datetime
         now_str = datetime.datetime.now().strftime("%I:%M:%S %p")
@@ -1195,7 +1206,8 @@ async def _render_jobs_list(bot, user_id: int, message_or_query):
             row.append(InlineKeyboardButton(f"Iɴғᴏ [{short}]", callback_data=f"job#info#{jid}"))
             row.append(InlineKeyboardButton(f"⚙️ Lɪᴍɪᴛs [{short}]", callback_data=f"job#limits#{jid}"))
             row.append(InlineKeyboardButton(f"✏️ Nᴀᴍᴇ [{short}]", callback_data=f"job#rename#{jid}"))
-            row.append(InlineKeyboardButton(f"Dᴇʟᴇᴛᴇ [{short}]",  callback_data=f"job#del#{jid}"))
+            row.append(InlineKeyboardButton(f"Sʀᴄ [{short}]", callback_data=f"job#src#{jid}"))
+            row.append(InlineKeyboardButton(f"Dᴇʟ [{short}]",  callback_data=f"job#del#{jid}"))
             btns_list.append(row)
 
         btns_list.append([InlineKeyboardButton("Cʀᴇᴀᴛᴇ Nᴇᴡ Jᴏʙ", callback_data="job#new")])
@@ -1280,7 +1292,7 @@ async def job_info_cb(bot, query):
         else:
             cur = job.get("batch_cursor") or job.get("batch_start_id") or "?"
             end = job.get("batch_end_id") or "calculating..."
-            batch_lbl = f"\n<b>Batch:</b> »  {cur} / {end}"
+            batch_lbl = f"\n<b>Batch:</b> {cur} / {end}"
 
     # Size limit info
     size_lbl = ""
@@ -1298,7 +1310,7 @@ async def job_info_cb(bot, query):
         size_lbl += f"\n<b>Large file alert:</b> ≥ {job['notify_large_file_mb']} MB → DM to owner"
 
     text = (
-        f"<b>»  Live Job Info</b>\n\n"
+        f"<b>Live Job Info</b>\n\n"
         f"<b>ID:</b> <code>{job_id[-6:]}</code>\n"
         f"<b>Name:</b> {job.get('name', 'Default')}\n"
         f"<b>Status:</b> {st} {job.get('status','?')}\n"
@@ -1310,7 +1322,7 @@ async def job_info_cb(bot, query):
         f"<b>Created:</b> {created}\n"
     )
     if job.get("error"):
-        text += f"\n<b>‣  Error:</b> <code>{job['error']}</code>"
+        text += f"\n<b>Error:</b>\n<blockquote><code>{job['error']}</code></blockquote>"
 
     await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup([[
         InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="job#list")
@@ -1862,3 +1874,220 @@ async def _create_job_flow(bot, user_id: int):
         f"<i>Running in the background. Use /jobs to manage.</i>",
         reply_markup=ReplyKeyboardRemove()
     )
+
+@Client.on_callback_query(filters.regex(r'^job#src#'))
+async def job_src_cb(bot, query):
+    user_id = query.from_user.id
+    job_id = query.data.split('#')[2]
+    await query.message.delete()
+    asyncio.create_task(_do_change_source(bot, user_id, job_id))
+
+async def _do_change_source(bot, uid: int, jid: str):
+    from pyrogram.types import ReplyKeyboardRemove
+    from plugins.utils import ask_channel_picker, check_chat_protection
+    
+    job = await _get_job(jid)
+    if not job:
+        await bot.send_message(uid, "<b>❌ Job not found.</b>")
+        return
+
+    was_running = job.get("status") == "running"
+    if was_running:
+        await _update_job(jid, status="paused")
+        if jid in _job_tasks:
+            _job_tasks[jid].cancel()
+
+    await bot.send_message(
+        uid,
+        "<b>✏️ Change Live Job Source</b>\n\n"
+        "Select a new source from your saved channels, or tap "
+        "<b>✍️ Manual Input</b> to paste a chat ID / topic link directly.\n\n"
+        "<i>The job will pause during selection and auto-resume once updated.</i>",
+        reply_markup=__import__('pyrogram.types', fromlist=['ReplyKeyboardMarkup']).__class__
+    )
+
+    picked = await ask_channel_picker(
+        bot, uid,
+        prompt="Select the new source channel / group:",
+        extra_options=["✍️ Manual Input"],
+        timeout=300
+    )
+
+    new_source = None
+    new_source_title = None
+
+    if picked is None:
+        pass
+    elif picked == "✍️ Manual Input":
+        try:
+            ask_msg = await _ask(bot, uid,
+                "✍️ <b>Enter the source:</b>\n\n"
+                "• Numeric chat ID: <code>-100...</code>\n"
+                "• @username: <code>@mychannel</code>\n"
+                "• Topic URL: <code>https://t.me/c/...</code>\n"
+                "<i>Send ⛔ to cancel.</i>",
+                timeout=300,
+                reply_markup=ReplyKeyboardRemove())
+            txt = (ask_msg.text or "").strip()
+            if not txt or "⛔" in txt or txt.lower() == "cancel":
+                await bot.send_message(uid, "<i>Cancelled.</i>")
+            else:
+                import re as _re
+                m = _re.match(r'https?://t\.me/c/(\d+)/(\d+)', txt)
+                if m:
+                    new_source = f"-100{m.group(1)}"
+                    new_source_title = f"Topic /c/{m.group(1)}/{m.group(2)}"
+                elif _re.match(r'https?://t\.me/([^/]+)/(\d+)', txt):
+                    mm = _re.match(r'https?://t\.me/([^/]+)/(\d+)', txt)
+                    new_source = f"@{mm.group(1)}"
+                    new_source_title = f"@{mm.group(1)}"
+                elif txt.lstrip('-').isdigit() or txt.startswith('@'):
+                    new_source = txt
+                    new_source_title = txt
+                else:
+                    await bot.send_message(uid, "<b>❌ Unrecognised format. Source not changed.</b>")
+        except asyncio.TimeoutError:
+            await bot.send_message(uid, "<i>⏱ Timed out. Source not changed.</i>")
+    elif isinstance(picked, dict):
+        new_source = str(picked.get("chat_id", ""))
+        new_source_title = picked.get("title", new_source)
+
+    if new_source:
+        prot = await check_chat_protection(uid, new_source)
+        if prot:
+            await bot.send_message(uid, prot)
+            if was_running:
+                await _update_job(jid, status="running")
+                _start_job_task(jid, uid)
+            return
+
+        await _update_job(jid, from_chat=new_source, from_title=new_source_title, last_seen_id=0, batch_cursor=0)
+        await bot.send_message(
+            uid,
+            f"<b>✅ Source updated!</b>\n\n"
+            f"<b>New Source:</b> <code>{new_source_title}</code>\n"
+            f"<b>Scan Position:</b> Reset to 0\n"
+            "<i>The job will continue monitoring the new source from the start.</i>"
+        )
+    else:
+        if picked is not None:
+            await bot.send_message(uid, "<i>Source unchanged.</i>")
+
+    if was_running:
+        await _update_job(jid, status="running")
+        _start_job_task(jid, uid)
+        await bot.send_message(uid, "▶️ <b>Job resumed and now monitoring the new source.</b>")
+
+
+
+@Client.on_callback_query(filters.regex(r'^job#src#'))
+async def job_src_cb(bot, query):
+    user_id = query.from_user.id
+    job_id = query.data.split("#", 2)[2]
+    await query.message.delete()
+    await bot.send_message(user_id, "Opening source change wizard…")
+    asyncio.create_task(_do_change_source(bot, user_id, job_id))
+
+async def _do_change_source(bot, uid: int, jid: str):
+    from pyrogram.types import ReplyKeyboardRemove
+    from plugins.utils import ask_channel_picker, check_chat_protection
+
+    job = await _get_job(jid)
+    if not job:
+        await bot.send_message(uid, "<b>❌ Job not found.</b>")
+        return
+
+    was_running = job.get("status") == "running"
+    if was_running:
+        await _update_job(jid, {"status": "paused"})
+        if jid in _job_tasks and not _job_tasks[jid].done():
+            _job_tasks[jid].cancel()
+
+    await bot.send_message(
+        uid,
+        "<b>✏️ Change Live Job Source</b>\n\n"
+        "Select a new source from your saved channels, or tap "
+        "<b>✍️ Manual Input</b> to paste a chat ID / topic link directly.\n\n"
+        "<i>The job will pause during selection and auto-resume once updated.</i>",
+        reply_markup=__import__('pyrogram.types', fromlist=['ReplyKeyboardMarkup'])
+            .__class__ 
+    )
+
+    picked = await ask_channel_picker(
+        bot, uid,
+        prompt="Select the new source channel / group:",
+        extra_options=["✍️ Manual Input"],
+        timeout=300
+    )
+
+    new_source = None
+    new_source_title = None
+
+    if picked is None:
+        pass
+    elif picked == "✍️ Manual Input":
+        try:
+            ask_msg = await bot.ask(
+                uid,
+                "✍️ <b>Enter the source:</b>\n\n"
+                "Accepted formats:\n"
+                "• Numeric chat ID: <code>-1001234567890</code>\n"
+                "• @username: <code>@mychannel</code>\n"
+                "• Topic URL: <code>https://t.me/c/1234567890/5</code>\n"
+                "<i>Send ⛔ to cancel.</i>",
+                timeout=300,
+                reply_markup=ReplyKeyboardRemove()
+            )
+            text = (ask_msg.text or "").strip()
+            if not text or "⛔" in text or text.lower() == "cancel":
+                await bot.send_message(uid, "<i>Cancelled.</i>")
+            else:
+                import re as _re
+                m = _re.match(r'https?://t\.me/c/(\d+)/(\d+)', text)
+                if m:
+                    new_source = f"-100{m.group(1)}"
+                    new_source_title = f"Topic /c/{m.group(1)}/{m.group(2)}"
+                elif _re.match(r'https?://t\.me/([^/]+)/(\d+)', text):
+                    mm = _re.match(r'https?://t\.me/([^/]+)/(\d+)', text)
+                    new_source = f"@{mm.group(1)}"
+                    new_source_title = f"@{mm.group(1)}"
+                elif text.lstrip('-').isdigit() or text.startswith('@'):
+                    new_source = text
+                    new_source_title = text
+                else:
+                    await bot.send_message(uid, "<b>❌ Unrecognised format.</b>")
+        except asyncio.TimeoutError:
+            await bot.send_message(uid, "<i>⏱ Timed out.</i>")
+    elif isinstance(picked, dict):
+        new_source = str(picked.get("chat_id", ""))
+        new_source_title = picked.get("title", new_source)
+
+    if new_source:
+        prot = await check_chat_protection(uid, new_source)
+        if prot:
+            await bot.send_message(uid, prot)
+            if was_running:
+                await _update_job(jid, {"status": "running"})
+                _start_job_task(jid, uid)
+            return
+
+        await _update_job(jid, {
+            "from_chat": new_source,
+            "from_title": new_source_title,
+            "last_seen_id": 0,
+            "batch_cursor": 0,
+        })
+        await bot.send_message(
+            uid,
+            f"<b>✅ Source updated!</b>\n\n"
+            f"<b>New Source:</b> <code>{new_source_title}</code>\n"
+            f"<b>Scan Position:</b> Reset to 0\n"
+        )
+    else:
+        if picked is not None:
+            await bot.send_message(uid, "<i>Source unchanged.</i>")
+
+    if was_running:
+        await _update_job(jid, {"status": "running"})
+        _start_job_task(jid, uid)
+        await bot.send_message(uid, "▶️ <b>Job resumed.</b>")
