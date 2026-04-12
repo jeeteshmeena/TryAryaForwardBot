@@ -767,6 +767,14 @@ async def _run_job(job_id: str, user_id: int):
                     if not _passes_size_limit(msg, max_size_mb, max_dur_secs):
                         await _update_job(job_id, batch_cursor=msg.id + 1)
                         continue
+
+                    skip_dupes = fresh.get("skip_duplicates", False)
+                    uniq_id = _get_unique_id(msg) if skip_dupes else None
+                    if skip_dupes and uniq_id and uniq_id in (fresh.get("seen_file_ids") or []):
+                        logger.debug(f"[Job {job_id}] DM Batch: skipping duplicate {uniq_id}")
+                        await _update_job(job_id, batch_cursor=msg.id + 1)
+                        continue
+
                     try:
                         success = await _forward_message(client, msg, to_chat, remove_caption, cap_tpl, forward_tag,
                                                to_thread, to_chat_2, to_thread_2, replacements, remove_links)
@@ -774,12 +782,23 @@ async def _run_job(job_id: str, user_id: int):
                             await _inc_forwarded(job_id, 1, forward_type='batch')
                     except FloodWait as fw:
                         await asyncio.sleep(fw.value + 1)
+                        success = False
                     except asyncio.CancelledError:
                         raise
                     except Exception as e:
                         logger.debug(f"[Job {job_id}] DM batch fwd error {msg.id}: {e}")
+                        success = False
 
-                    await _update_job(job_id, batch_cursor=msg.id + 1)
+                    upd = {"batch_cursor": msg.id + 1}
+                    if success and uniq_id:
+                        seen = fresh.get("seen_file_ids") or []
+                        if uniq_id not in seen:
+                            seen.append(uniq_id)
+                            if len(seen) > 5000: seen.pop(0)
+                        upd["seen_file_ids"] = seen
+
+                    await _update_job(job_id, **upd)
+
 
                     now_mj = time.time()
                     if (now_mj - job_last_prog_update) >= 10:
@@ -906,6 +925,13 @@ async def _run_job(job_id: str, user_id: int):
                         await _update_job(job_id, batch_cursor=msg.id + 1)
                         continue
 
+                    skip_dupes = fresh2.get("skip_duplicates", False)
+                    uniq_id = _get_unique_id(msg) if skip_dupes else None
+                    if skip_dupes and uniq_id and uniq_id in (fresh2.get("seen_file_ids") or []):
+                        logger.debug(f"[Job {job_id}] Batch: skipping duplicate {uniq_id}")
+                        await _update_job(job_id, batch_cursor=msg.id + 1)
+                        continue
+
                     try:
                         success = await _forward_message(client, msg, to_chat, remove_caption, cap_tpl, forward_tag,
                                                to_thread, to_chat_2, to_thread_2, replacements, remove_links)
@@ -913,12 +939,23 @@ async def _run_job(job_id: str, user_id: int):
                             await _inc_forwarded(job_id, 1, forward_type='batch')
                     except FloodWait as fw:
                         await asyncio.sleep(fw.value + 1)
+                        success = False
                     except asyncio.CancelledError:
                         raise
                     except Exception as e:
                         logger.debug(f"[Job {job_id}] Batch fwd error for {msg.id}: {e}")
+                        success = False
 
-                    await _update_job(job_id, batch_cursor=msg.id + 1)
+                    upd = {"batch_cursor": msg.id + 1}
+                    if success and uniq_id:
+                        seen = fresh2.get("seen_file_ids") or []
+                        if uniq_id not in seen:
+                            seen.append(uniq_id)
+                            if len(seen) > 5000: seen.pop(0)
+                        upd["seen_file_ids"] = seen
+
+                    await _update_job(job_id, **upd)
+
 
                     now_mj = time.time()
                     if (now_mj - job_last_prog_update) >= 10:
@@ -1166,6 +1203,8 @@ async def _run_job(job_id: str, user_id: int):
                 if before_count != len(new_msgs):
                     logger.debug(f"[Job {job_id}] Topic filter (thread={from_thread}): {before_count} → {len(new_msgs)} msgs")
 
+            skip_dupes = fresh.get("skip_duplicates", False)
+
             for msg in new_msgs:
                 if not _passes_filters(msg, disabled_types):
                     last_seen = max(last_seen, msg.id)
@@ -1173,6 +1212,13 @@ async def _run_job(job_id: str, user_id: int):
                     continue
                 if not _passes_size_limit(msg, max_size_mb, max_dur_secs, min_dur_secs):
                     logger.debug(f"[Job {job_id}] Live: skipping msg {msg.id} (size/duration limit)")
+                    last_seen = max(last_seen, msg.id)
+                    await _update_job(job_id, last_seen_id=last_seen)
+                    continue
+
+                uniq_id = _get_unique_id(msg) if skip_dupes else None
+                if skip_dupes and uniq_id and uniq_id in (fresh.get("seen_file_ids") or []):
+                    logger.debug(f"[Job {job_id}] Live: skipping duplicate {uniq_id}")
                     last_seen = max(last_seen, msg.id)
                     await _update_job(job_id, last_seen_id=last_seen)
                     continue
@@ -1200,6 +1246,8 @@ async def _run_job(job_id: str, user_id: int):
                                         f"<b>Source:</b> {job.get('from_title','?')}\n"
                                         f"<b>Msg ID:</b> <code>{msg.id}</code>")
                             except Exception: pass
+                
+                success = False
                 try:
                     success = await _forward_message(client, msg, to_chat, remove_caption, cap_tpl, forward_tag,
                                            to_thread, to_chat_2, to_thread_2, replacements, remove_links)
@@ -1223,8 +1271,20 @@ async def _run_job(job_id: str, user_id: int):
                         except Exception: pass
                     else:
                         logger.debug(f"[Job {job_id}] Forward error: {fwd_err}")
+
                 last_seen = max(last_seen, msg.id)
-                await _update_job(job_id, last_seen_id=last_seen)
+                upd = {"last_seen_id": last_seen}
+                
+                if success and uniq_id:
+                    seen = fresh.get("seen_file_ids") or []
+                    if uniq_id not in seen:
+                        seen.append(uniq_id)
+                        if len(seen) > 5000: seen.pop(0)
+                    upd["seen_file_ids"] = seen
+                    # Update local fresh.get to avoid immediate db roundtrips causing issues
+                    fresh["seen_file_ids"] = seen
+                    
+                await _update_job(job_id, **upd)
                 await asyncio.sleep(1)
 
             if new_msgs:
@@ -1472,9 +1532,7 @@ async def _render_jobs_list(bot, user_id: int, message_or_query):
                 row.append(InlineKeyboardButton(f"Sᴛᴀʀᴛ [{short}]", callback_data=f"job#start#{jid}"))
                 row.append(InlineKeyboardButton(f"🔁 Rᴇsᴇᴛ [{short}]", callback_data=f"job#reset#{jid}"))
             row.append(InlineKeyboardButton(f"Iɴғᴏ [{short}]", callback_data=f"job#info#{jid}"))
-            row.append(InlineKeyboardButton(f"⚙️ Lɪᴍɪᴛs [{short}]", callback_data=f"job#limits#{jid}"))
-            row.append(InlineKeyboardButton(f"✏️ Nᴀᴍᴇ [{short}]", callback_data=f"job#rename#{jid}"))
-            row.append(InlineKeyboardButton(f"Sʀᴄ [{short}]", callback_data=f"job#src#{jid}"))
+            row.append(InlineKeyboardButton(f"⚙️ Sᴇᴛᴛɪɴɢs [{short}]", callback_data=f"job#settings#{jid}"))
             row.append(InlineKeyboardButton(f"Dᴇʟ [{short}]",  callback_data=f"job#del#{jid}"))
             btns_list.append(row)
 
@@ -1595,6 +1653,46 @@ async def job_info_cb(bot, query):
     await query.message.edit_text(text, reply_markup=InlineKeyboardMarkup([[
         InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="job#list")
     ]]))
+
+
+@Client.on_callback_query(filters.regex(r'^job#settings#'))
+async def job_settings_cb(bot, query):
+    job_id = query.data.split("#", 2)[2]
+    job = await _get_job(job_id)
+    if not job:
+        return await query.answer("Job not found!", show_alert=True)
+
+    text = (
+        f"<b>⚙️ Job Settings</b>\n\n"
+        f"<b>ID:</b> <code>{job_id[-6:]}</code>\n"
+        f"<b>Name:</b> {job.get('name', 'Default')}\n"
+        f"<b>Source:</b> {job.get('from_title','?')}\n"
+        f"<b>Dest 1:</b> {job.get('to_title','?')}\n"
+        f"<i>Configure limits, source changes, name manipulation, and duplicate prevention.</i>"
+    )
+
+    skip_lbl = "✅ ON" if job.get("skip_duplicates") else "❌ OFF"
+    
+    btns = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✍️ Eᴅɪᴛ Nᴀᴍᴇ", callback_data=f"job#rename#{job_id}")],
+        [InlineKeyboardButton("🔄 Sᴏᴜʀᴄᴇ Cʜᴀɴɢᴇ Wɪᴢᴀʀᴅ", callback_data=f"job#src#{job_id}")],
+        [InlineKeyboardButton("📏 Sɪᴢᴇ / Dᴜʀᴀᴛɪᴏɴ Lɪᴍɪᴛs", callback_data=f"job#limits#{job_id}")],
+        [InlineKeyboardButton(f"📄 Sᴋɪᴘ Dᴜᴘʟɪᴄᴀᴛᴇs: {skip_lbl}", callback_data=f"job#togglededupl#{job_id}")],
+        [InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="job#list")]
+    ])
+    await query.message.edit_text(text, reply_markup=btns)
+
+
+@Client.on_callback_query(filters.regex(r'^job#togglededupl#'))
+async def job_toggle_dedupl_cb(bot, query):
+    job_id = query.data.split("#", 2)[2]
+    job = await _get_job(job_id)
+    if not job: return
+    new_val = not job.get("skip_duplicates", False)
+    await _update_job(job_id, skip_duplicates=new_val)
+    # Refresh settings directly
+    query.data = f"job#settings#{job_id}"
+    await job_settings_cb(bot, query)
 
 
 @Client.on_callback_query(filters.regex(r'^job#stop#'))
@@ -2080,18 +2178,48 @@ async def _create_job_flow(bot, user_id: int):
             continue
         break
 
-    max_size_mb     = 0
-    max_duration_s  = 0
-    min_duration_s  = 0
-    ltext = limit_r.text.strip()
-    if ltext not in ("0", "0 (No limit)"):
-        parts_l = [p.strip() for p in ltext.split(":")]
-        def _lim_int(v):
-            try: return max(0, int(v))
-            except: return 0
-        max_size_mb   = _lim_int(parts_l[0] if len(parts_l) > 0 else "0")
-        max_duration_s = _lim_int(parts_l[1] if len(parts_l) > 1 else "0") * 60
-        min_duration_s = _lim_int(parts_l[2] if len(parts_l) > 2 else "0") * 60
+    # ── Step 8: Skip Duplicates ─────────────────────────────
+    while True:
+        dupe_r = await _ask(bot, user_id,
+            "<b>Step 8/8 — Skip Duplicates?</b>\n\n"
+            "If the source uploads a file that already exists in your target (based on exact file content / unique ID), "
+            "should the bot silently skip it?\n\n"
+            "<blockquote expandable>"
+            "This checks Telegram's <code>file_unique_id</code>. Exact same files are skipped, but edited/different files (even if same name) are allowed."
+            "</blockquote>",
+            reply_markup=ReplyKeyboardMarkup(
+                [[KeyboardButton("✅ YES (Skip duplicates)")],
+                 [KeyboardButton("❌ NO (Allow duplicates)")],
+                 [UNDO_BTN, CANCEL_BTN]],
+                resize_keyboard=True, one_time_keyboard=True
+            ))
+
+        if _cancel(dupe_r.text):
+            return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
+        if _undo(dupe_r.text):
+            # redo limits
+            limit_r2 = await _ask(bot, user_id,
+                "<b>↩️ Redo — Step 7/8: Size / Duration Limits</b>\n\n"
+                "Format: max_mb : max_min : min_min (or 0 for none):",
+                reply_markup=ReplyKeyboardMarkup(
+                    [[KeyboardButton("0 (No limit)")], [CANCEL_BTN]],
+                    resize_keyboard=True, one_time_keyboard=True))
+            if _cancel(limit_r2.text):
+                return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
+            ltext = limit_r2.text.strip()
+            max_size_mb, max_duration_s, min_duration_s = 0, 0, 0
+            if ltext not in ("0", "0 (No limit)"):
+                parts_l = [p.strip() for p in ltext.split(":")]
+                def _lim_int(v):
+                    try: return max(0, int(v))
+                    except: return 0
+                max_size_mb   = _lim_int(parts_l[0] if len(parts_l) > 0 else "0")
+                max_duration_s = _lim_int(parts_l[1] if len(parts_l) > 1 else "0") * 60
+                min_duration_s = _lim_int(parts_l[2] if len(parts_l) > 2 else "0") * 60
+            continue
+        break
+
+    skip_dupelicates = "yes" in dupe_r.text.lower() or "✅" in dupe_r.text
 
     # ── Save & Start ──────────────────────────────────────────────
     job_id = f"{user_id}-{int(time.time())}"
@@ -2122,6 +2250,8 @@ async def _create_job_flow(bot, user_id: int):
         "created":            int(time.time()),
         "forwarded":          0,
         "last_seen_id":       0,
+        "skip_duplicates":    skip_dupelicates,
+        "seen_file_ids":      [],
     }
     await _save_job(job)
     _start_job_task(job_id, user_id)
@@ -2138,6 +2268,7 @@ async def _create_job_flow(bot, user_id: int):
         size_lbl += f"\n<b>Max duration:</b> {max_duration_s // 60} min"
     if not size_lbl:
         size_lbl = "\n<b>Size limit:</b> None"
+    dupe_lbl = "\n<b>Skip Dupes:</b> ✅ ON" if skip_dupelicates else "\n<b>Skip Dupes:</b> ❌ OFF"
 
     kind = "Bot" if is_bot else "Userbot"
     await bot.send_message(
@@ -2146,7 +2277,7 @@ async def _create_job_flow(bot, user_id: int):
         f"🟢 <b>{from_title}</b> → <b>{to_title}</b>{thread_lbl}"
         f"{dest2_lbl}\n"
         f"<b>Account:</b> {kind}: {sel_acc.get('name','?')}\n"
-        f"{batch_lbl}{size_lbl}\n"
+        f"{batch_lbl}{size_lbl}{dupe_lbl}\n"
         f"<b>Job ID:</b> <code>{job_id[-6:]}</code>\n\n"
         f"<i>Running in the background. Use /jobs to manage.</i>",
         reply_markup=ReplyKeyboardRemove()
@@ -2257,114 +2388,3 @@ async def _do_change_source(bot, uid: int, jid: str):
 
 
 
-@Client.on_callback_query(filters.regex(r'^job#src#'))
-async def job_src_cb(bot, query):
-    user_id = query.from_user.id
-    job_id = query.data.split("#", 2)[2]
-    await query.message.delete()
-    await bot.send_message(user_id, "Opening source change wizard…")
-    asyncio.create_task(_do_change_source(bot, user_id, job_id))
-
-async def _do_change_source(bot, uid: int, jid: str):
-    from pyrogram.types import ReplyKeyboardRemove
-    from plugins.utils import ask_channel_picker, check_chat_protection
-
-    job = await _get_job(jid)
-    if not job:
-        await bot.send_message(uid, "<b>❌ Job not found.</b>")
-        return
-
-    was_running = job.get("status") == "running"
-    if was_running:
-        await _update_job(jid, {"status": "paused"})
-        if jid in _job_tasks and not _job_tasks[jid].done():
-            _job_tasks[jid].cancel()
-
-    await bot.send_message(
-        uid,
-        "<b>✏️ Change Live Job Source</b>\n\n"
-        "Select a new source from your saved channels, or tap "
-        "<b>✍️ Manual Input</b> to paste a chat ID / topic link directly.\n\n"
-        "<i>The job will pause during selection and auto-resume once updated.</i>",
-        reply_markup=__import__('pyrogram.types', fromlist=['ReplyKeyboardMarkup'])
-            .__class__ 
-    )
-
-    picked = await ask_channel_picker(
-        bot, uid,
-        prompt="Select the new source channel / group:",
-        extra_options=["✍️ Manual Input"],
-        timeout=300
-    )
-
-    new_source = None
-    new_source_title = None
-
-    if picked is None:
-        pass
-    elif picked == "✍️ Manual Input":
-        try:
-            ask_msg = await bot.ask(
-                uid,
-                "✍️ <b>Enter the source:</b>\n\n"
-                "Accepted formats:\n"
-                "• Numeric chat ID: <code>-1001234567890</code>\n"
-                "• @username: <code>@mychannel</code>\n"
-                "• Topic URL: <code>https://t.me/c/1234567890/5</code>\n"
-                "<i>Send ⛔ to cancel.</i>",
-                timeout=300,
-                reply_markup=ReplyKeyboardRemove()
-            )
-            text = (ask_msg.text or "").strip()
-            if not text or "⛔" in text or text.lower() == "cancel":
-                await bot.send_message(uid, "<i>Cancelled.</i>")
-            else:
-                import re as _re
-                m = _re.match(r'https?://t\.me/c/(\d+)/(\d+)', text)
-                if m:
-                    new_source = f"-100{m.group(1)}"
-                    new_source_title = f"Topic /c/{m.group(1)}/{m.group(2)}"
-                elif _re.match(r'https?://t\.me/([^/]+)/(\d+)', text):
-                    mm = _re.match(r'https?://t\.me/([^/]+)/(\d+)', text)
-                    new_source = f"@{mm.group(1)}"
-                    new_source_title = f"@{mm.group(1)}"
-                elif text.lstrip('-').isdigit() or text.startswith('@'):
-                    new_source = text
-                    new_source_title = text
-                else:
-                    await bot.send_message(uid, "<b>❌ Unrecognised format.</b>")
-        except asyncio.TimeoutError:
-            await bot.send_message(uid, "<i>⏱ Timed out.</i>")
-    elif isinstance(picked, dict):
-        new_source = str(picked.get("chat_id", ""))
-        new_source_title = picked.get("title", new_source)
-
-    if new_source:
-        prot = await check_chat_protection(uid, new_source)
-        if prot:
-            await bot.send_message(uid, prot)
-            if was_running:
-                await _update_job(jid, {"status": "running"})
-                _start_job_task(jid, uid)
-            return
-
-        await _update_job(jid, {
-            "from_chat": new_source,
-            "from_title": new_source_title,
-            "last_seen_id": 0,
-            "batch_cursor": 0,
-        })
-        await bot.send_message(
-            uid,
-            f"<b>✅ Source updated!</b>\n\n"
-            f"<b>New Source:</b> <code>{new_source_title}</code>\n"
-            f"<b>Scan Position:</b> Reset to 0\n"
-        )
-    else:
-        if picked is not None:
-            await bot.send_message(uid, "<i>Source unchanged.</i>")
-
-    if was_running:
-        await _update_job(jid, {"status": "running"})
-        _start_job_task(jid, uid)
-        await bot.send_message(uid, "▶️ <b>Job resumed.</b>")
