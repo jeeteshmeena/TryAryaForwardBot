@@ -33,6 +33,11 @@ _CLIENT = CLIENT()
 # In-memory: job_id → asyncio.Task
 _job_tasks: dict[str, asyncio.Task] = {}
 
+# In-memory: job_id → pending auto-resume asyncio.Task
+# Tracked separately so stop/delete can cancel scheduled resumes
+_auto_resume_tasks: dict[str, asyncio.Task] = {}
+
+
 #  Future-based ask() — immune to pyrofork stale-listener bug 
 _lj_waiting: dict[int, asyncio.Future] = {}
 
@@ -299,15 +304,26 @@ def _passes_size_limit(msg, max_size_mb: int, max_duration_secs: int, min_dur_se
 
 def _msg_in_topic(msg, from_thread_id: int) -> bool:
     """Return True if `msg` belongs to the given source topic (thread).
-    Telegram stores the topic ID in `message_thread_id`.
-    The very first message that creates the topic has msg.id == thread_id
-    and may not carry `message_thread_id`, so we check that too.
+
+    Telegram rules:
+    - Messages in a topic carry `message_thread_id` = the topic's root message ID.
+    - The topic-creator message itself has msg.id == thread_id AND no message_thread_id.
+    - In the 'General' topic (thread_id=1), messages may NOT carry message_thread_id at all.
+    - Some Pyrogram builds expose `reply_to_top_id` which equals the topic root.
+    - Forwarded messages keep the original message_thread_id.
     """
     tid = getattr(msg, "message_thread_id", None)
     if tid is not None and int(tid) == from_thread_id:
         return True
-    # The topic-starter message itself (msg.id == topic_id)
+    # The topic-starter message itself
     if int(msg.id) == from_thread_id:
+        return True
+    # General topic (id=1): messages with no thread marker belong to General
+    if from_thread_id == 1 and tid is None:
+        return True
+    # Fallback: reply_to_top_id (older pyrogram / pyrofork field)
+    rtt = getattr(msg, "reply_to_top_id", None)
+    if rtt is not None and int(rtt) == from_thread_id:
         return True
     return False
 
@@ -1008,11 +1024,9 @@ async def _run_job(job_id: str, user_id: int):
             new_msgs: list = []
 
             try:
-                if not is_bot or is_dm_source:
-                    # ── DM/Bot source path (both userbot AND bot accounts) ───────────────
-                    # get_chat_history correctly fetches from the specific DM conversation.
-                    # get_messages() on a DM peer from a bot client fetches from GLOBAL INBOX instead.
-                    # This path handles: Userbot DM, Bot DM, Userbot private-channel, Bot private-channel
+                # ── PATH 1: Userbot (any source) ────────────────────────────────────────────
+                # Userbots can always use get_chat_history to fetch from any chat they're in.
+                if not is_bot:
                     collected = []
                     offset_id = 0  # 0 = start from the very latest
                     while True:
@@ -1023,19 +1037,36 @@ async def _run_job(job_id: str, user_id: int):
                             offset_id=offset_id
                         ):
                             if msg.id <= last_seen:
-                                # We've reached the already-seen boundary — stop.
                                 break
                             page.append(msg)
                         if not page:
-                            break  # Nothing new on this page
+                            break
                         collected.extend(page)
-                        # If the page was a full 100 AND all were new, there may
-                        # be more pages; continue from the oldest ID in this page.
                         if len(page) < 100:
-                            break  # Partial page → no more new messages
-                        offset_id = page[-1].id  # oldest in this page
-                    # Reverse collected (oldest→newest) to deliver chronologically
+                            break
+                        offset_id = page[-1].id
                     new_msgs = list(reversed(collected))
+
+                elif is_dm_source:
+                    # ── PATH 2: Bot account + DM source ────────────────────────────────────
+                    # Normal bots CANNOT call get_chat_history on DMs (Bot API restriction).
+                    # The correct approach: messages arrive via Pyrogram's update system.
+                    # Here we use get_messages with explicit IDs (last_seen+1, +2, ...) from
+                    # the bot's DM with the user — this DOES work because the bot is the peer.
+                    # We only probe a small forward window (20 IDs) since it's a live DM.
+                    probe = last_seen + 1
+                    probe_ids = list(range(probe, probe + 20))
+                    try:
+                        msgs = await client.get_messages(from_chat, probe_ids)
+                        if not isinstance(msgs, list): msgs = [msgs]
+                        valid = [m for m in msgs if m and not m.empty and not m.service]
+                        valid = [m for m in valid if m.chat is not None and m.chat.id == from_chat]
+                        valid.sort(key=lambda m: m.id)
+                        new_msgs = valid
+                    except Exception as _dm_e:
+                        logger.debug(f"[Job {job_id}] Bot DM probe error: {_dm_e}")
+                        new_msgs = []
+
                 else:
                     # ── Channel/Group source path (bot accounts only) ─────────────────────
                     # Bot accounts cannot use get_chat_history on channels/groups they're not
@@ -1126,11 +1157,14 @@ async def _run_job(job_id: str, user_id: int):
                     await asyncio.sleep(15)
                 continue
 
-            # Filter by source topic if configured
-            from_thread = job.get("from_thread")
+            # Filter by source topic if configured — use fresh DB value (not stale startup snapshot)
+            from_thread = fresh.get("from_thread") if fresh else job.get("from_thread")
             if from_thread:
                 from_thread = int(from_thread)
+                before_count = len(new_msgs)
                 new_msgs = [m for m in new_msgs if _msg_in_topic(m, from_thread)]
+                if before_count != len(new_msgs):
+                    logger.debug(f"[Job {job_id}] Topic filter (thread={from_thread}): {before_count} → {len(new_msgs)} msgs")
 
             for msg in new_msgs:
                 if not _passes_filters(msg, disabled_types):
@@ -1279,14 +1313,27 @@ async def _run_job(job_id: str, user_id: int):
             logger.warning(f"[Job {job_id}] Transient error: {err_str[:80]} — Auto-restarting in {slp}s")
             # Mark job as still running (not error) so UI stays green
             await _update_job(job_id, error=f"[Auto-reconnect] {err_str[:60]}")
-            async def _auto_resume():
-                await __import__('asyncio').sleep(slp)
+            async def _auto_resume(_jid=job_id, _uid=user_id, _slp=slp, _client=client):
+                await __import__('asyncio').sleep(_slp)
                 # Clear reconnect cooldown so next run can actually ping
-                sname_resume = getattr(client, 'name', None) if client else None
+                sname_resume = getattr(_client, 'name', None) if _client else None
                 if sname_resume:
                     _lj_last_reconnect.pop(sname_resume, None)
-                _start_job_task(job_id, user_id)
-            __import__('asyncio').create_task(_auto_resume())
+                # CRITICAL: verify the job still exists and is still "running" before re-launching
+                # (prevents ghost tasks after job deletion or manual stop)
+                _fresh = await _get_job(_jid)
+                if not _fresh:
+                    logger.info(f"[Job {_jid}] Auto-resume aborted: job was deleted")
+                    _auto_resume_tasks.pop(_jid, None)
+                    return
+                if _fresh.get('status') not in ('running', None):
+                    logger.info(f"[Job {_jid}] Auto-resume aborted: status={_fresh.get('status')}")
+                    _auto_resume_tasks.pop(_jid, None)
+                    return
+                _auto_resume_tasks.pop(_jid, None)
+                _start_job_task(_jid, _uid)
+            _rt = __import__('asyncio').create_task(_auto_resume())
+            _auto_resume_tasks[job_id] = _rt
         else:
             logger.error(f"[Job {job_id}] Fatal: {e}", exc_info=True)
             await _update_job(job_id, status="error", error=err_str[:80])
@@ -1305,6 +1352,15 @@ async def _run_job(job_id: str, user_id: int):
 
 
 def _start_job_task(job_id: str, user_id: int) -> asyncio.Task:
+    # Cancel any existing running task first to prevent duplicate forwarding
+    old_task = _job_tasks.get(job_id)
+    if old_task and not old_task.done():
+        old_task.cancel()
+        logger.debug(f"[Job {job_id}] Cancelled existing task before starting new one")
+    # Cancel any pending auto-resume too
+    old_resume = _auto_resume_tasks.pop(job_id, None)
+    if old_resume and not old_resume.done():
+        old_resume.cancel()
     task = asyncio.create_task(_run_job(job_id, user_id))
     _job_tasks[job_id] = task
     return task
@@ -1551,6 +1607,9 @@ async def job_stop_cb(bot, query):
     task = _job_tasks.pop(job_id, None)
     if task and not task.done():
         task.cancel()
+    rt = _auto_resume_tasks.pop(job_id, None)
+    if rt and not rt.done():
+        rt.cancel()
     await _update_job(job_id, status="stopped")
     await query.answer("⏹ Job stopped.", show_alert=False)
     await _render_jobs_list(bot, user_id, query)
@@ -1566,6 +1625,9 @@ async def job_reset_cb(bot, query):
     task = _job_tasks.pop(job_id, None)
     if task and not task.done():
         task.cancel()
+    rt = _auto_resume_tasks.pop(job_id, None)
+    if rt and not rt.done():
+        rt.cancel()
     # Reset: clear batch_done, reset batch_cursor, last_seen_id, forwarded
     start_id = int(job.get("batch_start_id") or 1)
     await _update_job(job_id,
@@ -1605,6 +1667,9 @@ async def job_del_cb(bot, query):
     task = _job_tasks.pop(job_id, None)
     if task and not task.done():
         task.cancel()
+    rt = _auto_resume_tasks.pop(job_id, None)
+    if rt and not rt.done():
+        rt.cancel()
     await _delete_job_db(job_id)
     await query.answer("»  Job deleted.", show_alert=False)
     await _render_jobs_list(bot, user_id, query)
