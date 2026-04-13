@@ -37,7 +37,7 @@ async def _main_buttons(user_id: int):
         ],
         [
             InlineKeyboardButton('Bᴀᴛᴄʜ Lɪɴᴋs',  callback_data='sl#start'),
-            InlineKeyboardButton('Sᴛᴀᴛᴜs',        callback_data='status'),
+            InlineKeyboardButton('Sᴛᴀᴛᴜs',         callback_data='status'),
         ],
         [
             InlineKeyboardButton('Aʙᴏᴜᴛ',          callback_data='about'),
@@ -74,26 +74,10 @@ async def start(client, message):
     user = message.from_user
     if not await db.is_user_exist(user.id):
         await db.add_user(user.id, user.first_name)
-    try:
-        from .jobs import resume_live_jobs
-        await resume_live_jobs(user.id)
-    except Exception:
-        pass
-    try:
-        from .taskjob import resume_task_jobs
-        await resume_task_jobs(user.id)
-    except Exception:
-        pass
-    try:
-        from .multijob import resume_multi_jobs
-        await resume_multi_jobs(user.id)
-    except Exception:
-        pass
-    try:
-        from .live_batch import resume_live_batches
-        await resume_live_batches()
-    except Exception:
-        pass
+    
+    # --- Live/Task jobs are already natively resumed on bot boot by main.py ---
+    # Triggering them manually on /start creates ghost background task loops
+    # that infinitely cancel and restart jobs every 20 seconds.
     configs = await db.get_configs(user.id)
     menu_image_id = configs.get('menu_image_id')
     btns = await _main_buttons(user.id)

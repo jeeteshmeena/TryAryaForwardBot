@@ -110,7 +110,7 @@ async def main():
         from plugins.share_bot import start_share_bot
         await start_share_bot()
     except Exception as e:
-        logging.error(f"Failed to init share bot: {e}")
+        logging.error(f"Failed to init share bots: {e}")
 
     if os.environ.get("DELIVERY_ONLY", "0") in ("1", "true", "True"):
         logging.info("Running in DELIVERY ONLY mode. Main bot features disabled.")
