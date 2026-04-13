@@ -238,6 +238,14 @@ async def _inc_forwarded(job_id: str, n: int = 1, forward_type: str = 'batch'):
 # Filter helpers
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _get_unique_id(msg) -> str | None:
+    """Extract file_unique_id from a message's media."""
+    for attr in ('document', 'video', 'audio', 'voice', 'animation', 'photo'):
+        obj = getattr(msg, attr, None)
+        if obj:
+            return getattr(obj, 'file_unique_id', None)
+    return None
+
 def _passes_filters(msg, disabled_types: list) -> bool:
     """Return True if message passes the user's content-type filters."""
     if msg.empty or msg.service:
