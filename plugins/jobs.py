@@ -37,6 +37,11 @@ _job_tasks: dict[str, asyncio.Task] = {}
 # Tracked separately so stop/delete can cancel scheduled resumes
 _auto_resume_tasks: dict[str, asyncio.Task] = {}
 
+# In-memory per-job filename dedup for live phase.
+# Key: job_id  ->  set of lowercased filenames already forwarded.
+# This is ALWAYS-ON and prevents the same-named file from being forwarded twice,
+# even if the file was re-uploaded (different file_unique_id).
+_live_seen_names: dict[str, set] = {}
 
 #  Future-based ask() — immune to pyrofork stale-listener bug 
 _lj_waiting: dict[int, asyncio.Future] = {}
@@ -1048,6 +1053,13 @@ async def _run_job(job_id: str, user_id: int):
 
         live_last_update = 0.0
 
+        # ── In-memory dedup: block same-named files from being forwarded twice ──
+        # Initialise fresh for this session (cleared on restart only, which is fine
+        # since last_seen_id ensures we never re-process old messages after a restart).
+        if job_id not in _live_seen_names:
+            _live_seen_names[job_id] = set()
+        _live_fn_seen = _live_seen_names[job_id]  # local alias for speed
+
         while True:
             fresh = await _get_job(job_id)
             if not fresh or fresh.get("status") != "running":
@@ -1238,9 +1250,32 @@ async def _run_job(job_id: str, user_id: int):
                     await _update_job(job_id, last_seen_id=last_seen)
                     continue
 
+                # ── ALWAYS-ON: filename-based duplicate guard ─────────────────
+                # Block forwarding if a file with the exact same name was already
+                # forwarded in this live session, regardless of skip_duplicates.
+                _fn_key = None
+                if msg.media:
+                    _media_attr = getattr(msg.media, 'value', str(msg.media))
+                    _media_obj  = getattr(msg, _media_attr, None)
+                    if _media_obj:
+                        _fn_raw = getattr(_media_obj, 'file_name', None)
+                        if not _fn_raw and isinstance(_media_obj, list) and _media_obj:
+                            _fn_raw = getattr(_media_obj[-1], 'file_name', None)
+                        if _fn_raw:
+                            _fn_key = _fn_raw.strip().lower()
+                if _fn_key and _fn_key in _live_fn_seen:
+                    logger.info(
+                        f"[Job {job_id}] Blocking duplicate filename '{_fn_key}' "
+                        f"(msg {msg.id}) — already forwarded in this session."
+                    )
+                    last_seen = max(last_seen, msg.id)
+                    await _update_job(job_id, last_seen_id=last_seen)
+                    continue
+
+                # ── Optional: file_unique_id-based dedup (exact binary match) ─
                 uniq_id = _get_unique_id(msg) if skip_dupes else None
                 if skip_dupes and uniq_id and uniq_id in (fresh.get("seen_file_ids") or []):
-                    logger.debug(f"[Job {job_id}] Live: skipping duplicate {uniq_id}")
+                    logger.debug(f"[Job {job_id}] Live: skipping duplicate file_unique_id {uniq_id}")
                     last_seen = max(last_seen, msg.id)
                     await _update_job(job_id, last_seen_id=last_seen)
                     continue
@@ -1296,16 +1331,20 @@ async def _run_job(job_id: str, user_id: int):
 
                 last_seen = max(last_seen, msg.id)
                 upd = {"last_seen_id": last_seen}
-                
-                if success and uniq_id:
-                    seen = fresh.get("seen_file_ids") or []
-                    if uniq_id not in seen:
-                        seen.append(uniq_id)
-                        if len(seen) > 5000: seen.pop(0)
-                    upd["seen_file_ids"] = seen
-                    # Update local fresh.get to avoid immediate db roundtrips causing issues
-                    fresh["seen_file_ids"] = seen
-                    
+
+                if success:
+                    # Mark filename as seen so duplicates are blocked going forward
+                    if _fn_key:
+                        _live_fn_seen.add(_fn_key)
+                    # Track file_unique_id for binary-exact dedup
+                    if uniq_id:
+                        seen = fresh.get("seen_file_ids") or []
+                        if uniq_id not in seen:
+                            seen.append(uniq_id)
+                            if len(seen) > 5000: seen.pop(0)
+                        upd["seen_file_ids"] = seen
+                        fresh["seen_file_ids"] = seen
+
                 await _update_job(job_id, **upd)
                 await asyncio.sleep(1)
 
@@ -1421,6 +1460,8 @@ async def _run_job(job_id: str, user_id: int):
             await _update_job(job_id, status="error", error=err_str[:80])
     finally:
         _job_tasks.pop(job_id, None)
+        # Clean up in-memory filename dedup set to prevent memory leaks
+        _live_seen_names.pop(job_id, None)
         if client:
             client_name = getattr(client, 'name', None)
             if client_name:

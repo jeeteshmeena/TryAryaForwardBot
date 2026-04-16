@@ -339,14 +339,25 @@ def extract_ep_label_robust(fname: str) -> dict:
     b_norm = base.strip()
     
     # 2. Normalize common delimiters
-    b_norm = re.sub(r'[\-\u2013\u2014—~]+', '-', b_norm)
-    b_norm = re.sub(r'\.\.', '-', b_norm)
-    b_norm = re.sub(r'(?i)\s*_?to_?\s*', '-', b_norm)
+    # Matches Hyphen, En Dash, Em Dash, Horizontal Bar, Minus Sign, and multiple Tildes
+    dash_variants = r'[\-\u2010\u2011\u2012\u2013\u2014\u2015\u2212\uFE63\uFF0D~～]+'
+    b_norm = re.sub(dash_variants, '-', b_norm)
+    # Also normalize common range 'to' keyword (Hinglish/Common)
+    b_norm = re.sub(r'(?i)\s+(?:to|से)\s+', '-', b_norm)
+    # Strip spaces around dashes
+    b_norm = re.sub(r'\s*-\s*', '-', b_norm)
     
     num = r'\d{1,5}'
-    # Delimiters: - , | / & +
-    delims = r'(?:\s*[\-\,\|\/\&\+]\s*)'
-    num_seq_regex = f'(?:{num}(?:{delims}{num})*)'
+
+    def _format_res(label_found, nums):
+        if not nums:
+            return {"label": "", "numbers": [], "is_range": False}
+        if len(nums) > 1:
+            # User wants "EpisodeNumber-EpisodeNumber" format for grouped files
+            n_min, n_max = min(nums), max(nums)
+            return {"label": f"{n_min}-{n_max}", "numbers": sorted(set(nums)), "is_range": True}
+        else:
+            return {"label": str(nums[0]), "numbers": [nums[0]], "is_range": False}
     
     # Priority 1: Keywords like Ep, Episode, etc.
     # Note: we use a limited set of delimiters here to avoid catching things like "Ep_10_100_Title"
@@ -356,9 +367,9 @@ def extract_ep_label_robust(fname: str) -> dict:
     kw_pattern = r'(?i)\b(?:episode|epi|ep|e|part|#|एपिसोड|भाग|eps)(?:s)?\s*[\-\:\.\_\*\#]*\s*(' + kw_num_seq + r')(?![0-9])'
     kw_m = re.search(kw_pattern, b_norm)
     if kw_m:
-        label = kw_m.group(1).strip()
-        nums = [int(n) for n in re.findall(r'\d+', label) if int(n) < 10000]
-        return {"label": label, "numbers": nums, "is_range": len(nums) > 1}
+        label_raw = kw_m.group(1).strip()
+        nums = [int(n) for n in re.findall(r'\d+', label_raw) if int(n) < 10000]
+        return _format_res(label_raw, nums)
 
     # Priority 2: Bracketed group sequences like [100-110], (100 | 101)
     br_delims = r'(?:\s*[\-\,\|\/\&\+\_]\s*)' # Brackets can use _ safely
@@ -366,18 +377,18 @@ def extract_ep_label_robust(fname: str) -> dict:
     br_pattern = r'[\[\(\<\{【『]\s*(' + br_num_seq + r')\s*[\]\)\>\}】』]'
     br_m = re.search(br_pattern, b_norm)
     if br_m:
-        label = br_m.group(1).strip().replace('_', '-')
-        nums = [int(n) for n in re.findall(r'\d+', label) if int(n) < 10000]
-        return {"label": label, "numbers": nums, "is_range": len(nums) > 1}
+        label_raw = br_m.group(1).strip().replace('_', '-')
+        nums = [int(n) for n in re.findall(r'\d+', label_raw) if int(n) < 10000]
+        return _format_res(label_raw, nums)
     
     # Priority 3: Pure number sequence (must have clearly intended range/list delimiter)
     pure_delims = r'(?:\s*[\-\,\|\/\&\+]\s*)' # No lone _ as pure range delimiter unless bracketed
     pure_num_seq = f'(?:{num}(?:{pure_delims}{num})+)'
     r_m = re.search(r'\b(' + pure_num_seq + r')\b', b_norm)
     if r_m:
-        label = r_m.group(1).strip()
-        nums = [int(n) for n in re.findall(r'\d+', label) if int(n) < 10000]
-        return {"label": label, "numbers": nums, "is_range": len(nums) > 1}
+        label_raw = r_m.group(1).strip()
+        nums = [int(n) for n in re.findall(r'\d+', label_raw) if int(n) < 10000]
+        return _format_res(label_raw, nums)
 
     # Priority 4: Leading zero-padded or plain number
     lead = re.match(r'^0*(\d{1,5})(?:[^0-9]|$)', b_norm)

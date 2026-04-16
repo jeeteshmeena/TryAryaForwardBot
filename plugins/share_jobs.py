@@ -703,12 +703,21 @@ async def _build_share_links(bot, user_id, sj, info_msg):
 
         #  DETECT MODE 
         # Check if a significant fraction of files look like ranges ("57-79")
+        # Now checks both Captions and Filenames to be robust.
         range_hint_count = 0
+        range_rx = r'(?<!\d)\d{1,4}\s*[\-\u2010\u2011\u2012\u2013\u2014\u2015\u2212\uFE63\uFF0D~～]\s*\d{1,4}(?!\d)'
         for msg in all_valid_msgs:
+            found = False
             cap = msg.caption or msg.text or ""
-            if _re.search(r'(?<!\d)\d{1,4}\s*[-–—]\s*\d{1,4}(?!\d)', cap):
-                range_hint_count += 1
-        GROUPED_MODE = range_hint_count > (len(all_valid_msgs) * 0.50)
+            if _re.search(range_rx, cap):
+                found = True
+            if not found:
+                for fname in _get_file_names(msg):
+                    if _re.search(range_rx, fname):
+                        found = True; break
+            if found: range_hint_count += 1
+            
+        GROUPED_MODE = range_hint_count > (len(all_valid_msgs) * 0.40) # Lower threshold to 40% to be safer
 
         # PASS 2: Re-parse with the correct extractor based on mode
         parsed_msgs = []
@@ -775,30 +784,32 @@ async def _build_share_links(bot, user_id, sj, info_msg):
         valid_ep_nums  = [e for e in all_ep_nums if e >= first_ep_num]
 
         # ── Missing episode detection (ACCURATE 3-tier method) ─────────────────
-        # Tier 1: raw_missing = gaps in the labelled ep range
-        # Tier 2: unassigned  = files that physically exist but couldn't be labelled
-        # Tier 3: truly_missing = raw_missing minus unassigned (these truly don't exist)
-        # We must NOT count unparseable files as missing — they are already embedded.
         missing_eps: list = []
         truly_missing_count: int = 0
         unassigned_count: int = 0
 
-        if not GROUPED_MODE and valid_ep_nums:
+        # Always build present_set by expanding ALL identified ranges/numbers
+        # This prevents grouped files from being marked as "missing" in the report
+        present_eps_expanded = set()
+        for _, ep_s, ep_e, _ in parsed_msgs:
+            if ep_s > 0:
+                # Expand range min-max into the present set
+                for e in range(ep_s, min(ep_e + 1, ep_s + 500)):
+                    present_eps_expanded.add(e)
+
+        if present_eps_expanded:
             expected_range = set(range(first_ep_num, last_ep_num + 1))
-            present_set    = set(valid_ep_nums)
-            raw_missing    = sorted(expected_range - present_set)
+            raw_missing    = sorted(expected_range - present_eps_expanded)
 
             # Count files that physically exist but couldn't get an episode label
-            added_msg_ids_pre = set()
-            for mids in ep_to_msgs.values():
-                added_msg_ids_pre.update(mids)
+            added_msg_ids_pre = {m.id for m, _, _, _ in parsed_msgs}
             unassigned_count = len([m for m in all_valid_msgs if m.id not in added_msg_ids_pre])
 
             # True gaps = raw gaps not covered by unassigned files
             truly_missing_count = max(0, len(raw_missing) - unassigned_count)
             # Only list episode numbers as missing if they exceed our unassigned buffer
             if truly_missing_count > 0:
-                missing_eps = raw_missing[unassigned_count:]  # first N gaps are filled by unassigned files
+                missing_eps = raw_missing[unassigned_count:]
 
         #  BUILD BUCKETS 
         # GROUPED_MODE: each file = 1 button using its own range label
@@ -1130,21 +1141,20 @@ async def _build_share_links(bot, user_id, sj, info_msg):
                 dup_preview += f" (+{len(duplicate_eps)-10} more)"
             report_lines.append(f"‣  <b>Duplicates detected ({len(duplicate_eps)}) — all files kept:</b> {dup_preview}")
 
-        if not GROUPED_MODE:
-            if unassigned_count > 0:
-                report_lines.append(
-                    f"📎 <b>Files with no episode label ({unassigned_count}):</b> "
-                    f"<i>exist in DB but filename had no episode number — embedded chronologically (NOT missing)</i>"
-                )
-            if truly_missing_count > 0:
-                miss_preview = ", ".join(str(e) for e in missing_eps[:15])
-                if len(missing_eps) > 15:
-                    miss_preview += f" (+{len(missing_eps)-15} more)"
-                report_lines.append(
-                    f"❌ <b>Truly missing episodes ({truly_missing_count}) — not found in DB:</b> {miss_preview}"
-                )
-            elif unassigned_count == 0:
-                report_lines.append(f"✅ <b>No missing episodes</b> — all {last_ep_num - first_ep_num + 1} slots accounted for!")
+        if unassigned_count > 0:
+            report_lines.append(
+                f"📎 <b>Files with no episode label ({unassigned_count}):</b> "
+                f"<i>exist in DB but filename had no episode number — embedded chronologically (NOT missing)</i>"
+            )
+        if truly_missing_count > 0:
+            miss_preview = ", ".join(str(e) for e in missing_eps[:15])
+            if len(missing_eps) > 15:
+                miss_preview += f" (+{len(missing_eps)-15} more)"
+            report_lines.append(
+                f"❌ <b>Truly missing episodes ({truly_missing_count}) — not found in DB:</b> {miss_preview}"
+            )
+        elif unassigned_count == 0:
+            report_lines.append(f"✅ <b>No missing episodes</b> — all {last_ep_num - first_ep_num + 1} slots accounted for!")
 
         report_lines.append("</blockquote>")
         report_lines.append(f"")
@@ -1187,20 +1197,19 @@ async def _build_share_links(bot, user_id, sj, info_msg):
             plain_report.append("-" * 60)
             plain_report.append(f"DUPLICATES DETECTED — all files kept ({len(duplicate_eps)}):")
             plain_report.append("  " + ", ".join(str(e) for e in duplicate_eps))
-        if not GROUPED_MODE:
-            if unassigned_count > 0:
-                plain_report.append("-" * 60)
-                plain_report.append(f"FILES EMBEDDED WITHOUT EPISODE LABEL: {unassigned_count}")
-                plain_report.append(f"  These files EXIST in the database but their filenames had")
-                plain_report.append(f"  no readable episode number (e.g. auto-generated names).")
-                plain_report.append(f"  They are NOT missing — they are already delivered inside buttons.")
-            if truly_missing_count > 0:
-                plain_report.append("-" * 60)
-                plain_report.append(f"TRULY MISSING EPISODES (not in DB): {truly_missing_count}")
-                plain_report.append("  " + ", ".join(str(e) for e in missing_eps))
-            elif unassigned_count == 0:
-                plain_report.append("-" * 60)
-                plain_report.append("NO MISSING EPISODES — all slots accounted for!")
+        if unassigned_count > 0:
+            plain_report.append("-" * 60)
+            plain_report.append(f"FILES EMBEDDED WITHOUT EPISODE LABEL: {unassigned_count}")
+            plain_report.append(f"  These files EXIST in the database but their filenames had")
+            plain_report.append(f"  no readable episode number (e.g. auto-generated names).")
+            plain_report.append(f"  They are NOT missing — they are already delivered inside buttons.")
+        if truly_missing_count > 0:
+            plain_report.append("-" * 60)
+            plain_report.append(f"TRULY MISSING EPISODES (not in DB): {truly_missing_count}")
+            plain_report.append("  " + ", ".join(str(e) for e in missing_eps))
+        elif unassigned_count == 0:
+            plain_report.append("-" * 60)
+            plain_report.append("NO MISSING EPISODES — all slots accounted for!")
 
         plain_report += [
             "=" * 60,
