@@ -9,7 +9,7 @@ import logging
 import json
 import tempfile
 from pymongo.errors import PyMongoError
-from pyrogram import Client, filters
+from pyrogram import Client, filters, enums
 from pyrogram.types import (
     InlineKeyboardButton, InlineKeyboardMarkup,
     ReplyKeyboardMarkup, ReplyKeyboardRemove
@@ -86,8 +86,9 @@ async def _render_home(client, chat_id: int, *, edit_message=None):
     markup = InlineKeyboardMarkup(kb)
 
     if edit_message:
-        return await edit_message.edit_text(txt, reply_markup=markup, parse_mode="html")
-    return await client.send_message(chat_id, txt, reply_markup=markup, parse_mode="html")
+        return await edit_message.edit_text(txt, reply_markup=markup, parse_mode=enums.ParseMode.HTML)
+    return await client.send_message(chat_id, txt, reply_markup=markup, parse_mode=enums.ParseMode.HTML)
+
 
 
 
