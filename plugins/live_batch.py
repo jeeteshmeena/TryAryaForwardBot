@@ -404,75 +404,69 @@ async def _lb_run_job(job_id: str):
             raw_exists = [m for m in msgs if m and not getattr(m, 'empty', True)]
             
             if not raw_exists:
-                # The entire 200-ID chunk is completely empty.
-                # Could be the physical end of the channel, OR a deleted gap larger than 200.
+                # The entire chunk is empty — either end of channel or a big gap.
                 try:
                     probe = await src_client.get_messages(source, [last_seen + 250, last_seen + 500, last_seen + 1000])
                     if isinstance(probe, list) and any(p for p in probe if p and not getattr(p, 'empty', True)):
-                        # Massive gap confirmed! Jump forward.
                         last_seen += 200
                         await _lb_update_job(job_id, {"last_seen_id": last_seen})
-                        # Don't continue yet — still check buffer below
-                    else:
-                        # No messages ahead. We are at the bleeding edge.
-                        # But still fall through to the buffer-flush check below!
-                        pass
                 except: pass
             else:
-                # Valid media found inside chunk! Process it.
-                # Use a set of existing buffer IDs to skip already-buffered messages.
                 existing_buf = set(buffer_mids)
                 new_added = 0
                 
-                # Check setting
                 use_dup_check = job.get("duplicate_handling") == "yes"
-                target_ch = int(job["target"])
+                target_ch_int = int(job["target"])
                 story_name = job["story"]
 
                 for m in valid:
-                    if m.id not in existing_buf:
-                        if use_dup_check:
-                            # ─── Strict Duplicate Check (by Episode Number) ───
-                            from plugins.utils import extract_ep_label_robust
-                            
-                            media_obj = (m.audio or m.voice or m.document or m.video or m.photo)
-                            fname = getattr(media_obj, "file_name", "") or getattr(media_obj, "title", "") or m.caption or ""
-                            
-                            ep_res = extract_ep_label_robust(fname)
-                            incoming_nums = ep_res["numbers"]
-                            if incoming_nums:
-                                # Check if ANY of the numbers in this file already exist for this story+target
-                                already_posted = await db.db["live_batch_posted_eps"].find_one({
-                                    "target": target_ch,
-                                    "story": story_name,
-                                    "nums": {"$in": incoming_nums}
-                                })
-                                
-                                if already_posted:
-                                    logger.info(f"[LiveBatch {job_id}] Skipping DUPLICATE episodes {incoming_nums} for story {story_name} (Matches existing entry)")
-                                    last_seen = max(last_seen, m.id)
-                                    continue
-                                
-                                # Session duplicate check (filename based)
-                                base_fn = os.path.splitext(fname.lower())[0] if fname else f"id_{m.id}"
-                                session_dup = await db.db["live_batch_seen"].find_one({"job_id": job_id, "filename": base_fn})
-                                if session_dup:
-                                    logger.info(f"[LiveBatch {job_id}] Skipping SESSION duplicate file: {fname}")
-                                    last_seen = max(last_seen, m.id)
-                                    continue
-                                
-                                await db.db["live_batch_seen"].insert_one({
-                                    "job_id": job_id, "filename": base_fn, "msg_id": m.id, "at": time.time()
-                                })
-                            
-                        buffer_mids.append(m.id)
-                        existing_buf.add(m.id)
-                        new_added += 1
+                    if m.id in existing_buf:
+                        continue  # Already in buffer, skip
+
+                    if use_dup_check:
+                        # ── LAYER 1: file_unique_id check ──────────────────────────────────
+                        # Catches the SAME FILE re-uploaded in the source (2-3 times).
+                        # file_unique_id is Telegram's permanent identity for a file regardless of message.
+                        media_obj = (m.audio or m.voice or m.document or m.video or m.photo)
+                        f_uid = getattr(media_obj, "file_unique_id", None)
+                        fname = getattr(media_obj, "file_name", "") or getattr(media_obj, "title", "") or m.caption or ""
+
+                        if f_uid:
+                            uid_dup = await db.db["live_batch_seen"].find_one({"job_id": job_id, "file_uid": f_uid})
+                            if uid_dup:
+                                logger.info(f"[LiveBatch {job_id}] Skipping same-file re-upload (file_unique_id={f_uid})")
+                                last_seen = max(last_seen, m.id)
+                                continue
+                            # Register file_uid immediately so future duplicates in same scan are caught
+                            await db.db["live_batch_seen"].update_one(
+                                {"job_id": job_id, "file_uid": f_uid},
+                                {"$set": {"file_uid": f_uid, "msg_id": m.id, "fname": fname, "at": time.time()}},
+                                upsert=True
+                            )
+
+                        # ── LAYER 2: episode-number check against already-POSTED batches ──
+                        # Catches files that were already part of a previously posted button block
+                        # (e.g. episodes 298-300 already have buttons in the destination channel).
+                        ep_res = extract_ep_label_robust(fname)
+                        incoming_nums = ep_res.get("numbers", [])
+                        if incoming_nums:
+                            already_posted = await db.db["live_batch_posted_eps"].find_one({
+                                "target": target_ch_int,
+                                "story": story_name,
+                                "nums": {"$in": incoming_nums}
+                            })
+                            if already_posted:
+                                logger.info(f"[LiveBatch {job_id}] Skipping episodes {incoming_nums} — already posted to destination")
+                                last_seen = max(last_seen, m.id)
+                                continue
+
+                    buffer_mids.append(m.id)
+                    existing_buf.add(m.id)
+                    new_added += 1
 
                 if new_added:
                     logger.info(f"[LiveBatch] Added {new_added} new IDs to buffer. Total: {len(buffer_mids)}")
 
-                # Safely advance last_seen
                 last_seen = max(m.id for m in raw_exists)
                 await _lb_update_job(job_id, {"last_seen_id": last_seen, "buffer_mids": buffer_mids})
 
@@ -827,31 +821,41 @@ async def _lb_callbacks(bot, update: CallbackQuery):
 
     elif action == "stop":
         jid = data[2]
+        # 1. Mark stopped in DB FIRST so the loop exits on its next status check
         await _lb_update_job(jid, {"status": "stopped"})
-        if jid in _lb_paused: _lb_paused[jid].set()
-        
-        task = _lb_tasks.get(jid)
+        # 2. Unblock the pause-event so a sleeping loop wakes up immediately
+        if jid in _lb_paused:
+            _lb_paused[jid].set()
+        # 3. Cancel the asyncio task and wait for it
+        task = _lb_tasks.pop(jid, None)
         if task and not task.done():
             task.cancel()
-            try: await task
-            except asyncio.CancelledError: pass
-            _lb_tasks.pop(jid, None)
-
+            try:
+                await asyncio.wait_for(asyncio.shield(task), timeout=5)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
+        _lb_paused.pop(jid, None)
         update.data = f"lb#view#{jid}"
         return await _lb_callbacks(bot, update)
 
     elif action == "del":
         jid = data[2]
-        # Kill task first
-        task = _lb_tasks.get(jid)
+        # 1. Mark stopped to make the loop exit cleanly on next iteration
+        await _lb_update_job(jid, {"status": "stopped"})
+        # 2. Unblock any paused wait
+        if jid in _lb_paused:
+            _lb_paused[jid].set()
+        # 3. Cancel + wait with a hard timeout so UI never hangs
+        task = _lb_tasks.pop(jid, None)
         if task and not task.done():
             task.cancel()
-            try: await task
-            except asyncio.CancelledError: pass
-            _lb_tasks.pop(jid, None)
-            
-        await _lb_delete_job(jid)
+            try:
+                await asyncio.wait_for(asyncio.shield(task), timeout=5)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
         _lb_paused.pop(jid, None)
+        # 4. Delete from DB
+        await _lb_delete_job(jid)
         update.data = "lb#main"
         return await _lb_callbacks(bot, update)
 
