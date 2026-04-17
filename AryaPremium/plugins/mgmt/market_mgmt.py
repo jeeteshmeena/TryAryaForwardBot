@@ -8,6 +8,7 @@ import asyncio
 import logging
 import json
 import tempfile
+import time
 from pymongo.errors import PyMongoError
 from pyrogram import Client, filters, enums
 from pyrogram.types import (
@@ -1470,13 +1471,19 @@ async def _premium_bot_set(client, user_id, b_id, key, label):
             # Upload via store bot to get store-bot-specific file_id; then delete immediately.
             if media_type == "photo":
                 sent = await store_cli.send_photo(user_id, photo=tmp_path)
-                val = {"type": "photo", "file_id": sent.photo.file_id}
+                val = {"type": "photo", "file_id": sent.photo.file_id if sent.photo else sent.document.file_id}
             elif media_type == "animation":
                 sent = await store_cli.send_animation(user_id, animation=tmp_path)
-                val = {"type": "animation", "file_id": sent.animation.file_id}
+                # Fallback in case Telegram sees it as document/video
+                fid = (sent.animation.file_id if sent.animation else 
+                      (sent.document.file_id if sent.document else (sent.video.file_id if sent.video else None)))
+                if not fid:
+                    raise AttributeError("Could not retrieve file_id from sent animation.")
+                val = {"type": "animation", "file_id": fid}
             else:
                 sent = await store_cli.send_video(user_id, video=tmp_path)
-                val = {"type": "video", "file_id": sent.video.file_id}
+                val = {"type": "video", "file_id": sent.video.file_id if sent.video else sent.document.file_id}
+
         finally:
             try:
                 if sent:
