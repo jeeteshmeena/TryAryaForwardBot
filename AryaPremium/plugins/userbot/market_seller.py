@@ -377,31 +377,36 @@ async def _send_main_menu(client, user_id: int, user, lang: str, reply_to_messag
             if not fid:
                 continue
             try:
+                # KEY FIX: Send media WITHOUT caption.
+                # Telegram silently strips <blockquote expandable> from captions,
+                # so we send the image alone, then send the text as a separate message.
+                # This guarantees Quatoblocks always render correctly.
                 if t == "animation":
-                    return await client.send_animation(
+                    await client.send_animation(
                         user_id,
                         animation=fid,
-                        caption=msg_txt,
-                        reply_markup=markup,
-                        parse_mode=enums.ParseMode.HTML,
+                        reply_markup=None,
                         reply_to_message_id=reply_to_message_id
                     )
-                if t == "video":
-                    return await client.send_video(
+                elif t == "video":
+                    await client.send_video(
                         user_id,
                         video=fid,
-                        caption=msg_txt,
-                        reply_markup=markup,
-                        parse_mode=enums.ParseMode.HTML,
+                        reply_markup=None,
                         reply_to_message_id=reply_to_message_id
                     )
-                return await client.send_photo(
-                    user_id,
-                    photo=fid,
-                    caption=msg_txt,
+                else:
+                    await client.send_photo(
+                        user_id,
+                        photo=fid,
+                        reply_markup=None,
+                        reply_to_message_id=reply_to_message_id
+                    )
+                # Send text separately so blockquotes work
+                return await client.send_message(
+                    user_id, msg_txt,
                     reply_markup=markup,
-                    parse_mode=enums.ParseMode.HTML,
-                    reply_to_message_id=reply_to_message_id
+                    parse_mode=enums.ParseMode.HTML
                 )
             except Exception as e:
                 # Auto-heal: remove broken media entries (MEDIA_EMPTY / expired file_id)
