@@ -7,6 +7,7 @@ buttons when the defined threshold is hit.
 """
 import asyncio
 import logging
+logger = logging.getLogger(__name__)
 import time
 import uuid
 import re
@@ -71,6 +72,13 @@ async def _lb_ask(bot, user_id, text, reply_markup=None, timeout=300):
 # ─────────────────────────────────────────────────────────────────────────────
 # Core Engine
 # ─────────────────────────────────────────────────────────────────────────────
+def _sc(text: str) -> str:
+    """Convert ASCII letters to Unicode Small-Caps."""
+    return text.translate(str.maketrans(
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ",
+        "ᴀʙᴄᴅᴇꜰɢʜɪᴊᴋʟᴍɴᴏᴘǫʀꜱᴛᴜᴠᴡxʏᴢᴀʙᴄᴅᴇꜰɢʜɪᴊᴋʟᴍɴᴏᴘǫʀꜱᴛᴜᴠᴡxʏᴢ"
+    ))
+
 def _bold_sans(s):
     res = ''
     for c in str(s):
@@ -249,13 +257,19 @@ async def _post_live_batch(sb_client, job: dict, chunk_msgs: list):
 
 async def _lb_run_job(job_id: str):
     logger.info(f"Starting Live Batch job {job_id}")
+    # BUG FIX: these MUST be declared OUTSIDE and BEFORE the while loop
+    # so they survive across loop iterations. Previously they were inside
+    # a try: block at the same indent as while True: which caused NameError.
+    src_client = None
+    ub_sess = None
+
     try:
         from plugins.share_bot import share_clients
         from plugins.test import CLIENT as _FACTORY
-        
-        src_client = None
-        ub_sess = None
-    
+    except Exception as import_err:
+        logger.error(f"[LiveBatch {job_id}] Import error on startup: {import_err}")
+        return
+
     while True:
         ev = _lb_paused.get(job_id)
         if ev and not ev.is_set():
@@ -263,7 +277,6 @@ async def _lb_run_job(job_id: str):
             
         job = await _lb_get_job(job_id)
         if not job or job.get("status") in ("stopped", "failed"):
-            pass
             break
             
         try:
@@ -274,7 +287,8 @@ async def _lb_run_job(job_id: str):
             from plugins.utils import check_chat_protection
             prot_err = await check_chat_protection(job["user_id"], source)
             if prot_err:
-                await _lb_update_job(job_id, status="error", error=prot_err)
+                # BUG FIX: was called with kwargs, must be a dict
+                await _lb_update_job(job_id, {"status": "error", "error": prot_err})
                 try:
                     await BOT_INSTANCE.send_message(job["user_id"], prot_err)
                 except Exception:
@@ -288,32 +302,39 @@ async def _lb_run_job(job_id: str):
             # Deduplicate buffer in case duplicates crept in during a previous crash
             buffer_mids = list(dict.fromkeys(buffer_mids))
             fwd_count = job.get("forwarded", 0)
-            sb_client = share_clients.get(str(job["share_bot_id"]))
+
+            # BUG FIX: share_clients keys may be int or str — try both to be safe
+            raw_sb_id = job["share_bot_id"]
+            sb_client = share_clients.get(str(raw_sb_id)) or share_clients.get(int(raw_sb_id) if str(raw_sb_id).isdigit() else raw_sb_id)
+
+            if not sb_client:
+                logger.error(f"[LiveBatch {job_id}] Share bot client not found for ID={raw_sb_id}. Available: {list(share_clients.keys())}")
+                await asyncio.sleep(30)
+                continue
             
             # Reconnect Source Client 
             if not src_client or not getattr(src_client, "is_connected", False):
                 acc_id = job.get("account_id", "bot")
-                if acc_id == "bot":
+                if not acc_id or acc_id == "bot":
                     src_client = BOT_INSTANCE
                 else:
                     bots = await db.get_bots(job["user_id"])
                     acc_bot = next((b for b in bots if str(b.get("id")) == str(acc_id)), None)
-                    if acc_bot and not acc_bot.get("is_bot", False):
+                    if acc_bot and not acc_bot.get("is_bot", True):
                         ub_sess = acc_bot["session"]
                         src_client = _FACTORY().client({"session": ub_sess}, False)
                         try:
                             await src_client.connect()
                         except Exception as e:
                             logger.error(f"Live Batch: Failed to connect user account: {e}")
+                            src_client = None
                             await asyncio.sleep(60)
                             continue
                     else:
                         # Fallback to main bot if specified account disappears
                         src_client = BOT_INSTANCE
-            
-            # ── Peer Resolution for Clients ─────────────────────────────────────────
-            # Ensure both Clients have the source/target in their local peer cache
-            # to avoid PEER_ID_INVALID or CHANNEL_INVALID on restart.
+
+            # ── Peer Resolution for Clients (once per reconnect, not every loop) ─
             for c in (src_client, sb_client):
                 if c:
                     try: await c.get_chat(source)
@@ -322,7 +343,7 @@ async def _lb_run_job(job_id: str):
                     except: pass
             # ──────────────────────────────────────────────────────────────────────
 
-            # Setup Progress Bar
+            # Setup Progress Bar — only post if not already done
             prog_id = job.get("prog_id")
             if not prog_id:
                 try:
