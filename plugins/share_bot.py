@@ -63,22 +63,25 @@ def _sc(text: str) -> str:
     ))
 
 def _get_base_header(user) -> str:
+    # Only first name, no last name — used in non-welcome contexts (About, Help)
     u_name = user.first_name or "User"
-    last = (" " + user.last_name) if getattr(user, "last_name", None) else ""
-    return f"›› ʜᴇʏ, <a href='tg://user?id={user.id}'>{u_name}{last}</a>\n\n"
+    return f"›› ʜᴇʏ, <a href='tg://user?id={user.id}'>{u_name}</a>\n\n"
 
 def _get_welcome_text(user, bot_name, custom_wel=None) -> str:
     if custom_wel:
         return format_msg(custom_wel, user)
+    first = user.first_name or "User"
     return (
-        _get_base_header(user) +
-        f"<b>»  {_sc('Welcome to')} {bot_name}!</b>\n\n" +
-        _sc(
-            "I am a file delivery bot. Tap any link button from the channel "
-            "and I will send you the files directly here.\n\n"
-            "Click Help for more info."
-        )
+        # Block 1: Greeting with first name only
+        f"<blockquote expandable>›› ʜᴇʏ, <a href='tg://user?id={user.id}'>{first}</a>❣️</blockquote>\n"
+        # Block 2: Welcome line
+        f"<blockquote expandable><b>»  {_sc('Welcome to')} {bot_name}!</b></blockquote>\n"
+        # Block 3: Description
+        f"<blockquote expandable>{_sc('I am a file delivery bot. Tap any link button from the channel and I will send you the files directly here.')}</blockquote>\n"
+        # Block 4: Help hint
+        f"<blockquote expandable>{_sc('Click Help for more info.')}</blockquote>"
     )
+
 
 def _get_help_text(user) -> str:
     return _get_base_header(user) + _sc(
