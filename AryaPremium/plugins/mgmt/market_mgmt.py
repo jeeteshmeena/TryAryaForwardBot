@@ -76,6 +76,7 @@ async def _render_home(client, chat_id: int, *, edit_message=None):
     kb = [
         [InlineKeyboardButton("🛒 " + utils.to_smallcap("Add Story"), callback_data="mk#add_story"),
          InlineKeyboardButton("💸 " + utils.to_smallcap("Pending"), callback_data="mk#pending")],
+        [InlineKeyboardButton("📝 " + utils.to_smallcap("Story Requests"), callback_data="mk#reqs_0")],
         [InlineKeyboardButton("📦 " + utils.to_smallcap("Manage Stories"), callback_data="mk#manage_stories"),
          InlineKeyboardButton("📡 " + utils.to_smallcap("Channels"), callback_data="mk#channels")],
         [InlineKeyboardButton("🤖 " + utils.to_smallcap("Accounts"), callback_data="mk#accounts"),
@@ -155,6 +156,125 @@ async def market_callback(client, query):
                 [InlineKeyboardButton("« Back", callback_data="mk#back")]
             ]
             await query.message.edit_text("<b>⚙️ Ecosystem Settings</b>\n\nConfigure your global payment settings here. Channel management is available in Channels.", reply_markup=InlineKeyboardMarkup(kb))
+
+        elif cmd.startswith("reqs_"):
+            page = int(cmd.replace("reqs_", ""))
+            reqs = await db.db.premium_requests.find({}).sort("created_at", -1).to_list(length=None)
+            
+            if not reqs:
+                return await _safe_answer(query, "No story requests found.", show_alert=True)
+                
+            items_per_page = 10
+            total_pages = max(1, (len(reqs) + items_per_page - 1) // items_per_page)
+            if page < 0: page = 0
+            if page >= total_pages: page = total_pages - 1
+            
+            subset = reqs[page*items_per_page : (page+1)*items_per_page]
+            
+            txt_req = f"<b>📝 User Story Requests (Page {page+1}/{total_pages})</b>\n\nClick on any request to manage it:"
+            kb = []
+            for r in subset:
+                sname = r.get('story_name', 'Unknown')
+                if len(sname) > 25: sname = sname[:22] + "..."
+                status_emoji = {
+                    "Sent": "📮", "Pending": "⏳", "Searching": "🔍", "Posting": "📤", "Posted": "✅", "Completed": "🎉"
+                }.get(r.get('status', 'Sent'), "📌")
+                kb.append([InlineKeyboardButton(f"{status_emoji} {sname} ({r.get('user_id')})", callback_data=f"mk#req_{str(r['_id'])}")])
+            
+            nav = []
+            if page > 0:
+                nav.append(InlineKeyboardButton("❬ Prev", callback_data=f"mk#reqs_{page-1}"))
+            if page < total_pages - 1:
+                nav.append(InlineKeyboardButton("Next ❭", callback_data=f"mk#reqs_{page+1}"))
+            if nav: kb.append(nav)
+            
+            kb.append([InlineKeyboardButton("« " + utils.to_smallcap("Home"), callback_data="mk#back")])
+            
+            await query.message.edit_text(txt_req, reply_markup=InlineKeyboardMarkup(kb))
+            return
+
+        elif cmd.startswith("req_"):
+            req_id = cmd.replace("req_", "")
+            try:
+                from bson import ObjectId
+                r = await db.db.premium_requests.find_one({"_id": ObjectId(req_id)})
+            except: r = None
+            
+            if not r:
+                return await _safe_answer(query, "Request not found.", show_alert=True)
+                
+            t_str = r.get("created_at").strftime('%d %b %Y, %H:%M') if r.get("created_at") else "Unknown"
+            status = r.get('status', 'Sent')
+            txt_d = (
+                f"<b>📝 MANAGE STORY REQUEST</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━\n"
+                f"<b>📖 Name:</b> {r.get('story_name')}\n"
+                f"<b>🎧 Platform:</b> {r.get('platform')}\n"
+                f"<b>📑 Type:</b> {r.get('completion_type', 'N/A')}\n"
+                f"<b>👤 User ID:</b> <code>{r.get('user_id')}</code>\n"
+                f"<b>🤖 Bot ID:</b> <code>{r.get('bot_id')}</code>\n"
+                f"<b>📅 Date:</b> {t_str}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━\n"
+                f"<b>📌 Status:</b> <code>{status}</code>\n\n"
+                f"<i>Select a new status below to notify the user instantly:</i>"
+            )
+            
+            kb = [
+                [InlineKeyboardButton("Pending ⏳", callback_data=f"mk#rstat#{req_id}#Pending"),
+                 InlineKeyboardButton("Searching 🔍", callback_data=f"mk#rstat#{req_id}#Searching")],
+                [InlineKeyboardButton("Posting 📤", callback_data=f"mk#rstat#{req_id}#Posting"),
+                 InlineKeyboardButton("Posted ✅", callback_data=f"mk#rstat#{req_id}#Posted")],
+                [InlineKeyboardButton("Completed 🎉", callback_data=f"mk#rstat#{req_id}#Completed")],
+                [InlineKeyboardButton("« " + utils.to_smallcap("Back to List"), callback_data="mk#reqs_0")]
+            ]
+            await query.message.edit_text(txt_d, reply_markup=InlineKeyboardMarkup(kb))
+            return
+
+        elif cmd.startswith("rstat#"):
+            parts = cmd.split("#", 2)
+            req_id = parts[1]
+            new_status = parts[2]
+            try:
+                from bson import ObjectId
+                r = await db.db.premium_requests.find_one({"_id": ObjectId(req_id)})
+            except: r = None
+            if not r: return await _safe_answer(query, "Not found.", show_alert=True)
+            
+            await db.db.premium_requests.update_one({"_id": r['_id']}, {"$set": {"status": new_status, "updated_at": datetime.now()}})
+            
+            # Log to Arya Core Log
+            try:
+                from utils import log_arya_event
+                user_info = await db.get_user(r.get('user_id'))
+                await log_arya_event(
+                    "STORY REQUEST UPDATED", r.get('user_id'), user_info or {}, 
+                    f"<b>Story:</b> {r.get('story_name')}\n<b>Old Status:</b> {r.get('status')}\n<b>New Status:</b> {new_status}"
+                )
+            except Exception as e:
+                logger.error(f"Failed to log request update: {e}")
+                
+            # Alert User via Store Bot
+            try:
+                bot_id_str = str(r.get('bot_id'))
+                from plugins.userbot.market_seller import market_clients
+                seller_cli = market_clients.get(bot_id_str)
+                if seller_cli:
+                    u_id = r.get('user_id')
+                    alert_txt = (
+                        f"🛎️ <b>Update on your Story Request!</b>\n\n"
+                        f"<b>Story:</b> {r.get('story_name')}\n"
+                        f"<b>New Status:</b> <code>{new_status}</code>\n\n"
+                        f"<i>Check 'My Requests' in your Profile for more info!</i>"
+                    )
+                    await seller_cli.send_message(u_id, alert_txt, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Open Profile", callback_data="mb#main_profile")]]))
+            except Exception as e:
+                logger.error(f"Failed to DM user about request: {e}")
+                
+            await _safe_answer(query, f"Status updated to {new_status} and user notified!", show_alert=True)
+            
+            # Reload manage screen directly
+            query.data = f"mk#req_{req_id}"
+            return await market_callback(client, query)
 
         elif cmd == "back":
             await _safe_answer(query)

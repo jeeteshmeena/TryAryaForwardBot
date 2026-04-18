@@ -823,6 +823,7 @@ async def _process_text(client, message):
             s_name = s.get(f'story_name_{lang}', s.get('story_name_en'))
             kb.append([f"{idx}. {s_name} [ ₹ {s.get('price', 0)} ]"])
         kb.append(["🔍 " + "SEARCH"])
+        kb.append(["CAN'T FIND? REQUEST NOW!"])
         kb.append(["« " + "𝗕𝗮𝗰𝗸 𝘁𝗼 𝗠𝗲𝗻𝘂"])
 
         await message.reply_text(
@@ -831,6 +832,60 @@ async def _process_text(client, message):
             f"Please tap or click on any story name from the keyboard menu below to view details and purchase it:",
             reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True)
         )
+        return
+        
+    # ── REQUEST STORY trigger ──
+    if txt == "CAN'T FIND? REQUEST NOW!":
+        try:
+            from utils import native_ask, log_arya_event
+            from datetime import datetime, timezone
+            
+            # Step 1
+            ans1 = await native_ask(client, user_id, "<b>Step 1/3:</b>\nPlease enter the <b>Story Name</b> you want to request:", reply_markup=ReplyKeyboardMarkup([["« Cancel"]], resize_keyboard=True))
+            if ans1.text.startswith("« "):
+                 await client.send_message(user_id, "<i>❌ Process Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+                 return await _send_main_menu(client, user_id, message.from_user, lang)
+            str_name = ans1.text.strip()
+            
+            # Step 2
+            ans2 = await native_ask(client, user_id, "<b>Step 2/3:</b>\nPlease enter the <b>Platform Name</b> (e.g. Pocket FM, Kuku FM):", reply_markup=ReplyKeyboardMarkup([["« Cancel"]], resize_keyboard=True))
+            if ans2.text.startswith("« "):
+                 await client.send_message(user_id, "<i>❌ Process Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+                 return await _send_main_menu(client, user_id, message.from_user, lang)
+            str_plat = ans2.text.strip()
+            
+            # Step 3
+            ans3 = await native_ask(client, user_id, "<b>Step 3/3:</b>\nIs the story <b>Ongoing</b> or <b>Complete</b>?", reply_markup=ReplyKeyboardMarkup([["Ongoing", "Complete"], ["« Cancel"]], resize_keyboard=True))
+            if ans3.text.startswith("« "):
+                 await client.send_message(user_id, "<i>❌ Process Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+                 return await _send_main_menu(client, user_id, message.from_user, lang)
+            str_status = ans3.text.strip()
+            
+            m_proc = await message.reply_text("<i>Processing Request...</i>", reply_markup=ReplyKeyboardRemove())
+            
+            # Save to MongoDB
+            req_doc = {
+                "user_id": user_id,
+                "bot_id": client.me.id,
+                "story_name": str_name,
+                "platform": str_plat,
+                "completion_type": str_status,
+                "status": "Sent",
+                "created_at": datetime.now(timezone.utc)
+            }
+            await db.db.premium_requests.insert_one(req_doc)
+            
+            await log_arya_event(
+                "NEW STORY REQUEST", user_id, user, 
+                f"<b>Story:</b> {str_name}\n<b>Platform:</b> {str_plat}\n<b>Type:</b> {str_status}\n<b>Bot ID:</b> <code>{client.me.id}</code>"
+            )
+            
+            await m_proc.delete()
+            await client.send_message(user_id, "✅ <b>Request Submitted Successfully!</b>\n\nYou can check the status of your request in the <b>Profile -> My Requests</b> section.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« " + _sc("BACK TO MENU"), callback_data="mb#main_back")]]))
+            
+        except asyncio.TimeoutError:
+            await client.send_message(user_id, "⏳ Request timed out.", reply_markup=ReplyKeyboardRemove())
+            await _send_main_menu(client, user_id, message.from_user, lang)
         return
 
     # ── SEARCH trigger ──
@@ -1043,10 +1098,86 @@ async def _process_callback(client, query):
                 "<b>╚══════════════════╝</b>"
             )
             kb = [
+                [InlineKeyboardButton("📝 " + _sc("MY REQUESTS"), callback_data="mb#my_reqs_0")],
                 [InlineKeyboardButton(f"{_sc('LANGUAGE')}", callback_data="mb#main_settings")],
                 [InlineKeyboardButton(f"{_sc('BACK')}", callback_data="mb#main_back")]
             ]
             await _safe_edit(query.message, text=txt_p, markup=InlineKeyboardMarkup(kb))
+            return
+            
+        elif action.startswith("my_reqs_"):
+            page = int(action.replace("my_reqs_", ""))
+            reqs = await db.db.premium_requests.find({"user_id": user_id, "bot_id": client.me.id}).sort("created_at", -1).to_list(length=None)
+            
+            if not reqs:
+                return await _safe_answer(query, "You haven't made any story requests yet.", show_alert=True)
+                
+            items_per_page = 10
+            total_pages = max(1, (len(reqs) + items_per_page - 1) // items_per_page)
+            if page < 0: page = 0
+            if page >= total_pages: page = total_pages - 1
+            
+            subset = reqs[page*items_per_page : (page+1)*items_per_page]
+            
+            txt_req = f"<b>📝 My Story Requests (Page {page+1}/{total_pages})</b>\n\nClick on any request to view its status:"
+            kb = []
+            for r in subset:
+                sname = r.get('story_name', 'Unknown')
+                if len(sname) > 25: sname = sname[:22] + "..."
+                status_emoji = {
+                    "Sent": "📮", "Pending": "⏳", "Searching": "🔍", "Posting": "📤", "Posted": "✅", "Completed": "🎉"
+                }.get(r.get('status', 'Sent'), "📌")
+                kb.append([InlineKeyboardButton(f"{status_emoji} {sname}", callback_data=f"mb#my_req_{str(r['_id'])}")])
+            
+            nav = []
+            if page > 0:
+                nav.append(InlineKeyboardButton("❬ Prev", callback_data=f"mb#my_reqs_{page-1}"))
+            if page < total_pages - 1:
+                nav.append(InlineKeyboardButton("Next ❭", callback_data=f"mb#my_reqs_{page+1}"))
+            if nav: kb.append(nav)
+            
+            kb.append([InlineKeyboardButton("« " + _sc("BACK TO PROFILE"), callback_data="mb#main_profile")])
+            
+            await _safe_edit(query.message, text=txt_req, markup=InlineKeyboardMarkup(kb))
+            return
+
+        elif action.startswith("my_req_"):
+            req_id = action.replace("my_req_", "")
+            try:
+                from bson import ObjectId
+                r = await db.db.premium_requests.find_one({"_id": ObjectId(req_id), "user_id": user_id})
+            except: r = None
+            
+            if not r:
+                return await _safe_answer(query, "Request not found.", show_alert=True)
+                
+            t_str = r.get("created_at").strftime('%d %b %Y') if r.get("created_at") else "Unknown"
+            status = r.get('status', 'Sent')
+            txt_d = (
+                f"<b>📝 STORY REQUEST DETAILS</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━\n"
+                f"<b>📖 Name:</b> {r.get('story_name')}\n"
+                f"<b>🎧 Platform:</b> {r.get('platform')}\n"
+                f"<b>📑 Type:</b> {r.get('completion_type', 'N/A')}\n"
+                f"<b>📅 Date:</b> {t_str}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━\n"
+                f"<b>📌 Status:</b> <code>{status}</code>\n"
+            )
+            msg_sub = ""
+            if status == "Sent" or status == "Pending":
+                msg_sub = "<i>Our team will review your request soon.</i>"
+            elif status == "Searching":
+                msg_sub = "<i>We are currently looking for this story.</i>"
+            elif status == "Posting" or status == "Posted":
+                msg_sub = "<i>We are uploading this story for you!</i>"
+            elif status == "Completed":
+                msg_sub = "<i>This story is now available in the marketplace!</i>"
+                
+            if msg_sub: txt_d += f"\n{msg_sub}"
+            
+            kb = [[InlineKeyboardButton("« " + _sc("BACK TO REQUESTS"), callback_data="mb#main_my_reqs_0")]]
+            await _safe_edit(query.message, text=txt_d, markup=InlineKeyboardMarkup(kb))
+            return
 
         elif action == "settings":
             kb = [
