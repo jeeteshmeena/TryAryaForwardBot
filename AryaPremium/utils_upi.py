@@ -39,11 +39,20 @@ def generate_upi_card(upi_id: str, amount: str, story_name: str, payee_name: str
             font_path = "C:/Windows/Fonts/arial.ttf"
             font_bold_path = "C:/Windows/Fonts/ariblk.ttf"
         else:
-            # Common path for ttf-mscorefonts-installer on Ubuntu/Debian
-            font_path = "/usr/share/fonts/truetype/msttcorefonts/Arial.ttf"
-            font_bold_path = "/usr/share/fonts/truetype/msttcorefonts/Arial_Black.ttf"
-            if not os.path.exists(font_bold_path):
-                font_bold_path = "/usr/share/fonts/truetype/msttcorefonts/arialbd.ttf"
+            # The older Arial font in msttcorefonts lacks the ₹ (Rupee) symbol.
+            # We prioritize explicit system fonts that have massive Unicode support.
+            font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+            font_bold_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+            
+            if not os.path.exists(font_path):
+                font_path = "/usr/share/fonts/truetype/ubuntu/Ubuntu-R.ttf"
+                font_bold_path = "/usr/share/fonts/truetype/ubuntu/Ubuntu-B.ttf"
+                
+            if not os.path.exists(font_path):
+                font_path = "/usr/share/fonts/truetype/msttcorefonts/Arial.ttf"
+                font_bold_path = "/usr/share/fonts/truetype/msttcorefonts/Arial_Black.ttf"
+                if not os.path.exists(font_bold_path):
+                    font_bold_path = "/usr/share/fonts/truetype/msttcorefonts/arialbd.ttf"
                 
         f_story = ImageFont.truetype(font_path, 34)
         f_amount = ImageFont.truetype(font_bold_path, 64)
