@@ -27,8 +27,8 @@ def generate_upi_card(upi_id: str, amount: str, story_name: str, payee_name: str
     draw.rectangle([100, 250, 582, 300], fill="white")
     # Amount
     draw.rectangle([100, 310, 582, 390], fill="white")
-    # QR Interior (Leave the pill 'Scan or pay' alone)
-    draw.rectangle([250, 440, 435, 755], fill="white")
+    # QR Interior (Wipe wide enough to cover the whole mock QR)
+    draw.rectangle([180, 435, 502, 752], fill="white")
     # UPI ID (Wipe entire line area)
     draw.rectangle([100, 770, 582, 830], fill="white")
     
