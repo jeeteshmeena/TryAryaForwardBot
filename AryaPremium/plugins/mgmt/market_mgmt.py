@@ -804,7 +804,6 @@ async def market_callback(client, query):
             checkout = await db.db.premium_checkout.find_one({"_id": ObjectId(p_id)})
             if not checkout:
                 return await _safe_answer(query, "Ticket not found!", show_alert=True)
-            from datetime import datetime
             await db.db.premium_checkout.update_one(
                 {"_id": ObjectId(p_id)},
                 {"$set": {"status": "approved", "approved_at": datetime.utcnow(), "approved_by": user_id, "updated_at": datetime.utcnow()}}
