@@ -1104,39 +1104,46 @@ async def _process_callback(client, query):
             ]
             await _safe_edit(query.message, text=txt_p, markup=InlineKeyboardMarkup(kb))
             return
+
+        elif action == "settings":
+            kb = [
+                [InlineKeyboardButton("English", callback_data="mb#lang#en"),
+                 InlineKeyboardButton("हिंदी", callback_data="mb#lang#hi")],
+                [InlineKeyboardButton(f"❮ {_sc('BACK')}", callback_data="mb#main_back")]
+            ]
+            await _safe_edit(query.message, text=f"<b>⚙️ Settings</b>\n\nSelect your language:", markup=InlineKeyboardMarkup(kb))
+
+        elif action == "help":
+            return await _show_help_menu(client, query, 0)
+
+        elif action == "close":
+            await query.message.delete()
+
+        elif action == "back":
+            await _edit_main_menu_in_place(client, query, query.from_user, lang)
+
     elif cmd.startswith("my_reqs_"):
         page = int(cmd.replace("my_reqs_", ""))
         reqs = await db.db.premium_requests.find({"user_id": user_id, "bot_id": client.me.id}).sort("created_at", -1).to_list(length=None)
-        
         if not reqs:
             return await _safe_answer(query, "You haven't made any story requests yet.", show_alert=True)
-            
         items_per_page = 10
         total_pages = max(1, (len(reqs) + items_per_page - 1) // items_per_page)
         if page < 0: page = 0
         if page >= total_pages: page = total_pages - 1
-        
         subset = reqs[page*items_per_page : (page+1)*items_per_page]
-        
         txt_req = f"<b>📝 My Story Requests (Page {page+1}/{total_pages})</b>\n\nClick on any request to view its status:"
         kb = []
         for r in subset:
             sname = r.get('story_name', 'Unknown')
             if len(sname) > 25: sname = sname[:22] + "..."
-            status_emoji = {
-                "Sent": "📮", "Pending": "⏳", "Searching": "🔍", "Posting": "📤", "Posted": "✅", "Completed": "🎉"
-            }.get(r.get('status', 'Sent'), "📌")
+            status_emoji = {"Sent": "📮", "Pending": "⏳", "Searching": "🔍", "Posting": "📤", "Posted": "✅", "Completed": "🎉"}.get(r.get('status', 'Sent'), "📌")
             kb.append([InlineKeyboardButton(f"{status_emoji} {sname}", callback_data=f"mb#my_req_{str(r['_id'])}")])
-        
         nav = []
-        if page > 0:
-            nav.append(InlineKeyboardButton("❬ Prev", callback_data=f"mb#my_reqs_{page-1}"))
-        if page < total_pages - 1:
-            nav.append(InlineKeyboardButton("Next ❭", callback_data=f"mb#my_reqs_{page+1}"))
+        if page > 0: nav.append(InlineKeyboardButton("❬ Prev", callback_data=f"mb#my_reqs_{page-1}"))
+        if page < total_pages - 1: nav.append(InlineKeyboardButton("Next ❭", callback_data=f"mb#my_reqs_{page+1}"))
         if nav: kb.append(nav)
-        
         kb.append([InlineKeyboardButton("« " + _sc("BACK TO PROFILE"), callback_data="mb#main_profile")])
-        
         await _safe_edit(query.message, text=txt_req, markup=InlineKeyboardMarkup(kb))
         return
 
@@ -1146,58 +1153,21 @@ async def _process_callback(client, query):
             from bson import ObjectId
             r = await db.db.premium_requests.find_one({"_id": ObjectId(req_id), "user_id": user_id})
         except: r = None
-        
         if not r:
             return await _safe_answer(query, "Request not found.", show_alert=True)
-            
         t_str = r.get("created_at").strftime('%d %b %Y') if r.get("created_at") else "Unknown"
         status = r.get('status', 'Sent')
         txt_d = (
-            f"<b>📝 STORY REQUEST DETAILS</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━\n"
-            f"<b>📖 Name:</b> {r.get('story_name')}\n"
-            f"<b>🎧 Platform:</b> {r.get('platform')}\n"
-            f"<b>📑 Type:</b> {r.get('completion_type', 'N/A')}\n"
-            f"<b>📅 Date:</b> {t_str}\n"
-            f"━━━━━━━━━━━━━━━━━━━━━\n"
-            f"<b>📌 Status:</b> <code>{status}</code>\n"
+            f"<b>📝 STORY REQUEST DETAILS</b>\n━━━━━━━━━━━━━━━━━━━━━\n"
+            f"<b>📖 Name:</b> {r.get('story_name')}\n<b>🎧 Platform:</b> {r.get('platform')}\n"
+            f"<b>📑 Type:</b> {r.get('completion_type', 'N/A')}\n<b>📅 Date:</b> {t_str}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n<b>📌 Status:</b> <code>{status}</code>\n"
         )
-        msg_sub = ""
-        if status == "Sent" or status == "Pending":
-            msg_sub = "<i>Our team will review your request soon.</i>"
-        elif status == "Searching":
-            msg_sub = "<i>We are currently looking for this story.</i>"
-        elif status == "Posting" or status == "Posted":
-            msg_sub = "<i>We are uploading this story for you!</i>"
-        elif status == "Completed":
-            msg_sub = "<i>This story is now available in the marketplace!</i>"
-            
+        msg_sub = {"Sent": "<i>Our team will review your request soon.</i>", "Pending": "<i>Our team will review your request soon.</i>", "Searching": "<i>We are currently looking for this story.</i>", "Posting": "<i>We are uploading this story for you!</i>", "Posted": "<i>We are uploading this story for you!</i>", "Completed": "<i>This story is now available in the marketplace!</i>"}.get(status, "")
         if msg_sub: txt_d += f"\n{msg_sub}"
-        
         kb = [[InlineKeyboardButton("« " + _sc("BACK TO REQUESTS"), callback_data="mb#my_reqs_0")]]
         await _safe_edit(query.message, text=txt_d, markup=InlineKeyboardMarkup(kb))
         return
-
-    if cmd.startswith("main_") and 'action' in dir():
-        pass  # already handled above
-    elif cmd == "main_settings":
-        action = "settings"
-        kb = [
-            [InlineKeyboardButton("English", callback_data="mb#lang#en"),
-             InlineKeyboardButton("हिंदी", callback_data="mb#lang#hi")],
-            [InlineKeyboardButton(f"❮ {_sc('BACK')}", callback_data="mb#main_back")]
-        ]
-        await _safe_edit(query.message, text=f"<b>⚙️ Settings</b>\n\nSelect your language:", markup=InlineKeyboardMarkup(kb))
-
-    elif cmd == "main_help":
-        await query.answer()
-        return await _show_help_menu(client, query, 0)
-
-    elif cmd == "main_close":
-        await query.message.delete()
-
-    elif cmd == "main_back":
-        await _edit_main_menu_in_place(client, query, query.from_user, lang)
 
     elif cmd == "return_main":
         await _edit_main_menu_in_place(client, query, query.from_user, lang)
