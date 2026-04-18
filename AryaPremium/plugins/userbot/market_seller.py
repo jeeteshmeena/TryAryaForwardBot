@@ -285,7 +285,7 @@ def _menu_card_text(user, bt_cfg: dict, bot_name: str) -> str:
         if welcome.lower() == "disable":
             welcome = ""
         else:
-            welcome = welcome.replace("{user}", u_mention).replace("{name}", u_mention)
+            welcome = welcome.replace("{user}", u_mention).replace("{name}", u_mention).replace("{first_name}", u_mention)
     else:
         welcome = f"<b>HELLO {u_mention}, ❞</b>"
     
