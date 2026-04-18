@@ -287,12 +287,12 @@ def _menu_card_text(user, bt_cfg: dict, bot_name: str) -> str:
         else:
             welcome = welcome.replace("{user}", u_mention).replace("{name}", u_mention).replace("{first_name}", u_mention)
     else:
-        welcome = f"<b>HELLO {u_mention}, ❞</b>"
+        welcome = ""
     
     # --- 2. About Section ---
     about = bt_cfg.get("about")
     if not about:
-        about = "I'M AN AUTO POST MAKER & AND THUMB MAKER BOT, BUILT WITH LOVE. ❞"
+        about = ""
         
     # --- 3. Quote Section ---
     quote = bt_cfg.get("quote")
