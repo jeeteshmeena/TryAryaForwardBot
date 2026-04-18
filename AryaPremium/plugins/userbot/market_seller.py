@@ -11,7 +11,10 @@ import re
 import html
 from datetime import datetime
 from pyrogram import Client, filters, enums
-from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from pyrogram.types import (
+    InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, 
+    ReplyKeyboardRemove, InputMediaPhoto, InputMediaVideo, InputMediaAnimation
+)
 from pyrogram.handlers import MessageHandler, CallbackQueryHandler
 from pyrogram.errors import MessageNotModified
 from database import db
@@ -335,13 +338,42 @@ def _menu_card_text(user, bt_cfg: dict, bot_name: str) -> str:
 async def _edit_main_menu_in_place(client, query, user, lang: str):
     """
     Edit current message back to main menu when possible.
-    Falls back to sending a fresh menu only if Telegram refuses edit.
+    Supports random media rotation on navigation.
     """
     bt = await db.db.premium_bots.find_one({"id": client.me.id})
     bt_cfg = bt.get("config", {}) if bt else {}
     bot_name = client.me.first_name
     msg_txt = _menu_card_text(user, bt_cfg, bot_name)
     markup = _get_premium_menu_markup(bt_cfg, lang)
+
+    # Media rotation on navigation
+    items = [x for x in _cfg_list(bt_cfg, "menu_media") if isinstance(x, dict) and x.get("file_id")]
+    if not items and (bt_cfg.get("menuimg") or "").strip():
+        items = [{"type": "photo", "file_id": (bt_cfg.get("menuimg") or "").strip()}]
+    
+    is_media = bool(getattr(query.message, 'photo', None) or getattr(query.message, 'video', None) or getattr(query.message, 'animation', None))
+    
+    if items and is_media:
+        import random
+        media_item = random.choice(items)
+        t = (media_item.get("type") or "photo").strip()
+        fid = (media_item.get("file_id") or "").strip()
+        
+        try:
+            input_media = None
+            if t == "animation":
+                input_media = InputMediaAnimation(fid, caption=msg_txt, parse_mode=enums.ParseMode.HTML)
+            elif t == "video":
+                input_media = InputMediaVideo(fid, caption=msg_txt, parse_mode=enums.ParseMode.HTML)
+            else:
+                input_media = InputMediaPhoto(fid, caption=msg_txt, parse_mode=enums.ParseMode.HTML)
+
+            await query.message.edit_media(media=input_media, reply_markup=markup)
+            return
+        except Exception as e:
+            # Fallback if media edit fails (e.g. invalid file_id)
+            logger.warning(f"Failed to rotate media on edit: {e}")
+
     res = await _safe_edit(query.message, text=msg_txt, markup=markup)
     if not res:
         await _send_main_menu(client, query.from_user.id, user, lang)
@@ -376,7 +408,7 @@ async def _send_main_menu(client, user_id: int, user, lang: str, reply_to_messag
     if items:
         import random
         random.shuffle(items)
-        for it in items[:10]:
+        for it in items[:30]:
             t = (it.get("type") or "photo").strip()
             fid = (it.get("file_id") or "").strip()
             if not fid:

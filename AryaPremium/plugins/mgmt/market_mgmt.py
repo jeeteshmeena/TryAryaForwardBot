@@ -881,6 +881,11 @@ async def market_callback(client, query):
             await query.message.delete()
             asyncio.create_task(_menu_media_add_flow(client, user_id, b_id))
 
+        elif cmd.startswith("menu_media_bulk_"):
+            b_id = cmd.split("_")[3]
+            await query.message.delete()
+            asyncio.create_task(_menu_media_bulk_add_flow(client, user_id, b_id))
+
         elif cmd.startswith("menu_media_prev_"):
             parts = cmd.split("_")
             b_id = parts[3]
@@ -919,7 +924,7 @@ async def market_callback(client, query):
                 items = [{"type": "photo", "file_id": cfg.get("menuimg"), "legacy": True}]
 
             lines = [f"<b>🖼️ Menu Media</b>\n\n<b>Bot:</b> @{bot.get('username', '')}\n"]
-            lines.append("<i>Shown randomly to users on /start. Supports Photo, GIF, Video. Max 10 items.</i>\n")
+            lines.append("<i>Shown randomly to users on /start. Supports Photo, GIF, Video. Max 30 items.</i>\n")
             if items:
                 for i, it in enumerate(items, start=1):
                     t = (it or {}).get("type", "media")
@@ -929,8 +934,9 @@ async def market_callback(client, query):
                 lines.append("<blockquote>No media added yet.</blockquote>")
 
             kb = []
-            if len([x for x in items if not (x or {}).get("legacy")]) < 10:
+            if len([x for x in items if not (x or {}).get("legacy")]) < 30:
                 kb.append([InlineKeyboardButton("➕ Add Media", callback_data=f"mk#menu_media_add_{b_id}")])
+                kb.append([InlineKeyboardButton("📥 Bulk Add Media", callback_data=f"mk#menu_media_bulk_{b_id}")])
             if items:
                 kb.append([InlineKeyboardButton("👁 Preview", callback_data=f"mk#menu_media_prev_{b_id}_1")])
             kb.append([InlineKeyboardButton("« Back", callback_data=f"mk#p_wa_{b_id}")])
@@ -1657,8 +1663,8 @@ async def _menu_media_add_flow(client, user_id: int, b_id: str):
 
     cfg = bot.get("config", {}) or {}
     items = _cfg_list(cfg, "menu_media")
-    if len([x for x in items if isinstance(x, dict)]) >= 10:
-        return await client.send_message(user_id, "⚠️ Max 10 menu media items reached. Delete one first.", reply_markup=ReplyKeyboardRemove())
+    if len([x for x in items if isinstance(x, dict)]) >= 30:
+        return await client.send_message(user_id, "⚠️ Max 30 menu media items reached. Delete one first.", reply_markup=ReplyKeyboardRemove())
 
     msg = await native_ask(
         client,
@@ -1858,4 +1864,94 @@ async def _bulk_add_delivery_channels(client, user_id: int):
         f"• Failed: <b>{failed}</b>",
         reply_markup=ReplyKeyboardRemove(),
     )
+
+
+async def _menu_media_bulk_add_flow(client, user_id: int, b_id: str):
+    bot = await db.db.premium_bots.find_one({"id": int(b_id)})
+    if not bot:
+        return await client.send_message(user_id, "❌ Bot not found.", reply_markup=ReplyKeyboardRemove())
+
+    from plugins.userbot.market_seller import market_clients
+    store_cli = market_clients.get(str(b_id))
+    if not store_cli:
+        return await client.send_message(user_id, "❌ Store bot is not running right now.", reply_markup=ReplyKeyboardRemove())
+
+    import os
+    if not os.path.exists("downloads"):
+        os.makedirs("downloads")
+
+    done_kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Done Adding", callback_data="ask_cancel")]])
+    await client.send_message(
+        user_id,
+        "<b>📥 BULK MEDIA ADDER</b>\n\n"
+        "Send <b>Photos</b>, <b>GIFs</b>, or <b>Videos</b> one by one.\n"
+        "I will automatically process and save them to your menu media list.\n\n"
+        "<i>Click the button below when you are finished.</i>",
+        reply_markup=done_kb
+    )
+
+    count = 0
+    while True:
+        msg = await native_ask(client, user_id, None, timeout=600)
+        if not msg:
+            break
+        
+        if isinstance(msg, CallbackQuery) and msg.data == "ask_cancel":
+            break
+            
+        if getattr(msg, "text", None) and (msg.text.lower() == "/start" or "done" in msg.text.lower()):
+            break
+
+        media_type = None
+        if getattr(msg, "photo", None): media_type = "photo"
+        elif getattr(msg, "animation", None): media_type = "animation"
+        elif getattr(msg, "video", None): media_type = "video"
+        
+        if not media_type:
+            if not isinstance(msg, CallbackQuery):
+                await client.send_message(user_id, "❌ Please send a Photo, GIF, or Video.\nOr click <b>'Done Adding'</b>.", reply_markup=done_kb)
+            continue
+
+        # Re-fetch bot to check current count
+        bot = await db.db.premium_bots.find_one({"id": int(b_id)})
+        items = _cfg_list(bot.get("config", {}), "menu_media")
+        if len([x for x in items if isinstance(x, dict)]) >= 30:
+            await client.send_message(user_id, "⚠️ Limit of 30 media items reached. Stopping bulk upload.")
+            break
+
+        ext = ".jpg" if media_type == "photo" else (".gif" if media_type == "animation" else ".mp4")
+        tmp_path = await client.download_media(msg, file_name=f"downloads/bulk_{b_id}_{int(time.time())}{ext}")
+        
+        try:
+            sent = None
+            f_id = None
+            if media_type == "photo":
+                sent = await store_cli.send_photo(user_id, photo=tmp_path)
+                f_id = getattr(sent.photo, "file_id", None)
+            elif media_type == "animation":
+                sent = await store_cli.send_animation(user_id, animation=tmp_path)
+                f_id = getattr(sent.animation, "file_id", None)
+            else:
+                sent = await store_cli.send_video(user_id, video=tmp_path)
+                f_id = getattr(sent.video, "file_id", None)
+
+            if f_id:
+                await db.db.premium_bots.update_one(
+                    {"id": int(b_id)}, 
+                    {"$push": {"config.menu_media": {"type": media_type, "file_id": f_id}}, "$unset": {"config.menuimg": ""}}
+                )
+                count += 1
+                await client.send_message(user_id, f"✅ Media #{count} added! Send more or click 'Done'.", reply_markup=done_kb)
+            
+            if sent:
+                await store_cli.delete_messages(user_id, sent.id)
+        except Exception as e:
+            await client.send_message(user_id, f"❌ Error processing item: {e}")
+        finally:
+            if os.path.exists(tmp_path):
+                try: os.remove(tmp_path)
+                except: pass
+
+    await client.send_message(user_id, f"<b>🏁 Bulk Add Finished!</b>\n\nTotal media items added: <b>{count}</b>", reply_markup=ReplyKeyboardRemove())
+
 
