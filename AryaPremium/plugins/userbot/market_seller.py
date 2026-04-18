@@ -296,7 +296,9 @@ def _menu_card_text(user, bt_cfg: dict, bot_name: str) -> str:
         
     # --- 3. Quote Section ---
     quote = bt_cfg.get("quote")
-    if not quote:
+    if quote and quote.lower() == "disable":
+        quote = ""
+    elif not quote:
         quote = "❝ IF YOU WERE TO WRITE A STORY WITH ME IN THE LEAD ROLE... IT WOULD CERTAINLY BE A TRAGEDY. ❞"
         
     # --- 4. Author Section ---
