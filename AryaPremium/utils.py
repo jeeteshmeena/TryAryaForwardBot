@@ -183,15 +183,15 @@ async def log_arya_event(event_type: str, user_id: int, user_info: dict, details
             f"────────────────────\n"
             f"<b>Time:</b> {time_str}"
         )
+        channel_id = int(Config.ARYA_LOGS_CHANNEL)
+        # resolve_peer warms Pyrogram's internal InputPeer cache for channels
         try:
-            await db.mgmt_client.send_message(int(Config.ARYA_LOGS_CHANNEL), text=text)
-        except Exception as pe:
-            if "PEER_ID_INVALID" in str(pe) or "Peer id invalid" in str(pe):
-                await db.mgmt_client.get_chat(int(Config.ARYA_LOGS_CHANNEL))
-                await db.mgmt_client.send_message(int(Config.ARYA_LOGS_CHANNEL), text=text)
-            else:
-                raise pe
+            await db.mgmt_client.resolve_peer(channel_id)
+        except Exception:
+            pass
+        await db.mgmt_client.send_message(channel_id, text=text)
     except Exception as e:
         import logging; logging.getLogger(__name__).error(f"Arya core log error: {e}")
+
 
 
