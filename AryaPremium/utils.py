@@ -22,6 +22,8 @@ async def _input_router(bot, message):
         fut = _waiting_futures.pop(key)
         if not fut.done():
             fut.set_result(message)
+            from pyrogram import StopPropagation
+            raise StopPropagation
     message.continue_propagation()
 
 async def _cb_input_router(bot, query):
@@ -181,7 +183,14 @@ async def log_arya_event(event_type: str, user_id: int, user_info: dict, details
             f"────────────────────\n"
             f"<b>Time:</b> {time_str}"
         )
-        await db.mgmt_client.send_message(int(Config.ARYA_LOGS_CHANNEL), text=text)
+        try:
+            await db.mgmt_client.send_message(int(Config.ARYA_LOGS_CHANNEL), text=text)
+        except Exception as pe:
+            if "PEER_ID_INVALID" in str(pe) or "Peer id invalid" in str(pe):
+                await db.mgmt_client.get_chat(int(Config.ARYA_LOGS_CHANNEL))
+                await db.mgmt_client.send_message(int(Config.ARYA_LOGS_CHANNEL), text=text)
+            else:
+                raise pe
     except Exception as e:
         import logging; logging.getLogger(__name__).error(f"Arya core log error: {e}")
 

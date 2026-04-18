@@ -1104,81 +1104,79 @@ async def _process_callback(client, query):
             ]
             await _safe_edit(query.message, text=txt_p, markup=InlineKeyboardMarkup(kb))
             return
+    elif cmd.startswith("my_reqs_"):
+        page = int(cmd.replace("my_reqs_", ""))
+        reqs = await db.db.premium_requests.find({"user_id": user_id, "bot_id": client.me.id}).sort("created_at", -1).to_list(length=None)
+        
+        if not reqs:
+            return await _safe_answer(query, "You haven't made any story requests yet.", show_alert=True)
             
-        elif action.startswith("my_reqs_"):
-            page = int(action.replace("my_reqs_", ""))
-            reqs = await db.db.premium_requests.find({"user_id": user_id, "bot_id": client.me.id}).sort("created_at", -1).to_list(length=None)
-            
-            if not reqs:
-                return await _safe_answer(query, "You haven't made any story requests yet.", show_alert=True)
-                
-            items_per_page = 10
-            total_pages = max(1, (len(reqs) + items_per_page - 1) // items_per_page)
-            if page < 0: page = 0
-            if page >= total_pages: page = total_pages - 1
-            
-            subset = reqs[page*items_per_page : (page+1)*items_per_page]
-            
-            txt_req = f"<b>📝 My Story Requests (Page {page+1}/{total_pages})</b>\n\nClick on any request to view its status:"
-            kb = []
-            for r in subset:
-                sname = r.get('story_name', 'Unknown')
-                if len(sname) > 25: sname = sname[:22] + "..."
-                status_emoji = {
-                    "Sent": "📮", "Pending": "⏳", "Searching": "🔍", "Posting": "📤", "Posted": "✅", "Completed": "🎉"
-                }.get(r.get('status', 'Sent'), "📌")
-                kb.append([InlineKeyboardButton(f"{status_emoji} {sname}", callback_data=f"mb#my_req_{str(r['_id'])}")])
-            
-            nav = []
-            if page > 0:
-                nav.append(InlineKeyboardButton("❬ Prev", callback_data=f"mb#my_reqs_{page-1}"))
-            if page < total_pages - 1:
-                nav.append(InlineKeyboardButton("Next ❭", callback_data=f"mb#my_reqs_{page+1}"))
-            if nav: kb.append(nav)
-            
-            kb.append([InlineKeyboardButton("« " + _sc("BACK TO PROFILE"), callback_data="mb#main_profile")])
-            
-            await _safe_edit(query.message, text=txt_req, markup=InlineKeyboardMarkup(kb))
-            return
+        items_per_page = 10
+        total_pages = max(1, (len(reqs) + items_per_page - 1) // items_per_page)
+        if page < 0: page = 0
+        if page >= total_pages: page = total_pages - 1
+        
+        subset = reqs[page*items_per_page : (page+1)*items_per_page]
+        
+        txt_req = f"<b>📝 My Story Requests (Page {page+1}/{total_pages})</b>\n\nClick on any request to view its status:"
+        kb = []
+        for r in subset:
+            sname = r.get('story_name', 'Unknown')
+            if len(sname) > 25: sname = sname[:22] + "..."
+            status_emoji = {
+                "Sent": "📮", "Pending": "⏳", "Searching": "🔍", "Posting": "📤", "Posted": "✅", "Completed": "🎉"
+            }.get(r.get('status', 'Sent'), "📌")
+            kb.append([InlineKeyboardButton(f"{status_emoji} {sname}", callback_data=f"mb#my_req_{str(r['_id'])}")])
+        
+        nav = []
+        if page > 0:
+            nav.append(InlineKeyboardButton("❬ Prev", callback_data=f"mb#my_reqs_{page-1}"))
+        if page < total_pages - 1:
+            nav.append(InlineKeyboardButton("Next ❭", callback_data=f"mb#my_reqs_{page+1}"))
+        if nav: kb.append(nav)
+        
+        kb.append([InlineKeyboardButton("« " + _sc("BACK TO PROFILE"), callback_data="mb#main_profile")])
+        
+        await _safe_edit(query.message, text=txt_req, markup=InlineKeyboardMarkup(kb))
+        return
 
-        elif action.startswith("my_req_"):
-            req_id = action.replace("my_req_", "")
-            try:
-                from bson import ObjectId
-                r = await db.db.premium_requests.find_one({"_id": ObjectId(req_id), "user_id": user_id})
-            except: r = None
+    elif cmd.startswith("my_req_"):
+        req_id = cmd.replace("my_req_", "")
+        try:
+            from bson import ObjectId
+            r = await db.db.premium_requests.find_one({"_id": ObjectId(req_id), "user_id": user_id})
+        except: r = None
+        
+        if not r:
+            return await _safe_answer(query, "Request not found.", show_alert=True)
             
-            if not r:
-                return await _safe_answer(query, "Request not found.", show_alert=True)
-                
-            t_str = r.get("created_at").strftime('%d %b %Y') if r.get("created_at") else "Unknown"
-            status = r.get('status', 'Sent')
-            txt_d = (
-                f"<b>📝 STORY REQUEST DETAILS</b>\n"
-                f"━━━━━━━━━━━━━━━━━━━━━\n"
-                f"<b>📖 Name:</b> {r.get('story_name')}\n"
-                f"<b>🎧 Platform:</b> {r.get('platform')}\n"
-                f"<b>📑 Type:</b> {r.get('completion_type', 'N/A')}\n"
-                f"<b>📅 Date:</b> {t_str}\n"
-                f"━━━━━━━━━━━━━━━━━━━━━\n"
-                f"<b>📌 Status:</b> <code>{status}</code>\n"
-            )
-            msg_sub = ""
-            if status == "Sent" or status == "Pending":
-                msg_sub = "<i>Our team will review your request soon.</i>"
-            elif status == "Searching":
-                msg_sub = "<i>We are currently looking for this story.</i>"
-            elif status == "Posting" or status == "Posted":
-                msg_sub = "<i>We are uploading this story for you!</i>"
-            elif status == "Completed":
-                msg_sub = "<i>This story is now available in the marketplace!</i>"
-                
-            if msg_sub: txt_d += f"\n{msg_sub}"
+        t_str = r.get("created_at").strftime('%d %b %Y') if r.get("created_at") else "Unknown"
+        status = r.get('status', 'Sent')
+        txt_d = (
+            f"<b>📝 STORY REQUEST DETAILS</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"<b>📖 Name:</b> {r.get('story_name')}\n"
+            f"<b>🎧 Platform:</b> {r.get('platform')}\n"
+            f"<b>📑 Type:</b> {r.get('completion_type', 'N/A')}\n"
+            f"<b>📅 Date:</b> {t_str}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"<b>📌 Status:</b> <code>{status}</code>\n"
+        )
+        msg_sub = ""
+        if status == "Sent" or status == "Pending":
+            msg_sub = "<i>Our team will review your request soon.</i>"
+        elif status == "Searching":
+            msg_sub = "<i>We are currently looking for this story.</i>"
+        elif status == "Posting" or status == "Posted":
+            msg_sub = "<i>We are uploading this story for you!</i>"
+        elif status == "Completed":
+            msg_sub = "<i>This story is now available in the marketplace!</i>"
             
-            kb = [[InlineKeyboardButton("« " + _sc("BACK TO REQUESTS"), callback_data="mb#main_my_reqs_0")]]
-            await _safe_edit(query.message, text=txt_d, markup=InlineKeyboardMarkup(kb))
-            return
-
+        if msg_sub: txt_d += f"\n{msg_sub}"
+        
+        kb = [[InlineKeyboardButton("« " + _sc("BACK TO REQUESTS"), callback_data="mb#my_reqs_0")]]
+        await _safe_edit(query.message, text=txt_d, markup=InlineKeyboardMarkup(kb))
+        return
         elif action == "settings":
             kb = [
                 [InlineKeyboardButton("English", callback_data="mb#lang#en"),

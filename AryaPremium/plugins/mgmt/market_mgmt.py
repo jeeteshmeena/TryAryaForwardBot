@@ -230,10 +230,9 @@ async def market_callback(client, query):
             await query.message.edit_text(txt_d, reply_markup=InlineKeyboardMarkup(kb))
             return
 
-        elif cmd.startswith("rstat#"):
-            parts = cmd.split("#", 2)
-            req_id = parts[1]
-            new_status = parts[2]
+        elif cmd == "rstat":
+            req_id = data[2]
+            new_status = data[3]
             try:
                 from bson import ObjectId
                 r = await db.db.premium_requests.find_one({"_id": ObjectId(req_id)})
@@ -248,6 +247,7 @@ async def market_callback(client, query):
                 user_info = await db.get_user(r.get('user_id'))
                 await log_arya_event(
                     "STORY REQUEST UPDATED", r.get('user_id'), user_info or {}, 
+
                     f"<b>Story:</b> {r.get('story_name')}\n<b>Old Status:</b> {r.get('status')}\n<b>New Status:</b> {new_status}"
                 )
             except Exception as e:
