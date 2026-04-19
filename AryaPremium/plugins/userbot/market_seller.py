@@ -232,26 +232,48 @@ T = {
 }
 
 def _get_main_menu(lang='en'):
-    kb = [
-        [
-            InlineKeyboardButton("ᴀ", callback_data="mb#about_arya_0"),
-            InlineKeyboardButton("ʀ", callback_data="mb#about_arya_0"),
-            InlineKeyboardButton("ʏ", callback_data="mb#about_arya_0"),
-            InlineKeyboardButton("ᴀ", callback_data="mb#about_arya_0")
-        ],
-        [InlineKeyboardButton(f"• {_bs('MARKETPLACE')} •", callback_data="mb#main_marketplace"),
-         InlineKeyboardButton(f"• {_bs('MY STORIES')} •", callback_data="mb#my_buys")],
-        [InlineKeyboardButton(f"{_sc('Profile')}", callback_data="mb#main_profile"),
-         InlineKeyboardButton(f"{_sc('Settings')}", callback_data="mb#main_settings")],
-        [InlineKeyboardButton(f"{_sc('Help')}", callback_data="mb#main_help")],
-        [
-            InlineKeyboardButton("ᴄ", callback_data="mb#main_close"),
-            InlineKeyboardButton("ʟ", callback_data="mb#main_close"),
-            InlineKeyboardButton("ᴏ", callback_data="mb#main_close"),
-            InlineKeyboardButton("ꜱ", callback_data="mb#main_close"),
-            InlineKeyboardButton("ᴇ", callback_data="mb#main_close")
+    if lang == 'hi':
+        kb = [
+            [
+                InlineKeyboardButton("ᴀ", callback_data="mb#about_arya_0"),
+                InlineKeyboardButton("ʀ", callback_data="mb#about_arya_0"),
+                InlineKeyboardButton("ʏ", callback_data="mb#about_arya_0"),
+                InlineKeyboardButton("ᴀ", callback_data="mb#about_arya_0")
+            ],
+            [InlineKeyboardButton(f"• {_bs('MARKETPLACE')} •", callback_data="mb#main_marketplace"),
+             InlineKeyboardButton("• \ud835\udde0\ud835\uddf2\ud835\uddff\u0940 \ud835\udde6\u094d\ud835\ude01\u094b\ud835\uddff\u093f\ud835\ude06 •", callback_data="mb#my_buys")],
+            [InlineKeyboardButton("प्रोफाइल", callback_data="mb#main_profile"),
+             InlineKeyboardButton("सेटिंग्स", callback_data="mb#main_settings")],
+            [InlineKeyboardButton("मदद / जानकारी", callback_data="mb#main_help")],
+            [
+                InlineKeyboardButton("ᴄ", callback_data="mb#main_close"),
+                InlineKeyboardButton("ʟ", callback_data="mb#main_close"),
+                InlineKeyboardButton("ᴏ", callback_data="mb#main_close"),
+                InlineKeyboardButton("ꜱ", callback_data="mb#main_close"),
+                InlineKeyboardButton("ᴇ", callback_data="mb#main_close")
+            ]
         ]
-    ]
+    else:
+        kb = [
+            [
+                InlineKeyboardButton("ᴀ", callback_data="mb#about_arya_0"),
+                InlineKeyboardButton("ʀ", callback_data="mb#about_arya_0"),
+                InlineKeyboardButton("ʏ", callback_data="mb#about_arya_0"),
+                InlineKeyboardButton("ᴀ", callback_data="mb#about_arya_0")
+            ],
+            [InlineKeyboardButton(f"• {_bs('MARKETPLACE')} •", callback_data="mb#main_marketplace"),
+             InlineKeyboardButton(f"• {_bs('MY STORIES')} •", callback_data="mb#my_buys")],
+            [InlineKeyboardButton(f"{_sc('Profile')}", callback_data="mb#main_profile"),
+             InlineKeyboardButton(f"{_sc('Settings')}", callback_data="mb#main_settings")],
+            [InlineKeyboardButton(f"{_sc('Help')}", callback_data="mb#main_help")],
+            [
+                InlineKeyboardButton("ᴄ", callback_data="mb#main_close"),
+                InlineKeyboardButton("ʟ", callback_data="mb#main_close"),
+                InlineKeyboardButton("ᴏ", callback_data="mb#main_close"),
+                InlineKeyboardButton("ꜱ", callback_data="mb#main_close"),
+                InlineKeyboardButton("ᴇ", callback_data="mb#main_close")
+            ]
+        ]
     return InlineKeyboardMarkup(kb)
 
 
@@ -721,9 +743,16 @@ async def _process_start(client, message):
     args = message.command
 
     if 'lang' not in user:
-        kb = [[InlineKeyboardButton("English", callback_data="mb#lang#en"),
-               InlineKeyboardButton("हिंदी", callback_data="mb#lang#hi")]]
-        return await message.reply_text("Please select your language / कृपया अपनी भाषा चुनें:", reply_markup=InlineKeyboardMarkup(kb))
+        lang_prompt = (
+            "<b>⟦ 𝗦𝗘𝗟𝗘𝗖𝗧 𝗟𝗔𝗡𝗚𝗞𝗔𝗚𝗘 ⟧</b>\n\n"
+            "<blockquote expandable>"
+            "<i>Choose your preferred language to continue.\n"
+            "\u0905पनी भाषा चुनें और आगे बढ़ें।</i>"
+            "</blockquote>"
+        )
+        kb = [[InlineKeyboardButton("• English", callback_data="mb#lang#en"),
+               InlineKeyboardButton("• हिंदी", callback_data="mb#lang#hi")]]
+        return await message.reply_text(lang_prompt, reply_markup=InlineKeyboardMarkup(kb))
 
     lang = user.get('lang', 'en')
 
