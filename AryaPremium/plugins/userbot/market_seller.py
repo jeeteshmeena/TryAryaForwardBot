@@ -2033,7 +2033,8 @@ async def _process_screenshot(client, message):
         "<blockquote expandable>\n"
         f"<i>{_sc('Please wait (approx 5 minutes)...') if lang != 'hi' else 'कृपया प्रतीक्षा करें (लगभग 5 मिनट)...'}</i>\n\n"
         f"<b>{_sc('Time Remaining') if lang != 'hi' else 'शेष समय'} :</b> 05:00\n"
-        "</blockquote>"\n    )
+        "</blockquote>"
+    )
     msg = await message.reply_text(txt_user, reply_markup=InlineKeyboardMarkup(kb_user))
 
     import os
@@ -2092,10 +2093,10 @@ async def _process_screenshot(client, message):
                 m = i // 60
                 s = i % 60
                 await target_msg.edit_text(
-                    (f"⏳ <b>{_sc('Your payment is being verified')}</b>\n"
-                     "<blockquote expandable>"
-                     f"<i>{_sc('Please wait (approx 5 minutes)...')}</i>\n\n"
-                     f"<b>{_sc('Time Remaining')} :</b> {m:02d}:{s:02d}\n"
+                    (f"⏳ <b>{_sc('Your payment is being verified') if lang != 'hi' else 'आपके भुगतान की पुष्टि की जा रही है'}</b>\n"
+                     "<blockquote expandable>\n"
+                     f"<i>{_sc('Please wait (approx 5 minutes)...') if lang != 'hi' else 'कृपया प्रतीक्षा करें (लगभग 5 मिनट)...'}</i>\n\n"
+                     f"<b>{_sc('Time Remaining') if lang != 'hi' else 'शेष समय'} :</b> {m:02d}:{s:02d}\n"
                      "</blockquote>"),
                     reply_markup=InlineKeyboardMarkup(kb_user)
                 )
