@@ -1936,9 +1936,15 @@ async def _process_screenshot(client, message):
         except Exception as e:
             logger.error(f"Mgmt DM send error: {e}")
 
-    async def _live_timer(target_msg, remaining):
+    async def _live_timer(target_msg, remaining, checkout_id_str):
         try:
             for i in range(remaining, 0, -10):
+                await asyncio.sleep(10)
+                from bson.objectid import ObjectId
+                chk = await db.db.premium_checkout.find_one({"_id": ObjectId(checkout_id_str)})
+                if not chk or chk.get("status") != "pending_admin_approval":
+                    break
+                
                 m = i // 60
                 s = i % 60
                 await target_msg.edit_text(
@@ -1949,15 +1955,12 @@ async def _process_screenshot(client, message):
                      "</blockquote>"),
                     reply_markup=InlineKeyboardMarkup(kb_user)
                 )
-                await asyncio.sleep(10)
             await target_msg.edit_text(
                 f"⏳ <b>{_sc('Verification Timeout')}</b>\n\n<i>{_sc('If your payment is valid, it will be approved soon. For urgent queries, please contact Support.')}</i>",
                 reply_markup=InlineKeyboardMarkup(kb_user)
-            )
-        except Exception:
-            pass
-
-    asyncio.create_task(_live_timer(msg, 300))
+                )
+        except Exception: pass
+    asyncio.create_task(_live_timer(msg, 300, str(checkout['_id'])))
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -2004,9 +2007,9 @@ async def dispatch_delivery_choice(client, user_id, story):
         + "How would you like to receive your files?"
     )
 
-    kb = [[InlineKeyboardButton(f"📥 {_sc('RECEIVE IN DM')}", callback_data=f"mb#deliver_dm#{story_id_str}")]]
+    kb = [[InlineKeyboardButton(f"⤓ {_sc('RECEIVE IN DM')}", callback_data=f"mb#deliver_dm#{story_id_str}")]]
     if can_use_channel:
-        kb.append([InlineKeyboardButton(f"🔗 {_sc('ACCESS CHANNEL LINK')}", callback_data=f"mb#deliver_channel#{story_id_str}")])
+        kb.append([InlineKeyboardButton(f"➦ {_sc('ACCESS CHANNEL LINK')}", callback_data=f"mb#deliver_channel#{story_id_str}")])
     kb.append([InlineKeyboardButton(f"« ❮ {_sc('MAIN MENU')}", callback_data="mb#main_back")])
 
     await client.send_message(user_id, del_txt, reply_markup=InlineKeyboardMarkup(kb))
