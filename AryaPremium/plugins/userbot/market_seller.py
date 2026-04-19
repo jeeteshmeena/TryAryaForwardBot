@@ -871,10 +871,15 @@ async def _process_text(client, message):
         kb.append(["CAN'T FIND? REQUEST NOW!"])
         kb.append(["« " + "𝗕𝗮𝗰𝗸 𝘁𝗼 𝗠𝗲𝗻𝘂"])
 
-        await message.reply_text(
-            f"<b>Available Stories — {txt}</b>\n\n"
+        desc = (
             f"All available stories and their prices are shown in the menu below. "
-            f"Please tap or click on any story name from the keyboard menu below to view details and purchase it:",
+            f"Please tap or click on any story name from the keyboard menu below to view details and purchase it:"
+        )
+        await message.reply_text(
+            f"<b>⟦ {_sc('AVAILABLE STORIES')} — {to_mathbold(txt)} ⟧</b>\n\n"
+            f"<blockquote expandable>"
+            f"<i>{desc}</i>\n"
+            f"</blockquote>",
             reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True)
         )
         return
