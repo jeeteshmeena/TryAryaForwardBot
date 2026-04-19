@@ -631,40 +631,53 @@ async def _show_story_profile(client, user_id, story, lang):
         except: pass
 
 async def _show_tc(client, user_id, story_id, lang='en'):
-    # Enforced premium UI exactly as specified
+    if lang == 'hi':
+        tc_title = "<b>⟦ नियम और शर्तें ⟧</b>"
+        tc_subtitle = "खरीदने से पहले, कृपया निम्नलिखित पढ़ें और सहमत हों:"
+        missing_title = "• <b>गायब एपिसोड</b>"
+        missing_desc = "यदि सार्वजनिक रूप से जारी नहीं किया गया तो 3-5 एपिसोड अनुपलब्ध हो सकते हैं। बाद में उपलब्ध होने पर, उन्हें अपने आप जोड़ दिया जाएगा। 5 से अधिक गायब? सहायता से संपर्क करें।"
+        quality_title = "• <b>क्वालिटी</b>"
+        quality_desc = "पुराने एपिसोड्स की क्वालिटी कम हो सकती है। हम 100% क्वालिटी की गारंटी नहीं दे सकते, लेकिन हमेशा सर्वश्रेष्ठ वर्जन प्रदान करेंगे।"
+        order_title = "• <b>एपिसोड क्रम</b>"
+        order_desc = "एपिसोड्स कभी-कभी क्रम से बाहर हो सकते हैं। सभी फाइलें आर्या बॉट द्वारा क्लीन और ब्रांडेड हैं।"
+        refund_title = "• <b>कोई रिफंड नहीं</b>"
+        refund_desc = "भुगतान की पुष्टि होने और डिलीवरी शुरू होने के बाद कोई रिफंड नहीं दिया जाएगा।"
+        fake_title = "• <b>नकली स्क्रीनशॉट</b>"
+        fake_desc = "नकली या अमान्य भुगतान प्रमाण भेजने पर स्थायी रूप से प्रतिबंध लगा दिया जाएगा।"
+        accept_btn = "सहमत हूँ"
+        reject_btn = "अस्वीकार"
+        back_btn = "‹ वापस"
+    else:
+        tc_title = "<b>⟦ 𝗧𝗘𝗥𝗠𝗦 & 𝗖𝗢𝗡𝗗𝗜𝗧𝗜𝗢𝗡𝗦 ⟧</b>"
+        tc_subtitle = "𝖡𝖾𝖿𝗈𝗋𝖾 𝗉𝗎𝗋𝖼𝗁𝖺𝗌𝗂𝗇𝗀, 𝗉𝗅𝖾𝖺𝗌𝖾 𝗋𝖾𝖺𝖽 𝖺𝗇𝖽 𝖺𝗀𝗋𝖾𝖾 𝗍𝗈 𝗍𝗁𝖾 𝖿𝗈𝗅𝗅𝗈𝗐𝗂𝗇𝗀:"
+        missing_title = "• <b>𝗠𝗶𝘀𝘀𝗶𝗻𝗴 𝗘𝗽𝗶𝘀𝗼𝗱𝗲𝘀</b>"
+        missing_desc = "𝟹–𝟻 𝖾𝗉𝗂𝗌𝗈𝖽𝖾𝗌 𝗆𝖺𝗒 𝖻𝖾 𝗎𝗇𝖺𝗏𝖺𝗂ʟ𝖺𝖻𝗅𝖾 𝗂𝖿 𝗇𝗈𝗍 𝗉𝗎𝖻𝗅𝗂𝖼𝗅𝗒 𝗋𝖾𝗅𝖾𝖺𝗌𝖾𝖽. 𝖨𝖿 𝖺𝗏𝖺𝗂ʟ𝖺𝖻𝗅𝖾 𝗅𝖺𝗍𝖾𝗋, 𝗍𝗁𝖾𝗒 𝗐𝗂𝗅𝗅 𝖻𝖾 𝖺𝖽𝖽𝖾𝖽 𝖺𝗎𝗍𝗈𝗆𝖺𝗍𝗂𝖼𝖺𝗅𝗅𝗒."
+        quality_title = "• <b>𝗤𝘂𝗮𝗹𝗶𝘁𝘆</b>"
+        quality_desc = "𝖲𝗈𝗆𝖾 𝗈𝗅𝖽𝖾𝗋 𝖾𝗉𝗂𝗌𝗈𝖽𝖾𝗌 𝗆𝖺𝗒 𝗁𝖺𝗏𝖾 𝗋𝖾𝖽𝗎𝖼𝖾𝖽 𝗊𝗎𝖺𝗅𝗂𝗍𝗒. 𝖶𝖾 𝖼𝖺𝗇𝗇𝗈𝗍 𝗀𝗎𝖺𝗋𝖺𝗇𝗍𝖾𝖾 𝟣𝟢𝟢% 𝗊𝗎𝖺𝗅𝗂𝗍𝗒, 𝖻𝗎𝗍 𝖺𝗅𝗐𝖺𝗒𝗌 𝗉𝗋𝗈𝗏𝗂𝖽𝖾 𝖻𝖾𝗌𝗍 𝗏𝖾𝗋𝗌𝗂𝗈𝗇."
+        order_title = "• <b>𝗘𝗽𝗶𝘀𝗼𝗱𝗲 𝗢𝗿𝗱𝗲𝗿</b>"
+        order_desc = "𝖤𝗉𝗂𝗌𝗈𝖽𝖾𝗌 𝗆𝖺𝗒 𝗋𝖺𝗋𝖾𝗅𝗒 𝖻𝖾 𝗈𝗎𝗍 𝗈𝖿 𝗌𝖾𝗊𝗎𝖾𝗇𝖼𝖾. 𝖠𝗅𝗅 𝖿𝗂𝗅𝖾𝗌 𝖺𝗋𝖾 𝖼𝗅𝖾𝖺𝗇𝖾𝖽 𝖺𝗇𝖽 𝖻𝗋𝖺𝗇𝖽𝖾𝖽 𝖻𝗒 𝖠𝗋𝗒𝖺 𝖡𝗈𝗍."
+        refund_title = "• <b>𝗡𝗼 𝗥𝗲𝗳𝘂𝗻𝗱𝘀</b>"
+        refund_desc = "𝖭𝗈 𝗋𝖾𝖿𝗎𝗇𝖽𝗌 𝗈𝗇𝖼𝖾 𝗉𝖺𝗒𝗆𝖾𝗇𝗍 𝗂𝗌 𝖼𝗈𝗇𝖿𝗂𝗋𝗆𝖾𝖽 𝖺𝗇𝖽 𝖽𝖾𝗅𝗂𝗏𝖾𝗋𝗒 𝗌𝗍𝖺𝗋𝗍𝗌."
+        fake_title = "• <b>𝗙𝗮𝗸𝗲 𝗦𝗰𝗿𝗲𝗲𝗻𝘀𝗵𝗼𝘁𝘀</b>"
+        fake_desc = "𝖥𝖺𝗄𝖾 𝗈𝗋 𝗂𝗇𝗏𝖺𝗅𝗂𝖽 𝗉𝖺𝗒𝗆𝖾𝗇𝗍 𝗉𝗋𝗈𝗈𝖿𝗌 𝗐𝗂𝗅𝗅 𝗅𝖾𝖺𝖽 𝗍𝗈 𝗉𝖾𝗋𝗆𝖺𝗇𝖾𝗇𝗍 𝖻𝖺𝗇."
+        accept_btn = "𝗜 𝗔𝗰𝗰𝗲𝗽𝘁"
+        reject_btn = "𝗥𝗲𝗷𝗲𝗰𝘁"
+        back_btn = "‹ Back"
+
     tc_text = (
-        "<b>⟦ 𝗧𝗘𝗥𝗠𝗦 & 𝗖𝗢𝗡𝗗𝗜𝗧𝗜𝗢𝗡𝗦 ⟧</b>\n\n"
-        "𝖡𝖾𝖿𝗈𝗋𝖾 𝗉𝗎𝗋𝖼𝗁𝖺𝗌𝗂𝗇𝗀, 𝗉𝗅𝖾𝖺𝗌𝖾 𝗋𝖾𝖺𝖽 𝖺𝗇𝖽 𝖺𝗀𝗋𝖾𝖾 𝗍𝗈 𝗍𝗁𝖾 𝖿𝗈𝗅𝗅𝗈𝗐𝗂𝗇𝗀:\n\n"
-        "<blockquote expandable>"
-        "• <b>𝗠𝗶𝘀𝘀𝗶𝗻𝗴 𝗘𝗽𝗶𝘀𝗼𝗱𝗲𝘀</b>\n"
-        "𝟹–𝟻 𝖾𝗉𝗂𝗌𝗈𝖽𝖾𝗌 𝗆𝖺𝗒 𝖻𝖾 𝗎𝗇𝖺𝗏𝖺𝗂𝗅𝖺𝖻𝗅𝖾 𝗂𝖿 𝗇𝗈𝗍 𝗉𝗎𝖻𝗅𝗂𝖼𝗅𝗒 𝗋𝖾𝗅𝖾𝖺𝗌𝖾𝖽.\n"
-        "𝖨𝖿 𝖺𝗏𝖺𝗂𝗅𝖺𝖻𝗅𝖾 𝗅𝖺𝗍𝖾𝗋, 𝗍𝗁𝖾𝗒 𝗐𝗂𝗅𝗅 𝖻𝖾 𝖺𝖽𝖽𝖾𝖽 𝖺𝗎𝗍𝗈𝗆𝖺𝗍𝗂𝖼𝖺𝗅𝗅𝗒.\n"
-        "𝖬𝗈𝗋𝖾 𝗍𝗁𝖺𝗇 𝟻 𝗆𝗂𝗌𝗌𝗂𝗇𝗀? 𝖢𝗈𝗇𝗍𝖺𝖼𝗍 𝗌𝗎𝗉𝗉𝗈𝗋𝗍.\n"
-        "</blockquote>\n"
-        "<blockquote expandable>"
-        "• <b>𝗤𝘂𝗮𝗹𝗶𝘁𝘆</b>\n"
-        "𝖲𝗈𝗆𝖾 𝗈𝗅𝖽𝖾𝗋 𝖾𝗉𝗂𝗌𝗈𝖽𝖾𝗌 𝗆𝖺𝗒 𝗁𝖺𝗏𝖾 𝗋𝖾𝖽𝗎𝖼𝖾𝖽 𝗊𝗎𝖺𝗅𝗂𝗍𝗒.\n"
-        "𝖶𝖾 𝖼𝖺𝗇𝗇𝗈𝗍 𝗀𝗎𝖺𝗋𝖺𝗇𝗍𝖾𝖾 𝟣𝟢𝟢% 𝗊𝗎𝖺𝗅𝗂𝗍𝗒, 𝖻𝗎𝗍 𝖺𝗅𝗐𝖺𝗒𝗌 𝗉𝗋𝗈𝗏𝗂𝖽𝖾 𝖻𝖾𝗌𝗍 𝗏𝖾𝗋𝗌𝗂𝗈𝗇.\n"
-        "</blockquote>\n"
-        "<blockquote expandable>"
-        "• <b>𝗘𝗽𝗶𝘀𝗼𝗱𝗲 𝗢𝗿𝗱𝗲𝗿</b>\n"
-        "𝖤𝗉𝗂𝗌𝗈𝖽𝖾𝗌 𝗆𝖺𝗒 𝗋𝖺𝗋𝖾𝗅𝗒 𝖻𝖾 𝗈𝗎𝗍 𝗈𝖿 𝗌𝖾𝗊𝗎𝖾𝗇𝖼𝖾.\n"
-        "𝖠𝗅𝗅 𝖿𝗂𝗅𝖾𝗌 𝖺𝗋𝖾 𝖼𝗅𝖾𝖺𝗇𝖾𝖽 𝖺𝗇𝖽 𝖻𝗋𝖺𝗇𝖽𝖾𝖽 𝖻𝗒 𝖠𝗋𝗒𝖺 𝖡𝗈𝗍.\n"
-        "</blockquote>\n"
-        "<blockquote expandable>"
-        "• <b>𝗡𝗼 𝗥𝗲𝗳𝘂𝗻𝗱𝘀</b>\n"
-        "𝖭𝗈 𝗋𝖾𝖿𝗎𝗇𝖽𝗌 𝗈𝗇𝖼𝖾 𝗉𝖺𝗒𝗆𝖾𝗇𝗍 𝗂𝗌 𝖼𝗈𝗇𝖿𝗂𝗋𝗆𝖾𝖽 𝖺𝗇𝖽 𝖽𝖾𝗅𝗂𝗏𝖾𝗋𝗒 𝗌𝗍𝖺𝗋𝗍𝗌.\n"
-        "</blockquote>\n"
-        "<blockquote expandable>"
-        "• <b>𝗙𝗮𝗸𝗲 𝗦𝗰𝗿𝗲𝗲𝗻𝘀𝗵𝗼𝘁𝘀</b>\n"
-        "𝖥𝖺𝗄𝖾 𝗈𝗋 𝗂𝗇𝗏𝖺𝗅𝗂𝖽 𝗉𝖺𝗒𝗆𝖾𝗇𝗍 𝗉𝗋𝗈𝗈𝖿𝗌 𝗐𝗂𝗅𝗅 𝗅𝖾𝖺𝖽 𝗍𝗈 𝗉𝖾𝗋𝗆𝖺𝗇𝖾𝗇𝗍 𝖻𝖺𝗇.\n"
-        "</blockquote>"
+        f"{tc_title}\n\n"
+        f"{tc_subtitle}\n\n"
+        f"<blockquote expandable>{missing_title}\n{missing_desc}</blockquote>\n"
+        f"<blockquote expandable>{quality_title}\n{quality_desc}</blockquote>\n"
+        f"<blockquote expandable>{order_title}\n{order_desc}</blockquote>\n"
+        f"<blockquote expandable>{refund_title}\n{refund_desc}</blockquote>\n"
+        f"<blockquote expandable>{fake_title}\n{fake_desc}</blockquote>"
     )
     
     kb = [
-        [InlineKeyboardButton("𝗜 𝗔𝗰𝗰𝗲𝗽𝘁", callback_data=f"mb#tc_accept_{story_id}")],
-        [InlineKeyboardButton("𝗥𝗲𝗷𝗲𝗰𝘁", callback_data="mb#tc_reject"),
-         InlineKeyboardButton("‹ Back", callback_data=f"mb#view_{story_id}")]
+        [InlineKeyboardButton(accept_btn, callback_data=f"mb#tc_accept_{story_id}")],
+        [InlineKeyboardButton(reject_btn, callback_data="mb#tc_reject"),
+         InlineKeyboardButton(back_btn, callback_data=f"mb#view_{story_id}")]
     ]
     from pyrogram import enums
     await client.send_message(user_id, tc_text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=enums.ParseMode.HTML)
@@ -692,56 +705,66 @@ async def _show_story_details(client, msg_or_query, story, lang, bot_cfg: dict =
     bot_cfg = bot_cfg or {}
 
     name = story.get(f'story_name_{lang}', story.get('story_name_en'))
-    platform = story.get('platform', 'Other')
-    ep_count = abs(story.get('end_id', 0) - story.get('start_id', 0)) + 1 if story.get('end_id') else "?"
     price = story.get('price', 0)
 
-    upi_enabled = bot_cfg.get('upi_enabled', True)  # Default ON unless admin disables
+    upi_enabled = bot_cfg.get('upi_enabled', True)
     upi_restricted = _is_upi_restricted()
     show_upi = upi_enabled and not upi_restricted
 
-    rzp_benefit = (
-        f"<blockquote expandable>"
-        f"\ud835\udda8\ud835\uddc7\ud835\uddcc\ud835\uddcd\ud835\uddba\ud835\uddc7\ud835\uddcd \ud835\uddcf\ud835\uddbe\ud835\uddcb\ud835\uddc2\ud835\uddbf\ud835\uddc2\ud835\uddbc\ud835\uddba\ud835\uddcd\ud835\uddc2\ud835\uddc8\ud835\uddc7. \ud835\uddad\ud835\uddc8 \ud835\uddd0\ud835\uddba\ud835\uddc2\ud835\uddcd\ud835\uddc2\ud835\uddc7\ud835\uddc0 \u2014 \ud835\uddc7\ud835\uddc8 \ud835\uddc6\ud835\uddba\ud835\uddc7\ud835\uddce\ud835\uddba\ud835\uddc5 \ud835\uddbc\ud835\uddc1\ud835\uddbe\ud835\uddbc\ud835\uddc4\ud835\uddcc.\n"
-        f"\ud835\uddb2\ud835\uddce\ud835\uddc9\ud835\uddc9\ud835\uddc8\ud835\uddcb\ud835\uddcd\ud835\uddcc \ud835\uddae\ud835\uddd4\ud835\udddc, \ud835\uddd7\ud835\uddbe\ud835\uddbb\ud835\uddc2\ud835\uddcd/\ud835\uddd6\ud835\uddcb\ud835\uddbe\ud835\uddbd\ud835\uddc2\ud835\uddcd \ud835\uddd6\ud835\uddba\ud835\uddcb\ud835\uddbd, \ud835\uddad\ud835\uddbe\ud835\uddcd \ud835\udda1\ud835\uddba\ud835\uddc7\ud835\uddc4\ud835\uddc2\ud835\uddc7\ud835\uddc0, \ud835\uddb6\ud835\uddba\ud835\uddc5\ud835\uddc5\ud835\uddbe\ud835\uddcd\ud835\uddcc & \ud835\uddc6\ud835\uddc8\ud835\uddcb\ud835\uddbe."
-        f"</blockquote>"
-    )
+    if lang == 'hi':
+        checkout_title = "🛍️ चेकआउट"
+        item_label = "📦 स्टोरी :"
+        amount_label = "💰 राशि :"
+        desc_title = "भविष्य के अपडेट और गाइड"
+        desc_content = (
+            "इस प्रीमियम कहानी को खरीदने के बाद आपको इसके भविष्य के सभी अपडेट्स मिलते रहेंगे। "
+            "साथ ही, आपको बॉट का उपयोग करने और कहानियों को आसानी से एक्सेस करने का एक विस्तृत गाइड भी मिलेगा।"
+        )
+        instruction = "भुगतान करने के लिए नीचे क्लिक करें। पूरा होने के बाद, वेरीफाई पर टैप करें।"
+        pay_now_btn = "𝗥𝗮𝘇𝗼𝗿𝗽𝗮𝘆 → अभी भुगतान करें"
+        upi_manual_btn = "𝗨𝗣𝗜 → मैन्युअल भुगतान"
+        back_btn = "« ❮ वापस"
+    else:
+        checkout_title = "🛍️ 𝗖𝗛𝗘𝗖𝗞𝗢𝗨𝗧"
+        item_label = "📦 𝗜𝘁𝗲𝗺 :"
+        amount_label = "💰 𝗔𝗺𝗼𝘂𝗻𝘁 :"
+        desc_title = "Future Updates & Guide"
+        desc_content = (
+            "You are paying for this premium story. You will receive all future updates for this story automatically. "
+            "A complete guide on how to use the bot and access your stories will also be provided after purchase."
+        )
+        instruction = "Click below to pay. Once done, tap verify."
+        pay_now_btn = "𝗥𝗮𝘇𝗼𝗿𝗽𝗮𝘆 → 𝗣𝗔𝗬 𝗡𝗢𝗪"
+        upi_manual_btn = "𝗨𝗣𝗜 → 𝗠𝗔𝗡𝗨𝗔𝗟 𝗣𝗔𝗬𝗠𝗘𝗡𝗧"
+        back_btn = "« ❮ 𝗕𝗔𝗖𝗞"
 
     txt = (
-        f"<b>\u27e6 \ud835\udde6\ud835\udde7\ud835\udde2\ud835\udde5\ud835\udde5 \ud835\udfee\u27e7</b>\n\n"
-        f"<b>\ud835\ude82\ud835\ude9d\ud835\ude8e\ud835\ude99 \ud835\udff7: \ud835\uddd6\ud835\uddc8\ud835\uddc7\ud835\uddbf\ud835\uddc2\ud835\uddcb\ud835\uddc6 \ud835\uddd8\ud835\uddc7\ud835\uddcd\ud835\uddcb\ud835\uddd2</b>\n"
-        f"\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"
-        f"<b>{_sc('Item')} :</b> {name}\n"
-        f"<b>{_sc('Platform')} :</b> {platform}\n"
-        f"<b>{_sc('Episodes')} :</b> ~{ep_count}\n"
-        f"<b>{_sc('Amount')} :</b> \u20b9{price}\n"
-        f"\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n"
-        f"<b>\ud835\ude82\ud835\ude9d\ud835\ude8e\ud835\ude99 \ud835\udff8: \ud835\uddd6\ud835\uddc1\ud835\uddc8\ud835\uddc8\ud835\uddcc\ud835\uddbe \ud835\uddd4 \ud835\uddd4\ud835\uddba\ud835\uddd2\ud835\uddc6\ud835\uddbe\ud835\uddc7\ud835\uddcd \ud835\udde0\ud835\uddbe\ud835\uddcd\ud835\uddc1\ud835\uddc8\ud835\uddbd</b>\n"
-        f"\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"
-        f"\u2022 <b>\ud835\udde5\ud835\uddd4\ud835\uddde\ud835\udde2\ud835\udde5\ud835\udde3\ud835\uddd4\ud835\uddec:</b> \ud835\uddac\ud835\uddba\ud835\uddc4\ud835\uddbe \ud835\uddc9\ud835\uddba\ud835\uddd2\ud835\uddc6\ud835\uddbe\ud835\uddc7\ud835\uddcd \u2192 \ud835\uddc2\ud835\uddc7\ud835\uddcc\ud835\uddcd\ud835\uddba\ud835\uddc7\ud835\uddcd \ud835\uddbc\ud835\uddc8\ud835\uddc7\ud835\uddbf\ud835\uddc2\ud835\uddcb\ud835\uddc6\ud835\uddba\ud835\uddcd\ud835\uddc2\ud835\uddc8\ud835\uddc7 & \ud835\uddbd\ud835\uddbe\ud835\uddc5\ud835\uddc2\ud835\uddcf\ud835\uddbe\ud835\uddcb\ud835\uddd2.\n"
-        f"\u2022 <b>UPI ({_sc('Manual')}):</b> \ud835\uddac\ud835\uddba\ud835\uddc4\ud835\uddbe \ud835\uddc9\ud835\uddba\ud835\uddd2\ud835\uddc6\ud835\uddbe\ud835\uddc7\ud835\uddcd \u2192 \ud835\uddce\ud835\uddc9\ud835\uddc5\ud835\uddc8\ud835\uddba\ud835\uddbd \ud835\uddcc\ud835\uddbc\ud835\uddcb\ud835\uddbe\ud835\uddbe\ud835\uddc7\ud835\uddcc\ud835\uddc1\ud835\uddc8\ud835\uddcd \u2192 \ud835\uddba\ud835\uddd0\ud835\uddba\ud835\uddc2\ud835\uddcd \ud835\uddba\ud835\uddbd\ud835\uddc6\ud835\uddc2\ud835\uddc7 \ud835\uddbc\ud835\uddc1\ud835\uddbe\ud835\uddbc\ud835\uddc4 (up to 5 min).\n\n"
-        f"{rzp_benefit}"
+        f"<b>{checkout_title}</b>\n"
+        f"────────────────────\n"
+        f"<b>{item_label}</b> {name}\n"
+        f"<b>{amount_label}</b> ₹{price}\n"
+        f"────────────────────\n"
+        f"<b>{desc_title}</b>\n"
+        f"<blockquote expandable>{desc_content}</blockquote>\n"
+        f"────────────────────\n"
+        f"<i>{instruction}</i>"
     )
 
     kb = [
-        [InlineKeyboardButton(f"\ud835\udde5\ud835\uddd4\ud835\uddde\ud835\udde2\ud835\udde5\ud835\udde3\ud835\uddd4\ud835\uddec \u2192 {_sc('PAY NOW')}", callback_data=f"mb#pay#razorpay#{str(story['_id'])}")],
+        [InlineKeyboardButton(pay_now_btn, callback_data=f"mb#pay#razorpay#{str(story['_id'])}")],
     ]
     if show_upi:
-        kb.append([InlineKeyboardButton(f"UPI \u2192 {_sc('MANUAL PAYMENT')}", callback_data=f"mb#pay#upi#{str(story['_id'])}")])
-    kb.append([InlineKeyboardButton(f"\u00ab \u276e {_sc('BACK')}", callback_data="mb#return_main")])
+        kb.append([InlineKeyboardButton(upi_manual_btn, callback_data=f"mb#pay#upi#{str(story['_id'])}")])
+    kb.append([InlineKeyboardButton(back_btn, callback_data="mb#return_main")])
 
     if is_msg:
         await msg_or_query.reply_text(txt, reply_markup=InlineKeyboardMarkup(kb))
     else:
         await msg_or_query.message.edit_text(txt, reply_markup=InlineKeyboardMarkup(kb))
 
-
-
-# ─────────────────────────────────────────────────────────────────
-# /start Handler
-# ─────────────────────────────────────────────────────────────────
 async def _process_start(client, message):
     user_id = message.from_user.id
+    from pyrogram import enums
     
     is_new = await db.db.users.count_documents({"id": int(user_id)}) == 0
     if is_new:
@@ -758,10 +781,10 @@ async def _process_start(client, message):
 
     if 'lang' not in user:
         lang_prompt = (
-            "<b>⟦ 𝗦𝗘𝗟𝗘𝗖𝗧 𝗟𝗔𝗡𝗚𝗞𝗔𝗚𝗘 ⟧</b>\n\n"
+            "<b>⟦ 𝗦𝗘𝗟𝗘𝗖𝗧 𝗟𝗔𝗡𝗚𝗨𝗔𝗚𝗘 ⟧</b>\n\n"
             "<blockquote expandable>"
             "<i>Choose your preferred language to continue.\n"
-            "\u0905पनी भाषा चुनें और आगे बढ़ें।</i>"
+            "अपनी भाषा चुनें और आगे बढ़ें।</i>"
             "</blockquote>"
         )
         kb = [[InlineKeyboardButton("• English", callback_data="mb#lang#en"),
@@ -770,7 +793,41 @@ async def _process_start(client, message):
 
     lang = user.get('lang', 'en')
 
-    # ── Deep Link Handler: show story preview first ──
+    # ── Force Join Logic (Unicode only, no emojis) ──
+    INVITE_CHANNEL = "https://t.me/AryaPremiumTG"
+    try:
+        chat_member = await client.get_chat_member("@AryaPremiumTG", user_id)
+        if chat_member.status in (enums.ChatMemberStatus.BANNED, enums.ChatMemberStatus.LEFT):
+            raise Exception("Not joined")
+    except Exception:
+        if lang == 'hi':
+            join_title = "𝗧𝗘𝗟𝗘𝗚𝗥𝗔𝗠 𝗖𝗛𝗔𝗡𝗡𝗘𝗟 𝗝𝗢𝗜𝗡 𝗞𝗔𝗥𝗘𝗡"
+            join_txt = (
+                "𝗕𝗼𝘁 𝗸𝗼 𝘂𝘀𝗲 𝗸𝗮𝗿𝗻𝗲 𝗸𝗲 𝗹𝗶𝘆𝗲 𝗮𝗮𝗽𝗸𝗼 𝗵𝘂𝗺𝗮𝗿𝗲 𝗰𝗵𝗮𝗻𝗻𝗲𝗹 𝗺𝗲𝗶𝗻 𝗷𝗼𝗶𝗻 𝗵𝗼𝗻𝗮 𝗵𝗼𝗴𝗮।\n\n"
+                "<blockquote expandable>"
+                "𝗝𝗼𝗶𝗻 𝗸𝗮𝗿𝗻𝗲 𝗸𝗲 𝗯𝗮𝗮𝗱 '𝗝𝗼𝗶𝗻𝗲𝗱' 𝗽𝗮𝗿 𝗰𝗹𝗶𝗰𝗸 𝗸𝗮𝗿𝗲𝗻। 𝗜𝘀𝘀𝗲 𝗮𝗮𝗽𝗸𝗼 𝘀𝗮𝗯𝗵𝗶 𝗮𝗱𝘃𝗮𝗻𝗰𝗲𝗱 𝗳𝗲𝗮𝘁𝘂𝗿𝗲𝘀 𝗮𝘂𝗿 𝘂𝗽𝗱𝗮𝘁𝗲𝘀 𝗺𝗶𝗹𝘁𝗲 𝗿𝗮𝗵𝗲𝗻𝗴𝗲।\n"
+                "</blockquote>"
+            )
+            join_btn = "✓ 𝗝𝗢𝗜𝗡 𝗖𝗛𝗔𝗡𝗡𝗘𝗟"
+            joined_btn = "✓ 𝗝𝗢𝗜𝗡 𝗞𝗔𝗥 𝗟𝗜𝗬𝗔"
+        else:
+            join_title = "𝗝𝗢𝗜𝗡 𝗢𝗨𝗥 𝗖𝗛𝗔𝗡𝗡𝗘𝗟"
+            join_txt = (
+                "𝗬𝗼𝘂 𝗺𝘂𝘀𝘁 𝗷𝗼𝗶𝗻 𝗼𝘂𝗿 𝗧𝗲𝗹𝗲𝗴𝗿𝗮𝗺 𝗰𝗵𝗮𝗻𝗻𝗲𝗹 𝘁𝗼 𝘂𝘀𝗲 𝘁𝗵𝗶𝘀 𝗯𝗼𝘁.\n\n"
+                "<blockquote expandable>"
+                "𝗔𝗳𝘁𝗲𝗿 𝗷𝗼𝗶𝗻𝗶𝗻𝗴, 𝗰𝗹𝗶𝗰𝗸 '𝗝𝗼𝗶𝗻𝗲𝗱' 𝘁𝗼 𝗰𝗼𝗻𝘁𝗶𝗻𝘂𝗲. 𝗬𝗼𝘂 𝘄𝗶𝗹𝗹 𝗴𝗲𝘁 𝗮𝗰𝗰𝗲𝘀𝘀 𝘁𝗼 𝗮𝗹𝗹 𝗽𝗿𝗲𝗺𝗶𝘂𝗺 𝘀𝘁𝗼𝗿𝗶𝗲𝘀 𝗮𝗻𝗱 𝗶𝗻𝘀𝘁𝗮𝗻𝘁 DELIVERY."
+                "</blockquote>"
+            )
+            join_btn = "✓ 𝗝𝗢𝗜𝗡 𝗖𝗛𝗔𝗡𝗡𝗘𝗟"
+            joined_btn = "✓ 𝗝𝗢𝗜𝗡𝗘𝗗"
+
+        join_kb = [
+            [InlineKeyboardButton(join_btn, url=INVITE_CHANNEL)],
+            [InlineKeyboardButton(joined_btn, callback_data="mb#joined_check")]
+        ]
+        return await message.reply_text(f"<b>{join_title}</b>\n\n{join_txt}", reply_markup=InlineKeyboardMarkup(join_kb))
+
+    # ── Deep Link Handler ──
     if len(args) > 1 and args[1].startswith("buy_"):
         story_id = args[1].replace("buy_", "")
         from bson.objectid import ObjectId
@@ -778,42 +835,19 @@ async def _process_start(client, message):
         if story:
             has_paid = await db.has_purchase(user_id, story_id)
             if has_paid:
-                await message.reply_text("✅ You already own this story. Sending delivery options...")
+                msg = "✅ You already own this story. Sending delivery options..." if lang == 'en' else "✅ आप पहले ही इस स्टोरी को खरीद चुके हैं। डिलीवरी विकल्प भेजे जा रहे हैं..."
+                await message.reply_text(msg)
                 return await dispatch_delivery_choice(client, user_id, story)
             return await _show_story_profile(client, user_id, story, lang)
 
-    # ── Optional Channel Join Prompt (non-blocking, shown once per user) ──
-    INVITE_CHANNEL = "https://t.me/AryaPremiumTG"
-    already_shown = user.get("channel_prompt_shown", False)
-    if not already_shown:
-        await db.update_user(user_id, {"channel_prompt_shown": True})
-        join_txt = (
-            f"<b>\u27e6 {_sc('JOIN OUR CHANNEL')} \u27e7</b>\n\n"
-            f"<blockquote expandable>"
-            f"\ud835\udda0\ud835\uddc5\ud835\uddc5 \ud835\uddce\ud835\uddc9\ud835\uddbd\ud835\uddba\ud835\uddcd\ud835\uddbe\ud835\uddcc, \ud835\uddcb\ud835\uddbe\ud835\uddc5\ud835\uddbe\ud835\uddba\ud835\uddcc\ud835\uddbe \ud835\uddc7\ud835\uddc8\ud835\uddcd\ud835\uddc2\ud835\uddbf\ud835\uddc2\ud835\uddbc\ud835\uddba\ud835\uddcd\ud835\uddc2\ud835\uddc8\ud835\uddc7\ud835\uddcc & \ud835\uddc7\ud835\uddbe\ud835\uddd0 \ud835\uddcc\ud835\uddcd\ud835\uddc8\ud835\uddcb\ud835\uddc2\ud835\uddbe\ud835\uddcc \ud835\uddba\ud835\uddcb\ud835\uddbe \ud835\uddc9\ud835\uddc8\ud835\uddcc\ud835\uddcd\ud835\uddbe\ud835\uddbd \ud835\uddcd\ud835\uddc1\ud835\uddbe\ud835\uddcb\ud835\uddbe.\n"
-            f"\ud835\uddd8\ud835\uddc8\ud835\uddc0\ud835\uddc0\ud835\uddc2 \ud835\uddc0\ud835\uddce\ud835\uddc2\ud835\uddbd\ud835\uddbe\ud835\uddcc \ud835\uddc8\ud835\uddc7 \ud835\uddc1\ud835\uddc8\ud835\uddd0 \ud835\uddcd\ud835\uddc8 \ud835\uddce\ud835\uddcc\ud835\uddbe \ud835\uddcd\ud835\uddc1\ud835\uddbe \ud835\uddbb\ud835\uddc8\ud835\uddcd \ud835\uddba\ud835\uddcb\ud835\uddbe \ud835\uddc9\ud835\uddce\ud835\uddbb\ud835\uddc5\ud835\uddc2\ud835\uddcc\ud835\uddc1\ud835\uddbe\ud835\uddbd \ud835\uddcd\ud835\uddc1\ud835\uddbe\ud835\uddcb\ud835\uddbe.\n"
-            f"\ud835\uddd9\ud835\uddce\ud835\uddcd\ud835\uddce\ud835\uddcb\ud835\uddbe \ud835\uddce\ud835\uddc9\ud835\uddbd\ud835\uddba\ud835\uddcd\ud835\uddbe\ud835\uddcc & \ud835\uddcc\ud835\uddce\ud835\uddc9\ud835\uddc9\ud835\uddc8\ud835\uddcb\ud835\uddcd \ud835\uddd0\ud835\uddc2\ud835\uddc5\ud835\uddc5 \ud835\uddba\ud835\uddc5\ud835\uddcc\ud835\uddc8 \ud835\uddbb\ud835\uddbe \ud835\uddbc\ud835\uddc8\ud835\uddc6\ud835\uddc6\ud835\uddce\ud835\uddc7\ud835\uddc2\ud835\uddbc\ud835\uddba\ud835\uddcd\ud835\uddbe\ud835\uddbd \ud835\uddcd\ud835\uddc1\ud835\uddbe\ud835\uddcb\ud835\uddbe. \ud835\uddd1\ud835\uddc8\ud835\uddc2\ud835\uddc7\ud835\uddc2\ud835\uddc7\ud835\uddc0 \ud835\uddc2\ud835\uddcc \ud835\uddc8\ud835\uddc9\ud835\uddcd\ud835\uddc2\ud835\uddc8\ud835\uddc7\ud835\uddba\ud835\uddc5."
-            f"</blockquote>"
-        )
-        join_kb = [
-            [InlineKeyboardButton(f"\u2713 {_sc('JOIN CHANNEL')}", url=INVITE_CHANNEL)],
-            [InlineKeyboardButton(f"\u276e {_sc('SKIP \u2192 CONTINUE TO BOT')}", callback_data="mb#skip_channel_prompt")]
-        ]
-        return await message.reply_text(join_txt, reply_markup=InlineKeyboardMarkup(join_kb))
-
     # Standard Main Menu
-    wait_msg = await message.reply_text("<b>\u203a \u203a \u23f3 " + _sc("WAIT A SECOND...") + "</b>", parse_mode=enums.ParseMode.HTML)
-    await asyncio.sleep(0.4)
-    await wait_msg.edit_text("<b>\u203a \u203a \u23f2 " + _sc("WAIT A SECOND...") + "</b>", parse_mode=enums.ParseMode.HTML)
+    wait_msg_txt = "WAIT A SECOND..." if lang == 'en' else "कृपया प्रतीक्षा करें..."
+    wait_msg = await message.reply_text(f"<b>› › ⏳ {wait_msg_txt}</b>", parse_mode=enums.ParseMode.HTML)
     await asyncio.sleep(0.4)
     await wait_msg.delete()
 
     await _send_main_menu(client, user_id, message.from_user, lang, reply_to_message_id=message.id)
 
-    
-# ─────────────────────────────────────────────────────────────────
-# /mystories Handler
-# ─────────────────────────────────────────────────────────────────
 async def _process_my_stories(client, message):
     user_id = message.from_user.id
     user = await db.get_user(user_id)
@@ -1165,6 +1199,24 @@ async def _process_callback(client, query):
     lang = user.get('lang', 'en')
     data = query.data.split('#')
     cmd = data[1]
+
+    # ── Joined Check ──
+    if cmd == "joined_check":
+        try:
+            from pyrogram import enums
+            chat_member = await client.get_chat_member("@AryaPremiumTG", user_id)
+            if chat_member.status not in (enums.ChatMemberStatus.BANNED, enums.ChatMemberStatus.LEFT):
+                msg = "✓ Joined Success!" if lang == 'en' else "✓ आपने सफलतापूर्वक ज्वाइन कर लिया है!"
+                await query.answer(msg, show_alert=True)
+                try: await query.message.delete()
+                except: pass
+                return await _send_main_menu(client, user_id, query.from_user, lang)
+            else:
+                msg = "Aapne abhi tak join nahi kiya hai। Kripya join karein aur phir check karein।" if lang == 'hi' else "You haven't joined yet. Please join the channel first."
+                return await query.answer(msg, show_alert=True)
+        except Exception:
+            return await query.answer("Error checking status. Make sure you joined.", show_alert=True)
+
 
     # ── Skip Channel Prompt ──
     if cmd == "skip_channel_prompt":
@@ -1977,12 +2029,11 @@ async def _process_screenshot(client, message):
 
     kb_user = [[InlineKeyboardButton(f"✆ {_sc('NOTIFY ADMIN')}", callback_data="mb#notify_admin")]]
     txt_user = (
-        f"⏳ <b>{_sc('Your payment is being verified')}</b>\n"
-        "<blockquote expandable>"
-        f"<i>{_sc('Please wait (approx 5 minutes)...')}</i>\n\n"
-        f"<b>{_sc('Time Remaining')} :</b> 05:00\n"
-        "</blockquote>"
-    )
+        f"⏳ <b>{_sc('Your payment is being verified') if lang != 'hi' else 'आपके भुगतान की पुष्टि की जा रही है'}</b>\n"
+        "<blockquote expandable>\n"
+        f"<i>{_sc('Please wait (approx 5 minutes)...') if lang != 'hi' else 'कृपया प्रतीक्षा करें (लगभग 5 मिनट)...'}</i>\n\n"
+        f"<b>{_sc('Time Remaining') if lang != 'hi' else 'शेष समय'} :</b> 05:00\n"
+        "</blockquote>"\n    )
     msg = await message.reply_text(txt_user, reply_markup=InlineKeyboardMarkup(kb_user))
 
     import os
@@ -2074,7 +2125,7 @@ async def dispatch_delivery_choice(client, user_id, story):
     has_any_delivery = bool(story.get('channel_id') or pool or (fallback and fallback.get("channel_id")))
     can_use_channel = (story_id_str not in used_channels) and (mode != "dm_only") and has_any_delivery
 
-    # Find purchase source to display as requested
+    # Find purchase source to display
     from bson.objectid import ObjectId
     purchase = await db.db.premium_purchases.find_one({"user_id": int(user_id), "story_id": ObjectId(story_id_str)})
     method_info = "Verified Purchase"
@@ -2087,30 +2138,46 @@ async def dispatch_delivery_choice(client, user_id, story):
 
     s_name = story.get(f'story_name_{lang}', story.get('story_name_en'))
 
-    del_txt = (
-        "<b>✅ Access Granted!</b>\n\n"
-        f"<b>Product:</b> {s_name}\n"
-        + (f"<b>Method:</b> {method_info}\n" if method_info else "")
-        + "\n"
-        + "<b>ℹ️ Delivery Info</b>\n\n"
-        + "<blockquote>• <b>DM Delivery:</b> Files are sent directly here. Save or forward them immediately—they auto-delete after some time.</blockquote>\n"
-        + "<blockquote>• <b>Channel Link:</b> A one-time private invite link is generated. Each story allows only one channel link per account.</blockquote>\n"
-        + "<blockquote>• <b>Lifetime Access:</b> You can re-access any purchased story anytime from <b>Main Menu ⟶ My Stories</b>.</blockquote>\n"
-        + "──────────────\n\n"
-        + "How would you like to receive your files?"
-    )
+    if lang == 'hi':
+        del_txt = (
+            "<b>✅ एक्सेस मिल गया है!</b>\n\n"
+            f"<b>स्टोरी:</b> {s_name}\n"
+            + (f"<b>भुगतान तरीका:</b> {method_info}\n" if method_info else "")
+            + "\n"
+            + "<b>ℹ️ डिलीवरी की जानकारी</b>\n\n"
+            + "<blockquote>• <b>DM डिलीवरी:</b> फाइलें सीधे यहां भेजी जाती हैं। उन्हें तुरंत सेव या फॉरवर्ड करें—वे कुछ समय बाद अपने आप डिलीट हो जाती हैं।</blockquote>\n"
+            + "<blockquote>• <b>चैनल लिंक:</b> एक वन-टाइम प्राइवेट इनवाइट लिंक जेनरेट किया जाता है। प्रत्येक स्टोरी के लिए केवल एक चैनल लिंक की अनुमति है।</blockquote>\n"
+            + "<blockquote>• <b>लाइफटाइम एक्सेस:</b> आप किसी भी खरीदी हुई स्टोरी को कभी भी <b>मुख्य मेनू ⟶ मेरी स्टोरीज</b> से एक्सेस कर सकते हैं।</blockquote>\n"
+            + "──────────────\n\n"
+            + "आप अपनी फाइलें कैसे प्राप्त करना चाहेंगे?"
+        )
+        dm_btn_txt = "⤓ DM में प्राप्त करें"
+        chan_btn_txt = "➦ चैनल लिंक प्राप्त करें"
+        back_btn_txt = "« ❮ मुख्य मेनू"
+    else:
+        del_txt = (
+            "<b>✅ Access Granted!</b>\n\n"
+            f"<b>Product:</b> {s_name}\n"
+            + (f"<b>Method:</b> {method_info}\n" if method_info else "")
+            + "\n"
+            + "<b>ℹ️ Delivery Info</b>\n\n"
+            + "<blockquote>• <b>DM Delivery:</b> Files are sent directly here. Save or forward them immediately—they auto-delete after some time.</blockquote>\n"
+            + "<blockquote>• <b>Channel Link:</b> A one-time private invite link is generated. Each story allows only one channel link per account.</blockquote>\n"
+            + "<blockquote>• <b>Lifetime Access:</b> You can re-access any purchased story anytime from <b>Main Menu ⟶ My Stories</b>.</blockquote>\n"
+            + "──────────────\n\n"
+            + "How would you like to receive your files?"
+        )
+        dm_btn_txt = f"⤓ {_sc('RECEIVE IN DM')}"
+        chan_btn_txt = f"➦ {_sc('ACCESS CHANNEL LINK')}"
+        back_btn_txt = f"« ❮ {_sc('MAIN MENU')}"
 
-    kb = [[InlineKeyboardButton(f"⤓ {_sc('RECEIVE IN DM')}", callback_data=f"mb#deliver_dm#{story_id_str}")]]
+    kb = [[InlineKeyboardButton(dm_btn_txt, callback_data=f"mb#deliver_dm#{story_id_str}")]]
     if can_use_channel:
-        kb.append([InlineKeyboardButton(f"➦ {_sc('ACCESS CHANNEL LINK')}", callback_data=f"mb#deliver_channel#{story_id_str}")])
-    kb.append([InlineKeyboardButton(f"« ❮ {_sc('MAIN MENU')}", callback_data="mb#main_back")])
+        kb.append([InlineKeyboardButton(chan_btn_txt, callback_data=f"mb#deliver_channel#{story_id_str}")])
+    kb.append([InlineKeyboardButton(back_btn_txt, callback_data="mb#main_back")])
 
     await client.send_message(user_id, del_txt, reply_markup=InlineKeyboardMarkup(kb))
 
-
-# ─────────────────────────────────────────────────────────────────
-# DM Delivery (Arya-style: copy messages from source channel)
-# ─────────────────────────────────────────────────────────────────
 async def _do_dm_delivery(client, user_id, story, status_msg=None):
     try:
         dm_aborts.discard(user_id)
