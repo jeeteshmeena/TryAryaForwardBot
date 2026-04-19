@@ -80,8 +80,32 @@ async def main():
         logger.error("No bots to run. Exiting.")
         return
 
-    logger.info("Starting up Premium Ecosystem via compose...")
-    await compose(apps)
+    logger.info("Starting up Premium Ecosystem and Warming Cache...")
+    from pyrogram import idle
+
+    for app in apps:
+        await app.start()
+        
+        # Background task to warm up cache completely on any fresh restart/VPS migration
+        async def warm(client):
+            try:
+                from pyrogram.errors import FloodWait
+                async for _ in client.get_dialogs(limit=500):
+                    pass
+                logger.info(f"[{client.name}] Successfully warmed up peer cache!")
+            except FloodWait as e:
+                await asyncio.sleep(e.value)
+            except Exception as e:
+                logger.debug(f"[{client.name}] Dialogs warmup interrupted: {e}")
+                
+        asyncio.create_task(warm(app))
+
+    # Keep bots running
+    await idle()
+    
+    # Graceful shutdown
+    for app in apps:
+        await app.stop()
 
 if __name__ == "__main__":
     try:
