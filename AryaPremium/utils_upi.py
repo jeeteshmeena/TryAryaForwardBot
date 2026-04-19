@@ -27,10 +27,10 @@ def generate_upi_card(upi_id: str, amount: str, story_name: str, payee_name: str
     draw.rectangle([100, 250, 582, 300], fill="white")
     # Amount
     draw.rectangle([100, 310, 582, 390], fill="white")
-    # QR Interior (Wipe wide enough to cover the whole mock QR)
-    draw.rectangle([180, 435, 502, 752], fill="white")
-    # UPI ID (Wipe entire line area)
-    draw.rectangle([100, 770, 582, 830], fill="white")
+    # QR Interior (Wipe precisely inside the gray border: roughly 161 to 518 and 454 to 787)
+    draw.rectangle([163, 456, 516, 785], fill="white")
+    # UPI ID (Wipe just the text line below the box)
+    draw.rectangle([100, 792, 582, 825], fill="white")
     
     # 2. FONTS
     try:
@@ -72,7 +72,7 @@ def generate_upi_card(upi_id: str, amount: str, story_name: str, payee_name: str
     
     # UPI ID (#666666, Regular)
     total_upi_txt = f"UPI ID: {upi_id}"
-    draw.text((cx, 792), total_upi_txt, fill=(102, 102, 102), font=f_upi, anchor="mm")
+    draw.text((cx, 810), total_upi_txt, fill=(102, 102, 102), font=f_upi, anchor="mm")
 
     # 4. OVERLAY QR
     # Minimal payload to bypass banking risk heuristics
@@ -84,8 +84,8 @@ def generate_upi_card(upi_id: str, amount: str, story_name: str, payee_name: str
     
     qr_size = 310
     qr_img = qr_img.resize((qr_size, qr_size), Image.Resampling.LANCZOS)
-    # Paste centered horizontally, and aligned with the box
-    img.paste(qr_img, (cx - qr_size // 2, 438), qr_img)
+    # Paste centered horizontally, and centered vertically within the interior box [456, 785] -> mid Y = 620 -> 620 - 155 = 465
+    img.paste(qr_img, (cx - qr_size // 2, 465), qr_img)
 
     # Return BytesIO
     img_buffer = io.BytesIO()
