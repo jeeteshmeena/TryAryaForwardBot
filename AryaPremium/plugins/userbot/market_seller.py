@@ -1378,11 +1378,11 @@ async def _process_callback(client, query):
         await query.answer()
         refund_text = (
             f"<b>🔁 {_sc('REFUND POLICY')}</b>\n\n"
-            "<blockquote expandable>"
             + _sc("If you paid an incorrect/extra amount or did not receive the story, you may be eligible for a refund after verification.") + "\n\n"
-            + _sc("⚠️ IMPORTANT") + "\n"
-            + _sc("We store all data: your profile, payment history, which story you paid for, how much you paid, to whom it was paid, whether you received the channel link or delivery, and how many episodes were delivered.") + "\n\n"
-            + _sc("Refund requests are reviewed individually and processed after full verification. Misuse of refund requests will result in a ban.")
+            "<blockquote expandable>"
+            + "⚠️ " + _sc("IMPORTANT") + "\n"
+            + _sc("WE STORE ALL DATA: YOUR PROFILE, PAYMENT HISTORY, WHICH STORY YOU PAID FOR, HOW MUCH YOU PAID, TO WHOM IT WAS PAID, WHETHER YOU RECEIVED THE CHANNEL LINK OR DELIVERY, AND HOW MANY EPISODES WERE DELIVERED.") + "\n\n"
+            + _sc("REFUND REQUESTS ARE REVIEWED INDIVIDUALLY AND PROCESSED AFTER FULL VERIFICATION. MISUSE OF REFUND REQUESTS WILL RESULT IN A BAN.")
             + "</blockquote>"
         )
         kb = [[InlineKeyboardButton(f"« ❮ {_sc('BACK')}", callback_data="mb#main_help")]]
@@ -1622,10 +1622,10 @@ async def _process_callback(client, query):
             txt = (
                 f"<b>⟦ 𝗖𝗢𝗠𝗣𝗟𝗘𝗧𝗘 𝗣𝗔𝗬𝗠𝗘𝗡𝗧 ⟧</b>\n\n"
                 f"<b>𝚂𝚝𝚎𝚙 𝟷: Pay ₹{s_price}</b>\n\n"
-                f"• Scan the QR code or pay using the details below:\n\n"
-                f"<b>UPI ID:</b> <code>{upi_id}</code>\n"
+                f"<blockquote>• Scan the QR code or pay using the details below:</blockquote>\n"
+                f"<blockquote><b>UPI ID:</b> <code>{upi_id}</code>\n"
                 f"<b>Name:</b> <code>{p_name}</code>\n"
-                f"<b>Amount:</b> <code>₹{s_price}</code>\n\n"
+                f"<b>Amount:</b> <code>₹{s_price}</code></blockquote>\n\n"
                 f"• Make sure the amount is entered correctly.\n\n"
                 f"<b>𝚂𝚝𝚎𝚙 𝟸: Verify Payment</b>\n\n"
                 f"• After payment, click <b>PAYMENT DONE</b> to upload your screenshot.\n"
@@ -1687,9 +1687,11 @@ async def _process_callback(client, query):
         await client.send_message(
             user_id,
             f"<b>☑️ {_sc('PAYMENT SUBMITTED')}</b>\n\n"
+            "<blockquote expandable>"
             f"<i>{_sc('Our system needs to verify your payment.')}</i>\n"
             f"<i>{_sc('Please upload the successful payment screenshot here now.')}</i>\n"
-            f"<i>{_sc('Ensure the Transaction ID / UTR is clearly visible.')}</i>"
+            f"<i>{_sc('Ensure the Transaction ID / UTR is clearly visible.')}</i>\n"
+            "</blockquote>"
         )
 
     elif cmd.endswith("_check") and cmd.split("_")[0] in ("razorpay", "easebuzz"):
@@ -1880,8 +1882,14 @@ async def _process_screenshot(client, message):
     if p.height < p.width:
         return await message.reply_text("❌ <b>Invalid Screenshot!</b>\n\nPlease send a portrait-mode screenshot (not landscape).", quote=True)
 
-    kb_user = [[InlineKeyboardButton(f"🔔 {_sc('NOTIFY ADMIN')}", callback_data="mb#notify_admin")]]
-    txt_user = f"⏳ <b>{_sc('Your payment is being verified')}</b>\n<i>{_sc('Please wait (approx 5 minutes)...')}</i>\n\n⏳ <b>{_sc('Time Remaining')} :</b> 05:00"
+    kb_user = [[InlineKeyboardButton(f"✆ {_sc('NOTIFY ADMIN')}", callback_data="mb#notify_admin")]]
+    txt_user = (
+        f"⏳ <b>{_sc('Your payment is being verified')}</b>\n"
+        "<blockquote expandable>"
+        f"<i>{_sc('Please wait (approx 5 minutes)...')}</i>\n\n"
+        f"<b>{_sc('Time Remaining')} :</b> 05:00\n"
+        "</blockquote>"
+    )
     msg = await message.reply_text(txt_user, reply_markup=InlineKeyboardMarkup(kb_user))
 
     import os
@@ -1934,7 +1942,11 @@ async def _process_screenshot(client, message):
                 m = i // 60
                 s = i % 60
                 await target_msg.edit_text(
-                    f"⏳ <b>{_sc('Your payment is being verified')}</b>\n<i>{_sc('Please wait (approx 5 minutes)...')}</i>\n\n⏳ <b>{_sc('Time Remaining')} :</b> {m:02d}:{s:02d}",
+                    (f"⏳ <b>{_sc('Your payment is being verified')}</b>\n"
+                     "<blockquote expandable>"
+                     f"<i>{_sc('Please wait (approx 5 minutes)...')}</i>\n\n"
+                     f"<b>{_sc('Time Remaining')} :</b> {m:02d}:{s:02d}\n"
+                     "</blockquote>"),
                     reply_markup=InlineKeyboardMarkup(kb_user)
                 )
                 await asyncio.sleep(10)
@@ -1985,9 +1997,9 @@ async def dispatch_delivery_choice(client, user_id, story):
         + (f"<b>Method:</b> {method_info}\n" if method_info else "")
         + "\n"
         + "<b>ℹ️ Delivery Info</b>\n\n"
-        + "• <b>DM Delivery:</b> Files are sent directly here. Save or forward them immediately—they auto-delete after some time.\n\n"
-        + "• <b>Channel Link:</b> A one-time private invite link is generated. Each story allows only one channel link per account.\n\n"
-        + "• <b>Lifetime Access:</b> You can re-access any purchased story anytime from <b>Main Menu ⟶ My Stories</b>.\n"
+        + "<blockquote>• <b>DM Delivery:</b> Files are sent directly here. Save or forward them immediately—they auto-delete after some time.</blockquote>\n"
+        + "<blockquote>• <b>Channel Link:</b> A one-time private invite link is generated. Each story allows only one channel link per account.</blockquote>\n"
+        + "<blockquote>• <b>Lifetime Access:</b> You can re-access any purchased story anytime from <b>Main Menu ⟶ My Stories</b>.</blockquote>\n"
         + "──────────────\n\n"
         + "How would you like to receive your files?"
     )
@@ -1995,7 +2007,7 @@ async def dispatch_delivery_choice(client, user_id, story):
     kb = [[InlineKeyboardButton(f"📥 {_sc('RECEIVE IN DM')}", callback_data=f"mb#deliver_dm#{story_id_str}")]]
     if can_use_channel:
         kb.append([InlineKeyboardButton(f"🔗 {_sc('ACCESS CHANNEL LINK')}", callback_data=f"mb#deliver_channel#{story_id_str}")])
-    kb.append([InlineKeyboardButton(f"« ❮ {_sc('BACK')}", callback_data="mb#main_back")])
+    kb.append([InlineKeyboardButton(f"« ❮ {_sc('MAIN MENU')}", callback_data="mb#main_back")])
 
     await client.send_message(user_id, del_txt, reply_markup=InlineKeyboardMarkup(kb))
 
@@ -2149,12 +2161,12 @@ async def _do_dm_delivery(client, user_id, story, status_msg=None):
             ).replace("{time}", time_str).replace("DELIVERY COMPLETE", _sc(status_text))
         else:
             summary = (
-                f"‣ <b>{_sc(status_text)}:</b> {sent_count} {_sc('file(s) delivered!')} "
-                f"{autodel_text} "
-                f"{reaccess_text}"
+                f"‣ <b>{_sc('IMPORTANT')}:</b> {sent_count} ꜰɪʟᴇ(ꜱ) ᴅᴇʟɪᴠᴇʀᴇᴅ! ᴀʟʟ ꜱᴇɴᴛ ꜰɪʟᴇꜱ ᴀʀᴇ ɴᴏᴡ ᴀᴠᴀɪʟᴀʙʟᴇ ʙᴇʟᴏᴡ.\n"
+                f"ᴛᴏ ʀᴇ-ᴀᴄᴄᴇꜱꜱ, ɢᴏ ᴛᴏ ᴍᴀɪɴ ᴍᴇɴᴜ ⟶ ᴍʏ ꜱᴛᴏʀɪᴇꜱ."
             )
 
-        notice = await client.send_message(user_id, summary)
+        kb_regen = [[InlineKeyboardButton(f"⟳ {_sc('Regenerate Files')}", callback_data=f"mb#deliver_dm#{story_id_str}")]]
+        notice = await client.send_message(user_id, summary, reply_markup=InlineKeyboardMarkup(kb_regen))
 
         from utils import log_delivery, log_arya_event
         
@@ -2187,7 +2199,7 @@ async def _do_dm_delivery(client, user_id, story, status_msg=None):
             ))
 
         if autodel > 0 and sent_ids:
-            asyncio.create_task(_delete_later(client, user_id, sent_ids + [notice.id], autodel))
+            asyncio.create_task(_delete_later(client, user_id, sent_ids, autodel))
 
     except Exception as e:
         logger.error(f"DM Delivery error: {e}")
@@ -2315,14 +2327,19 @@ async def _do_channel_delivery(client, user_id, story, status_msg=None):
         else:
             txt = (
                 f"<b>Your 1-Time Access Link is Ready!</b>\n\n"
-                f"{s_name}\n\n"
+                f"<b>{s_name}</b>\n\n"
                 f"{invite_link.invite_link}\n\n"
+                "<blockquote>"
                 f"<i>This link works for exactly 1 person only. Once used, it expires.\n"
-                f"Future access to this story will be via DM delivery only.</i>\n\n"
+                f"Future access to this story will be via DM delivery only by using /mystories.</i>\n"
+                "</blockquote>"
+                "<blockquote>"
                 f"<i>⚠️ This message will auto-delete in 24 hours. "
-                f"Once you join, the link will be revoked automatically to ensure privacy.</i>"
+                f"Once you join, the link will be revoked automatically to ensure privacy.</i>\n"
+                "</blockquote>"
             )
-            msg = await client.send_message(user_id, txt, disable_web_page_preview=True)
+            kb_link = [[InlineKeyboardButton(f"« ❮ {_sc('MAIN MENU')}", callback_data="mb#main_back")]]
+            msg = await client.send_message(user_id, txt, disable_web_page_preview=True, reply_markup=InlineKeyboardMarkup(kb_link))
             _schedule_auto_delete(msg, 86400)
 
     except Exception as e:
