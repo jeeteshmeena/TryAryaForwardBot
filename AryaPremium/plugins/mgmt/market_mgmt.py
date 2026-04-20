@@ -984,7 +984,9 @@ async def market_callback(client, query):
             asyncio.create_task(_premium_bot_set(client, user_id, b_id, key, key.capitalize()))
 
         elif cmd == "add_story":
-            await query.message.delete()
+            try: await query.message.delete()
+            except: pass
+            if "query" in locals() and query: await query.answer()
             asyncio.create_task(_add_story_flow(client, user_id))
 
         elif cmd == "approve":
@@ -1030,38 +1032,7 @@ async def _reject_request_flow(client, user_id, req_id):
     await db.db.premium_requests.update_one({"_id": r['_id']}, {"$set": {"status": f"Rejected: {reason}", "updated_at": datetime.now()}})
     
     bot_id_str = str(r.get('bot_id'))
-    from plugins.userbot.market_seller import market_clients
-    if bot_id_str in market_clients:
-        t_cli = market_clients[bot_id_str]
-        try:
-            u_doc = await db.get_user(r.get('user_id'))
-            t_lang = u_doc.get("lang", "en")
-            if t_lang == "hi":
-                alert = f"<b>⚠️ कहानी अनुरोध अस्वीकृत</b>\n\n<b>कहानी:</b> {r.get('story_name')}\n<b>कारण:</b> {reason}"
-            else:
-                alert = f"<b>⚠️ STORY REQUEST REJECTED</b>\n\n<b>Story:</b> {r.get('story_name')}\n<b>Reason:</b> {reason}"
-            await t_cli.send_message(r.get('user_id'), alert)
-        except Exception: pass
-        
-    await client.send_message(user_id, f"✅ Request rejected and user notified.\nReason: {reason}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« " + utils.to_smallcap("Back to List"), callback_data="mk#reqs_0")]]))
-
-async def _reject_payment_flow(client, user_id, p_id):
-    from bson.objectid import ObjectId
-    try: checkout = await db.db.premium_checkout.find_one({"_id": ObjectId(p_id)})
-    except Exception: checkout = None
-    if not checkout:
-        return await client.send_message(user_id, "Ticket not found.")
-    
-    msg = await native_ask(client, user_id, f"<b>❌ REJECT PAYMENT</b>\n\nUser: <code>{checkout.get('user_id')}</code>\n\nEnter the reason for rejection (e.g. 'Fake Screenshot', 'Amount Mismatch'):", reply_markup=ReplyKeyboardMarkup([["⛔ Cancel"]], resize_keyboard=True))
-    if getattr(msg, 'text', None) and "Cancel" in msg.text:
-         return await client.send_message(user_id, "<i>Cancelled.</i>", reply_markup=ReplyKeyboardRemove())
-         
-    reason = (getattr(msg, 'text', '') or 'Not specified.').strip()
-    
-    from datetime import datetime
-    await db.db.premium_checkout.update_one({"_id": checkout['_id']}, {"$set": {"status": "rejected", "reject_reason": reason, "updated_at": datetime.utcnow()}})
-    
-    bot_id_str = str(checkout.get('bot_id'))
+    from plugir = str(checkout.get('bot_id'))
     from plugins.userbot.market_seller import market_clients
     if bot_id_str in market_clients:
         t_cli = market_clients[bot_id_str]
@@ -1525,115 +1496,130 @@ async def _edit_story_flow(client, user_id, s_id, action):
         await client.send_message(user_id, f"❌ Invalid format. Please try again.", reply_markup=ReplyKeyboardRemove())
 
 async def _approve_payment_flow(client, user_id, p_id):
-    from bson.objectid import ObjectId
-    from datetime import datetime
-    checkout = await db.db.premium_checkout.find_one({"_id": ObjectId(p_id)})
-    if not checkout: return await client.send_message(user_id, "Ticket not found.")
-    
-    if checkout.get("status") in ("approved", "rejected"):
-        return await client.send_message(user_id, f"Ticket is already {checkout.get('status')}.")
+    try:
+        from bson.objectid import ObjectId
+        from datetime import datetime
+        checkout = await db.db.premium_checkout.find_one({"_id": ObjectId(p_id)})
+        if not checkout: return await client.send_message(user_id, "Ticket not found.")
         
-    await db.db.premium_checkout.update_one(
-        {"_id": ObjectId(p_id)},
-        {"$set": {"status": "approved", "updated_at": datetime.utcnow(), "reviewed_by": user_id}}
-    )
+        if checkout.get("status") in ("approved", "rejected"):
+            return await client.send_message(user_id, f"Ticket is already {checkout.get('status')}.")
+            
+        await db.db.premium_checkout.update_one(
+            {"_id": ObjectId(p_id)},
+            {"$set": {"status": "approved", "updated_at": datetime.utcnow(), "reviewed_by": user_id}}
+        )
 
-    import random, string
-    order_id = f"OD-{checkout['user_id']}-{''.join(random.choices(string.ascii_uppercase + string.digits, k=6))}"
+        import random, string
+        order_id = f"OD-{checkout['user_id']}-{''.join(random.choices(string.ascii_uppercase + string.digits, k=6))}"
 
-    await db.add_purchase(checkout['user_id'], str(checkout['story_id']))
-    await db.db.premium_purchases.insert_one({
-        "user_id": checkout['user_id'],
-        "story_id": checkout['story_id'],
-        "bot_id": checkout['bot_id'],
-        "purchased_at": datetime.utcnow(),
-        "source": checkout.get("method", "upi"),
-        "amount": checkout.get("amount", 0),
-        "order_id": order_id
-    })
+        await db.add_purchase(checkout['user_id'], str(checkout.get('story_id')))
+        await db.db.premium_purchases.insert_one({
+            "user_id": checkout['user_id'],
+            "story_id": checkout.get('story_id'),
+            "bot_id": checkout.get('bot_id'),
+            "purchased_at": datetime.utcnow(),
+            "source": checkout.get("method", "upi"),
+            "amount": checkout.get("amount", 0),
+            "order_id": order_id
+        })
 
-    # Log payment
-    from utils import log_payment, log_arya_event
-    story = await db.db.premium_stories.find_one({"_id": checkout["story_id"]})
-    user_info = await db.get_user(checkout['user_id'])
-    s_name = story.get("story_name_en") if story else "Unknown"
-    
-    asyncio.create_task(log_arya_event(
-        event_type="MANUAL UPI VERIFIED",
-        user_id=checkout['user_id'],
-        user_info=user_info,
-        details=f"Story: {s_name}\nOrder ID: <code>{order_id}</code>\nAmount: ₹{checkout.get('amount', 0)}\nApproved by Admin ID: {user_id}"
-    ))
-    
-    asyncio.create_task(log_payment(
-        user_id=checkout['user_id'],
-        user_first_name=user_info.get("first_name", "User"),
-        username=user_info.get('username', ''),
-        s_name=s_name,
-        amount=checkout.get("amount", 0),
-        method=checkout.get("method", "upi"),
-        receipt_id=str(checkout["_id"]),
-        photo_path=checkout.get("proof_path"),
-        order_id=order_id,
-        user_last_name=user_info.get("last_name", "")
-    ))
+        # Log payment
+        from utils import log_payment, log_arya_event
+        story = await db.db.premium_stories.find_one({"_id": checkout.get("story_id")})
+        user_info = await db.get_user(checkout['user_id'])
+        s_name = story.get("story_name_en") if story else "Unknown"
+        
+        asyncio.create_task(log_arya_event(
+            event_type="MANUAL UPI VERIFIED",
+            user_id=checkout['user_id'],
+            user_info=user_info,
+            details=f"Story: {s_name}\nOrder ID: <code>{order_id}</code>\nAmount: ₹{checkout.get('amount', 0)}\nApproved by Admin ID: {user_id}"
+        ))
+        
+        asyncio.create_task(log_payment(
+            user_id=checkout['user_id'],
+            user_first_name=user_info.get("first_name", "User"),
+            username=user_info.get('username', ''),
+            s_name=s_name,
+            amount=checkout.get("amount", 0),
+            method=checkout.get("method", "upi"),
+            receipt_id=str(checkout.get("_id", "")),
+            photo_path=checkout.get("proof_path"),
+            order_id=order_id,
+            user_last_name=user_info.get("last_name", "")
+        ))
 
-    await client.send_message(user_id, "✅ Payment Approved successfully!")
-    from plugins.userbot.market_seller import market_clients, dispatch_delivery_choice
-    u_cli = market_clients.get(str(checkout['bot_id']))
-    if u_cli:
-        try: await u_cli.delete_messages(checkout['user_id'], checkout.get('status_msg_id', 0))
-        except: pass
-        story = await db.db.premium_stories.find_one({"_id": checkout["story_id"]})
-        if story:
-            asyncio.create_task(dispatch_delivery_choice(u_cli, checkout['user_id'], story))
+        await client.send_message(user_id, "✅ Payment Approved successfully!")
+        from plugins.userbot.market_seller import market_clients, dispatch_delivery_choice
+        u_cli = market_clients.get(str(checkout.get('bot_id')))
+        if u_cli:
+            try: await u_cli.delete_messages(checkout['user_id'], checkout.get('status_msg_id', 0))
+            except: pass
+            if story:
+                asyncio.create_task(dispatch_delivery_choice(u_cli, checkout['user_id'], story))
+    except Exception as e:
+        import traceback
+        err = traceback.format_exc()
+        await client.send_message(user_id, f"❌ Failed to approve payment: {e}\n\n<code>{err[-500:]}</code>")
             
 
 async def _reject_payment_flow(client, user_id, p_id):
-    msg = await native_ask(
-        client, user_id, 
-        f"<b>❌ Reject Payment</b>\n\nPlease enter the reason for rejecting this payment (this will be sent to the user).\n<i>Tip: You can send an image with caption as the reason!</i>", 
-        reply_markup=ReplyKeyboardMarkup([["⛔ Cᴀɴᴄᴇʟ"]], resize_keyboard=True)
-    )
-    from pyrogram.types import CallbackQuery as _CQ
-    _rtxt = getattr(msg, 'text', '') or ''
-    if isinstance(msg, _CQ) or "Cancel" in _rtxt:
-        return await client.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
+    try:
+        msg = await native_ask(
+            client, user_id, 
+            f"<b>❌ Reject Payment</b>\n\nPlease enter the reason for rejecting this payment (this will be sent to the user).\n<i>Tip: You can send an image with caption as the reason!</i>", 
+            reply_markup=ReplyKeyboardMarkup([["⛔ Cᴀɴᴄᴇʟ"]], resize_keyboard=True)
+        )
+        from pyrogram.types import CallbackQuery as _CQ
+        _rtxt = getattr(msg, 'text', '') or ''
+        if isinstance(msg, _CQ) or "Cancel" in _rtxt:
+            return await client.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
 
-    reason = msg.text or getattr(msg, 'caption', None) or "No reason provided."
-    photo_id = msg.photo.file_id if getattr(msg, 'photo', None) else None
+        reason = msg.text or getattr(msg, 'caption', None) or "No reason provided."
+        photo_id = msg.photo.file_id if getattr(msg, 'photo', None) else None
 
-    from bson.objectid import ObjectId
-    checkout = await db.db.premium_checkout.find_one({"_id": ObjectId(p_id)})
-    if not checkout: return await client.send_message(user_id, "Ticket not found.")
-    
-    if checkout.get("status") in ("approved", "rejected"):
-        return await client.send_message(user_id, f"Ticket is already {checkout.get('status')}.")
-    
-    from datetime import datetime
-    await db.db.premium_checkout.update_one(
-        {"_id": ObjectId(p_id)},
-        {"$set": {"status": "rejected", "reject_reason": reason, "updated_at": datetime.utcnow(), "reviewed_by": user_id}}
-    )
-    await client.send_message(user_id, f"✅ Payment Rejected. User has been notified.", reply_markup=ReplyKeyboardRemove())
-    
-    from plugins.userbot.market_seller import market_clients
-    u_cli = market_clients.get(str(checkout['bot_id']))
-    if u_cli:
-        try: await u_cli.delete_messages(checkout['user_id'], checkout.get('status_msg_id', 0))
-        except: pass
-        user_msg = f"<b>❌ Payment Rejected</b>\n\nYour recent payment could not be verified.\n<b>Reason from Admin:</b>\n{reason}\n\n<i>If this is a mistake, please try again with a clear screenshot.</i>"
-        if photo_id:
-            try:
-                # Need to download from mgmt bot and send via store bot 
-                import os
-                dl = await client.download_media(msg)
-                await u_cli.send_photo(checkout['user_id'], photo=dl, caption=user_msg)
-                os.remove(dl)
-            except Exception:
+        from bson.objectid import ObjectId
+        checkout = await db.db.premium_checkout.find_one({"_id": ObjectId(p_id)})
+        if not checkout: return await client.send_message(user_id, "Ticket not found.")
+        
+        if checkout.get("status") in ("approved", "rejected"):
+            return await client.send_message(user_id, f"Ticket is already {checkout.get('status')}.")
+        
+        from datetime import datetime
+        await db.db.premium_checkout.update_one(
+            {"_id": ObjectId(p_id)},
+            {"$set": {"status": "rejected", "reject_reason": reason, "updated_at": datetime.utcnow(), "reviewed_by": user_id}}
+        )
+        await client.send_message(user_id, f"✅ Payment Rejected. User has been notified.", reply_markup=ReplyKeyboardRemove())
+        
+        from plugins.userbot.market_seller import market_clients
+        u_cli = market_clients.get(str(checkout.get('bot_id')))
+        if u_cli:
+            try: await u_cli.delete_messages(checkout['user_id'], checkout.get('status_msg_id', 0))
+            except: pass
+            
+            u_doc = await db.get_user(checkout.get('user_id'))
+            t_lang = u_doc.get("lang", "en")
+            if t_lang == "hi":
+                user_msg = f"<b>❌ भुगतान अस्वीकृत</b>\n\nआपका हालिया भुगतान सत्यापित नहीं हो सका।\n<b>व्यवस्थापक से कारण:</b>\n{reason}\n\n<i>कृपया सही विवरण/स्क्रीनशॉट के साथ पुनः प्रयास करें।</i>"
+            else:
+                user_msg = f"<b>❌ Payment Rejected</b>\n\nYour recent payment could not be verified.\n<b>Reason from Admin:</b>\n{reason}\n\n<i>If this is a mistake, please try again with a clear screenshot.</i>"
+
+            if photo_id:
+                try:
+                    import os
+                    dl = await client.download_media(msg)
+                    await u_cli.send_photo(checkout['user_id'], photo=dl, caption=user_msg)
+                    os.remove(dl)
+                except Exception:
+                    await u_cli.send_message(checkout['user_id'], user_msg)
+            else:
                 await u_cli.send_message(checkout['user_id'], user_msg)
-        else:
-            await u_cli.send_message(checkout['user_id'], user_msg)
+    except Exception as e:
+        import traceback
+        err = traceback.format_exc()
+        await client.send_message(user_id, f"❌ Failed to reject payment: {e}\n\n<code>{err[-500:]}</code>")
 
 async def _premium_bot_set(client, user_id, b_id, key, label):
     # Keep this minimal: no reply-keyboard "selection menu" unless absolutely required.
