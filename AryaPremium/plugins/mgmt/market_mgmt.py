@@ -148,11 +148,13 @@ async def market_callback(client, query):
             return await query.message.delete()
         
         elif cmd == "refresh":
-            await _safe_answer(query)
+            if "query" in locals() and query:
+                await query.answer()
             return await _render_home(client, user_id, edit_message=query.message)
         
         elif cmd == "settings":
-            await _safe_answer(query)
+            if "query" in locals() and query:
+                await query.answer()
             kb = [
                 [InlineKeyboardButton("💳 Set UPI ID", callback_data="mk#set_upi")],
                 [InlineKeyboardButton("« Back", callback_data="mk#back")]
@@ -164,7 +166,9 @@ async def market_callback(client, query):
             reqs = await db.db.premium_requests.find({}).sort("created_at", -1).to_list(length=None)
             
             if not reqs:
-                return await _safe_answer(query, "No story requests found.", show_alert=True)
+                if "query" in locals() and query:
+                    return await query.answer("No story requests found.", show_alert=True)
+                return
                 
             items_per_page = 10
             total_pages = max(1, (len(reqs) + items_per_page - 1) // items_per_page)
@@ -203,7 +207,9 @@ async def market_callback(client, query):
             except: r = None
             
             if not r:
-                return await _safe_answer(query, "Request not found.", show_alert=True)
+                if "query" in locals() and query:
+                    return await query.answer("Request not found.", show_alert=True)
+                return
                 
             t_str = r.get("created_at").strftime('%d %b %Y, %H:%M') if r.get("created_at") else "Unknown"
             status = r.get('status', 'Sent')
@@ -227,6 +233,7 @@ async def market_callback(client, query):
                 [InlineKeyboardButton("Posting 📤", callback_data=f"mk#rstat#{req_id}#Posting"),
                  InlineKeyboardButton("Posted ✅", callback_data=f"mk#rstat#{req_id}#Posted")],
                 [InlineKeyboardButton("Completed 🎉", callback_data=f"mk#rstat#{req_id}#Completed")],
+                [InlineKeyboardButton("❌ Reject with Reason", callback_data=f"mk#req_rej#{req_id}")],
                 [InlineKeyboardButton("« " + utils.to_smallcap("Back to List"), callback_data="mk#reqs_0")]
             ]
             await query.message.edit_text(txt_d, reply_markup=InlineKeyboardMarkup(kb))
@@ -239,7 +246,10 @@ async def market_callback(client, query):
                 from bson import ObjectId
                 r = await db.db.premium_requests.find_one({"_id": ObjectId(req_id)})
             except: r = None
-            if not r: return await _safe_answer(query, "Not found.", show_alert=True)
+            if not r: 
+                if "query" in locals() and query:
+                    return await query.answer("Not found.", show_alert=True)
+                return
             
             await db.db.premium_requests.update_one({"_id": r['_id']}, {"$set": {"status": new_status, "updated_at": datetime.now()}})
             
@@ -272,14 +282,22 @@ async def market_callback(client, query):
             except Exception as e:
                 logger.error(f"Failed to DM user about request: {e}")
                 
-            await _safe_answer(query, f"Status updated to {new_status} and user notified!", show_alert=True)
+            if "query" in locals() and query:
+                await query.answer(f"Status updated to {new_status} and user notified!", show_alert=True)
             
             # Reload manage screen directly
             query.data = f"mk#req_{req_id}"
             return await market_callback(client, query)
 
+        elif cmd == "req_rej":
+            req_id = data[2]
+            await query.message.delete()
+            import asyncio
+            asyncio.create_task(_reject_request_flow(client, user_id, req_id))
+
         elif cmd == "back":
-            await _safe_answer(query)
+            if "query" in locals() and query:
+                await query.answer()
             return await _render_home(client, user_id, edit_message=query.message)
 
         elif cmd in ["set_upi"]:
@@ -609,7 +627,7 @@ async def market_callback(client, query):
             )
 
         elif cmd.startswith("bot_broadcast_"):
-            b_id = data[2]
+            b_id = cmd.split("_", 2)[2]
             asyncio.create_task(_bot_broadcast_flow(client, user_id, b_id))
 
         elif cmd.startswith("bot_confirm_rm_"):
@@ -982,7 +1000,39 @@ async def market_callback(client, query):
             pass
     except Exception as e:
         logger.error(f"market_callback error: {e}")
-        await _safe_answer(query, "Something went wrong. Please retry.", show_alert=True)
+        if "query" in locals() and query:
+            return await query.answer("Something went wrong. Please retry.", show_alert=True)
+
+async def _reject_request_flow(client, user_id, req_id):
+    from bson.objectid import ObjectId
+    try: r = await db.db.premium_requests.find_one({"_id": ObjectId(req_id)})
+    except: r = None
+    if not r: return await client.send_message(user_id, "Request not found.")
+    
+    msg = await native_ask(client, user_id, f"<b>❌ REJECT REQUEST</b>\n\nStory: {r.get('story_name')}\n\nEnter the reason for rejection (this will be sent to the user):", reply_markup=ReplyKeyboardMarkup([["⛔ Cancel"]], resize_keyboard=True))
+    if getattr(msg, 'text', None) and "Cancel" in msg.text:
+         return await client.send_message(user_id, "<i>Cancelled.</i>", reply_markup=ReplyKeyboardRemove())
+         
+    reason = (getattr(msg, 'text', '') or 'Not specified.').strip()
+    
+    from datetime import datetime
+    await db.db.premium_requests.update_one({"_id": r['_id']}, {"$set": {"status": f"Rejected: {reason}", "updated_at": datetime.now()}})
+    
+    bot_id_str = str(r.get('bot_id'))
+    from plugins.userbot.market_seller import market_clients
+    if bot_id_str in market_clients:
+        t_cli = market_clients[bot_id_str]
+        try:
+            u_doc = await db.get_user(r.get('user_id'))
+            t_lang = u_doc.get("lang", "en")
+            if t_lang == "hi":
+                alert = f"<b>⚠️ कहानी अनुरोध अस्वीकृत</b>\n\n<b>कहानी:</b> {r.get('story_name')}\n<b>कारण:</b> {reason}"
+            else:
+                alert = f"<b>⚠️ STORY REQUEST REJECTED</b>\n\n<b>Story:</b> {r.get('story_name')}\n<b>Reason:</b> {reason}"
+            await t_cli.send_message(r.get('user_id'), alert)
+        except Exception: pass
+        
+    await client.send_message(user_id, f"✅ Request rejected and user notified.\nReason: {reason}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« " + utils.to_smallcap("Back to List"), callback_data="mk#reqs_0")]]))
 
 async def _settings_flow(client, user_id, cmd):
     cancel_kb = InlineKeyboardMarkup([[InlineKeyboardButton("↩️ Back", callback_data="ask_cancel")]])
@@ -2030,14 +2080,13 @@ async def _bot_broadcast_flow(client, user_id: int, b_id: str):
         async for user_doc in users_cursor:
             target_id = user_doc['id']
             try:
-                # Use copy_message to send exactly what the admin sent
-                await ans1.copy(target_id)
+                await seller_cli.copy_message(chat_id=target_id, from_chat_id=user_id, message_id=ans1.id)
                 delivered += 1
             except FloodWait as e:
                 await asyncio.sleep(e.value)
                 # Retry once
                 try: 
-                    await ans1.copy(target_id)
+                    await seller_cli.copy_message(chat_id=target_id, from_chat_id=user_id, message_id=ans1.id)
                     delivered += 1
                 except: failed += 1
             except (UserIsBlocked, PeerIdInvalid, InputUserDeactivated):

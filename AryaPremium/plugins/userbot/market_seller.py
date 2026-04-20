@@ -251,7 +251,8 @@ Select your language:""",
 Type the <b>Story Name</b> you want to search or request:""",
         "req_cancel": "Process Cancelled.",
         "req_step1": """<b>Step 1/3:</b>
-Please enter the <b>Story Name</b> you want to request:""",
+Please enter the <b>Story Name</b> you want to request:
+<i>(Note: Requested stories are paid, so please keep this in mind before requesting.)</i>""",
         "req_step2": """<b>Step 2/3:</b>
 Choose the <b>Platform</b> (e.g. Ullu, AltBalaji):""",
         "req_step3": """<b>Step 3/3:</b>
@@ -308,7 +309,8 @@ Our team will search for this story and update you soon. Check status in <b>Prof
 उस <b>कहानी का नाम</b> लिखें जिसे आप खोजना या अनुरोध करना चाहते हैं:""",
         "req_cancel": "प्रक्रिया रद्द कर दी गई।",
         "req_step1": """<b>स्टेप 1/3:</b>
-कृपया उस <b>कहानी का नाम</b> लिखें जिसका आप अनुरोध करना चाहते हैं:""",
+कृपया उस <b>कहानी का नाम</b> लिखें जिसका आप अनुरोध करना चाहते हैं:
+<i>(नोट: जो कहानी आप रीक्वेस्ट कर रहे हैं वह पेड (Paid) होगी, तो कृपया इस बात का ध्यान रखते हुए रीक्वेस्ट करें।)</i>""",
         "req_step2": """<b>स्टेप 2/3:</b>
 <b>प्लेटफॉर्म</b> चुनें (जैसे: Ullu, AltBalaji):""",
         "req_step3": """<b>स्टेप 3/3:</b>
@@ -1530,7 +1532,7 @@ async def _process_callback(client, query):
             )
             kb = [
                 [InlineKeyboardButton(t['my_reqs'], callback_data="mb#my_reqs_0")],
-                [InlineKeyboardButton("⚙️ " + t['set_lang'], callback_data="mb#main_settings")],
+                [InlineKeyboardButton(t['set_lang'], callback_data="mb#main_settings")],
                 [InlineKeyboardButton("❮ " + t['back'], callback_data="mb#main_back")]
             ]
             await _safe_edit(query.message, text=txt_p, markup=InlineKeyboardMarkup(kb))
@@ -1559,7 +1561,7 @@ async def _process_callback(client, query):
         reqs = await db.db.premium_requests.find({"user_id": user_id, "bot_id": client.me.id}).sort("created_at", -1).to_list(length=None)
         t = T[lang]
         if not reqs:
-            return await _safe_answer(query, t['req_empty'], show_alert=True)
+            return await query.answer(t['req_empty'], show_alert=True)
         items_per_page = 10
         total_pages = max(1, (len(reqs) + items_per_page - 1) // items_per_page)
         page = max(0, min(page, total_pages - 1))
@@ -1592,7 +1594,7 @@ async def _process_callback(client, query):
             r = await db.db.premium_requests.find_one({"_id": ObjectId(req_id), "user_id": user_id})
         except: r = None
         if not r:
-            return await _safe_answer(query, "Request not found.", show_alert=True)
+            return await query.answer("Request not found.", show_alert=True)
         t_str = r.get("created_at").strftime('%d %b %Y') if r.get("created_at") else "Unknown"
         status = r.get('status', 'Sent')
         txt_d = (
@@ -2446,14 +2448,25 @@ async def _process_screenshot(client, message):
     )
     msg = await message.reply_text(txt_user, reply_markup=InlineKeyboardMarkup(kb_user))
 
-    import os
+    import os, hashlib
     if not os.path.exists("downloads"): os.makedirs("downloads")
     file_path = await client.download_media(message, file_name=f"downloads/proof_{checkout['_id']}.jpg")
+    
+    # Hash for duplicate detection
+    with open(file_path, "rb") as f:
+        file_hash = hashlib.sha256(f.read()).hexdigest()
+        
+    dup = await db.db.premium_checkout.find_one({"proof_hash": file_hash, "status": {"$in": ["pending_admin_approval", "approved"]}})
+    if dup:
+        os.remove(file_path)
+        return await message.reply_text("❌ <b>Fraud Detected!</b>\n\nThis exact screenshot has already been used. Please provide a genuine, new payment screenshot or contact support.", quote=True)
+
     await db.db.premium_checkout.update_one(
         {"_id": checkout["_id"]},
         {"$set": {
             "status": "pending_admin_approval",
             "proof_path": file_path,
+            "proof_hash": file_hash,
             "proof_file_id": message.photo.file_id,
             "status_msg_id": msg.id,
             "paid_at": datetime.utcnow(),
