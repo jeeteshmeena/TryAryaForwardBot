@@ -629,6 +629,8 @@ async def market_callback(client, query):
         elif cmd.startswith("bot_broadcast_"):
             b_id = cmd.split("_", 2)[2]
             asyncio.create_task(_bot_broadcast_flow(client, user_id, b_id))
+            if "query" in locals() and query:
+                return await query.answer()
 
         elif cmd.startswith("bot_confirm_rm_"):
             b_id = data[2] if len(data) > 2 else cmd.split("_")[3]
@@ -1033,6 +1035,38 @@ async def _reject_request_flow(client, user_id, req_id):
         except Exception: pass
         
     await client.send_message(user_id, f"✅ Request rejected and user notified.\nReason: {reason}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« " + utils.to_smallcap("Back to List"), callback_data="mk#reqs_0")]]))
+
+async def _reject_payment_flow(client, user_id, p_id):
+    from bson.objectid import ObjectId
+    try: checkout = await db.db.premium_checkout.find_one({"_id": ObjectId(p_id)})
+    except Exception: checkout = None
+    if not checkout:
+        return await client.send_message(user_id, "Ticket not found.")
+    
+    msg = await native_ask(client, user_id, f"<b>❌ REJECT PAYMENT</b>\n\nUser: <code>{checkout.get('user_id')}</code>\n\nEnter the reason for rejection (e.g. 'Fake Screenshot', 'Amount Mismatch'):", reply_markup=ReplyKeyboardMarkup([["⛔ Cancel"]], resize_keyboard=True))
+    if getattr(msg, 'text', None) and "Cancel" in msg.text:
+         return await client.send_message(user_id, "<i>Cancelled.</i>", reply_markup=ReplyKeyboardRemove())
+         
+    reason = (getattr(msg, 'text', '') or 'Not specified.').strip()
+    
+    from datetime import datetime
+    await db.db.premium_checkout.update_one({"_id": checkout['_id']}, {"$set": {"status": "rejected", "reject_reason": reason, "updated_at": datetime.utcnow()}})
+    
+    bot_id_str = str(checkout.get('bot_id'))
+    from plugins.userbot.market_seller import market_clients
+    if bot_id_str in market_clients:
+        t_cli = market_clients[bot_id_str]
+        try:
+            u_doc = await db.get_user(checkout.get('user_id'))
+            t_lang = u_doc.get("lang", "en")
+            if t_lang == "hi":
+                alert = f"<b>⚠️ भुगतान अस्वीकृत</b>\n\nआपका भुगतान स्क्रीनशॉट अस्वीकार कर दिया गया है।\n<b>कारण:</b> {reason}\n\nकृपया सही विवरण/स्क्रीनशॉट के साथ पुनः प्रयास करें।"
+            else:
+                alert = f"<b>⚠️ PAYMENT REJECTED</b>\n\nYour payment screenshot was rejected by the admin.\n<b>Reason:</b> {reason}\n\nPlease retry with valid details."
+            await t_cli.send_message(checkout.get('user_id'), alert)
+        except Exception: pass
+        
+    await client.send_message(user_id, f"✅ Payment rejected and user notified.\nReason: {reason}", reply_markup=ReplyKeyboardRemove())
 
 async def _settings_flow(client, user_id, cmd):
     cancel_kb = InlineKeyboardMarkup([[InlineKeyboardButton("↩️ Back", callback_data="ask_cancel")]])

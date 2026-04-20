@@ -18,9 +18,16 @@ def translate_to_hindi(text: str) -> str:
         from deep_translator import GoogleTranslator
         translated = GoogleTranslator(source='auto', target='hi').translate(text)
         return translated if translated else text
+    except Exception:
+        pass
+    try:
+        import urllib.parse, requests
+        url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=hi&dt=t&q={urllib.parse.quote(text)}"
+        r = requests.get(url, timeout=5)
+        return ''.join([part[0] for part in r.json()[0]])
     except Exception as e:
         import logging
-        logging.getLogger(__name__).error(f"Translation error: {e}")
+        logging.getLogger(__name__).error(f"Hindi Translation error: {e}")
         return text
 
 def translate_to_english(text: str) -> str:
@@ -29,9 +36,16 @@ def translate_to_english(text: str) -> str:
         from deep_translator import GoogleTranslator
         translated = GoogleTranslator(source='auto', target='en').translate(text)
         return translated if translated else text
+    except Exception:
+        pass
+    try:
+        import urllib.parse, requests
+        url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=en&dt=t&q={urllib.parse.quote(text)}"
+        r = requests.get(url, timeout=5)
+        return ''.join([part[0] for part in r.json()[0]])
     except Exception as e:
         import logging
-        logging.getLogger(__name__).error(f"Translation error: {e}")
+        logging.getLogger(__name__).error(f"English Translation error: {e}")
         return text
 
 def _ask_key(bot: Client, user_id: int):

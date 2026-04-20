@@ -245,18 +245,14 @@ Select your language:""",
         "req_status": "Status",
         "already_owned": "✅ You already own this story. Sending delivery options...",
         "wait_a_sec": "WAIT A SECOND...",
+        "req_step1": "<b>📤 Story Request System</b>\n\n<i>(Note: The story you request will be a Paid service, please keep this in mind.)</i>\n\nPlease enter the exact name of the story you are looking for:",
+        "req_step2": "Got it. Send me any sample files, links, or screenshots related to this story (to help us locate it). If you don’t have any, type /skip.",
+        "req_done": "✅ <b>Request Submitted!</b>\nWe have received your request. You can track its status using the 'My Requests' button in your Profile.",
         "cant_find_btn": "🔍 CAN'T FIND? REQUEST NOW!",
         "req_search_prompt": """<b>🔍 SEARCH / REQUEST STORY</b>
 
 Type the <b>Story Name</b> you want to search or request:""",
         "req_cancel": "Process Cancelled.",
-        "req_step1": """<b>Step 1/3:</b>
-Please enter the <b>Story Name</b> you want to request:
-<i>(Note: Requested stories are paid, so please keep this in mind before requesting.)</i>""",
-        "req_step2": """<b>Step 2/3:</b>
-Choose the <b>Platform</b> (e.g. Ullu, AltBalaji):""",
-        "req_step3": """<b>Step 3/3:</b>
-How would you like it? (e.g. Only Episodes, Full Movie, etc.):""",
         "req_success": """✅ <b>Request Submitted!</b>
 
 Our team will search for this story and update you soon. Check status in <b>Profile -> My Requests</b>."""
@@ -1027,6 +1023,7 @@ async def _process_my_stories(client, message):
             unique_p.append(p)
             seen.add(p_id)
     purchases = unique_p
+    total = len(purchases)
     total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
     page_purchases = purchases[page * PAGE_SIZE:(page + 1) * PAGE_SIZE]
 
@@ -1558,10 +1555,12 @@ async def _process_callback(client, query):
 
     elif cmd.startswith("my_reqs_"):
         page = int(cmd.replace("my_reqs_", ""))
-        reqs = await db.db.premium_requests.find({"user_id": user_id, "bot_id": client.me.id}).sort("created_at", -1).to_list(length=None)
+        reqs = await db.db.premium_requests.find({"user_id": user_id, "bot_id": client.me.id}).sort("created_at", -1).to_list(length=100)
         t = T[lang]
         if not reqs:
-            return await query.answer(t['req_empty'], show_alert=True)
+            await query.answer(t['req_empty'], show_alert=True)
+            kb = [[InlineKeyboardButton("❮ " + t['back'], callback_data="mb#main_profile")]]
+            return await _safe_edit(query.message, text=f"<b>{t['req_main_title']}</b>\n\n{t['req_empty']}", markup=InlineKeyboardMarkup(kb))
         items_per_page = 10
         total_pages = max(1, (len(reqs) + items_per_page - 1) // items_per_page)
         page = max(0, min(page, total_pages - 1))
@@ -2622,12 +2621,6 @@ async def _send_demo_files(client, user_id, story, lang):
     start, end, src = int(start), int(end), int(src)
     total = (end - start) + 1
     
-    demo_ids = []
-    if total <= 3:
-        demo_ids = list(range(start, end + 1))
-    else:
-        demo_ids = [start, start + 1, end]
-        
     msg_ids = []
     
     try:
@@ -2639,10 +2632,23 @@ async def _send_demo_files(client, user_id, story, lang):
         m = await client.send_message(user_id, txt)
         msg_ids.append(m.id)
         
-        for mid in demo_ids:
+        lbl_start = "<b>1️⃣ स्टार्टिंग फ़ाइलें (शुरुआत) 👇</b>" if lang == "hi" else "<b>1️⃣ STARTING FILES 👇</b>"
+        lbl_end = f"<b>2️⃣ अंतिम फ़ाइल (कुल: {total} फ़ाइलें) 👇</b>" if lang == "hi" else f"<b>2️⃣ ENDING FILE (Total: {total} files) 👇</b>"
+        
+        m_s = await client.send_message(user_id, lbl_start)
+        msg_ids.append(m_s.id)
+        
+        s_count = 2 if total >= 2 else 1
+        for mid in range(start, start + s_count):
             sent = await client.copy_message(chat_id=user_id, from_chat_id=src, message_id=mid, protect_content=True)
             msg_ids.append(sent.id)
             await asyncio.sleep(0.5)
+            
+        if total > 2:
+            m_e = await client.send_message(user_id, lbl_end)
+            msg_ids.append(m_e.id)
+            sent_end = await client.copy_message(chat_id=user_id, from_chat_id=src, message_id=end, protect_content=True)
+            msg_ids.append(sent_end.id)
             
         asyncio.create_task(_auto_delete_demo(client, user_id, msg_ids))
     except Exception as e:
