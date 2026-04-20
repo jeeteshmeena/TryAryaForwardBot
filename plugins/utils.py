@@ -331,11 +331,18 @@ async def safe_resolve_peer(client, chat_id, bot=None):
 def extract_ep_label_robust(fname: str) -> dict:
     import re
 
+    # ── 0. Normalize Devanagari (Hindi) digits → ASCII digits ────────────────
+    # Maps ०१२३४५६७८९ (U+0966–U+096F) to 0123456789 so all patterns work
+    # uniformly regardless of whether the filename uses Hindi or Latin numerals.
+    _DEVANAGARI_DIGITS = str.maketrans("०१२३४५६७८९", "0123456789")
+    fname = fname.translate(_DEVANAGARI_DIGITS)
+
     # ── 1. Strip extension & metadata markers ────────────────────────────────
     base = re.sub(r'\.\w{2,5}$', '', fname)
     base = re.sub(r'(?i)\b(?:copy|duplicate|v\d+)\b', '', base)
     base = re.sub(r'(?i)\(\s*(?:copy|duplicate|\d+)\s*\)\s*$', '', base)
     b_norm = base.strip()
+
 
     # ── 2. Normalize dash variants → plain hyphen ────────────────────────────
     dash_variants = r'[\-\u2010\u2011\u2012\u2013\u2014\u2015\u2212\uFE63\uFF0D~～]+'
