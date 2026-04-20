@@ -1032,21 +1032,21 @@ async def _reject_request_flow(client, user_id, req_id):
     await db.db.premium_requests.update_one({"_id": r['_id']}, {"$set": {"status": f"Rejected: {reason}", "updated_at": datetime.now()}})
     
     bot_id_str = str(r.get('bot_id'))
-    from plugir = str(checkout.get('bot_id'))
     from plugins.userbot.market_seller import market_clients
     if bot_id_str in market_clients:
         t_cli = market_clients[bot_id_str]
         try:
-            u_doc = await db.get_user(checkout.get('user_id'))
+            u_doc = await db.get_user(r.get('user_id'))
             t_lang = u_doc.get("lang", "en")
             if t_lang == "hi":
-                alert = f"<b>⚠️ भुगतान अस्वीकृत</b>\n\nआपका भुगतान स्क्रीनशॉट अस्वीकार कर दिया गया है।\n<b>कारण:</b> {reason}\n\nकृपया सही विवरण/स्क्रीनशॉट के साथ पुनः प्रयास करें।"
+                alert = f"<b>⚠️ कहानी अनुरोध अस्वीकृत</b>\n\n<b>कहानी:</b> {r.get('story_name')}\n<b>कारण:</b> {reason}"
             else:
-                alert = f"<b>⚠️ PAYMENT REJECTED</b>\n\nYour payment screenshot was rejected by the admin.\n<b>Reason:</b> {reason}\n\nPlease retry with valid details."
-            await t_cli.send_message(checkout.get('user_id'), alert)
+                alert = f"<b>⚠️ STORY REQUEST REJECTED</b>\n\n<b>Story:</b> {r.get('story_name')}\n<b>Reason:</b> {reason}"
+            await t_cli.send_message(r.get('user_id'), alert)
         except Exception: pass
         
-    await client.send_message(user_id, f"✅ Payment rejected and user notified.\nReason: {reason}", reply_markup=ReplyKeyboardRemove())
+    await client.send_message(user_id, f"✅ Request rejected and user notified.\nReason: {reason}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« " + utils.to_smallcap("Back to List"), callback_data="mk#reqs_0")]]))
+
 
 async def _settings_flow(client, user_id, cmd):
     cancel_kb = InlineKeyboardMarkup([[InlineKeyboardButton("↩️ Back", callback_data="ask_cancel")]])
