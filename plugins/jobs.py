@@ -748,6 +748,7 @@ async def _run_job(job_id: str, user_id: int):
 
             job_last_prog_update = time.time()
             consecutive_empty = 0
+            _channel_invalid_strikes = 0  # abort after 3 consecutive CHANNEL_INVALID heals
 
             # ── BOT DM BATCH (userbot + non-channel source) ──────────────────────
             # get_messages() without a channel peer queries the GLOBAL inbox (wrong).
@@ -902,13 +903,30 @@ async def _run_job(job_id: str, user_id: int):
                 except Exception as e:
                     err_fetch = str(e).upper()
                     if "CHANNEL_INVALID" in err_fetch or "PEER_ID_INVALID" in err_fetch:
-                        logger.error(f"[Job {job_id}] FATAL Peer error in batch: {e}. Trying to heal...")
+                        _channel_invalid_strikes += 1
+                        logger.error(
+                            f"[Job {job_id}] FATAL Peer error in batch ({_channel_invalid_strikes}/3): {e}. "
+                            f"{'Trying to heal...' if _channel_invalid_strikes < 3 else 'Giving up — source channel is permanently inaccessible.'}"
+                        )
+                        if _channel_invalid_strikes >= 3:
+                            err_msg = (
+                                f"⚠️ <b>Job Stopped — Source Channel Inaccessible</b>\n\n"
+                                f"The source channel could not be accessed after 3 attempts.\n"
+                                f"<b>Error:</b> <code>CHANNEL_INVALID</code>\n"
+                                f"<b>Channel ID:</b> <code>{from_chat}</code>\n\n"
+                                f"<i>Possible causes: the bot was removed, the channel was deleted, "
+                                f"or the channel ID is incorrect. Please reconfigure the job.</i>"
+                            )
+                            await _update_job(job_id, status="error", error="CHANNEL_INVALID — source permanently inaccessible")
+                            try: await BOT_INSTANCE.send_message(user_id, err_msg)
+                            except Exception: pass
+                            return
                         try: await safe_resolve_peer(client, from_chat, bot=BOT_INSTANCE)
                         except: pass
                         await asyncio.sleep(5)
-                        # Do NOT advance cursor. Try again.
                         continue
-                        
+
+
                     logger.warning(f"[Job {job_id}] Batch fetch error: {e}")
                     batch_cursor += BATCH_CHUNK
                     await _update_job(job_id, batch_cursor=batch_cursor)
@@ -1068,6 +1086,7 @@ async def _run_job(job_id: str, user_id: int):
         if job_id not in _live_seen_names:
             _live_seen_names[job_id] = set()
         _live_fn_seen = _live_seen_names[job_id]  # local alias for speed
+        _live_channel_invalid_strikes = 0  # abort after 3 consecutive CHANNEL_INVALID in live phase
 
         while True:
             fresh = await _get_job(job_id)
@@ -1237,11 +1256,30 @@ async def _run_job(job_id: str, user_id: int):
                     await asyncio.sleep(15)
                 else:
                     if "CHANNEL_INVALID" in err_up or "PEER_ID_INVALID" in err_up:
-                        logger.error(f"[Job {job_id}] FATAL Peer error in live fetch: {err_fetch}. Trying to heal peer...")
+                        _live_channel_invalid_strikes += 1
+                        logger.error(
+                            f"[Job {job_id}] FATAL Peer error in live fetch "
+                            f"({_live_channel_invalid_strikes}/3): {err_fetch}. "
+                            f"{'Trying to heal peer...' if _live_channel_invalid_strikes < 3 else 'Giving up.'}"
+                        )
+                        if _live_channel_invalid_strikes >= 3:
+                            err_msg = (
+                                f"⚠️ <b>Job Stopped — Source Channel Inaccessible</b>\n\n"
+                                f"The source channel could not be reached after 3 consecutive attempts.\n"
+                                f"<b>Error:</b> <code>CHANNEL_INVALID</code>\n"
+                                f"<b>Channel ID:</b> <code>{from_chat}</code>\n\n"
+                                f"<i>Possible causes: bot was removed from the channel, channel was deleted, "
+                                f"or the channel ID is wrong. Please check and reconfigure the job.</i>"
+                            )
+                            await _update_job(job_id, status="error", error="CHANNEL_INVALID — source permanently inaccessible")
+                            try: await BOT_INSTANCE.send_message(user_id, err_msg)
+                            except Exception: pass
+                            return
                         try: await safe_resolve_peer(client, from_chat, bot=BOT_INSTANCE)
                         except: pass
                         await asyncio.sleep(5)
                         continue
+                    _live_channel_invalid_strikes = 0  # reset on any other error type
 
                     logger.warning(f"[Job {job_id}] Fetch error: {err_fetch}")
                     await asyncio.sleep(15)
