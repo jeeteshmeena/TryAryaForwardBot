@@ -2268,14 +2268,48 @@ async def _process_callback(client, query):
         from bson.objectid import ObjectId
         story = await db.db.premium_stories.find_one({"_id": ObjectId(s_id)})
         if not story: return await query.answer("Story not found!", show_alert=True)
-        await query.answer()
         
-        # Immediate visual feedback
+        start_id = story.get('start_id')
+        end_id = story.get('end_id')
+        total_files = (end_id - start_id) + 1 if (start_id and end_id and end_id >= start_id) else 1
+
+        if total_files > 40 and len(data) == 3:
+            if total_files > 300: chunk = 100
+            elif total_files > 100: chunk = 50
+            else: chunk = 30
+            
+            kb = []
+            row = []
+            for i in range(0, total_files, chunk):
+                c_start = start_id + i
+                c_end = min(start_id + i + chunk - 1, end_id)
+                f_start = i + 1
+                f_end = min(i + chunk, total_files)
+                lbl = f"Files {f_start} - {f_end}"
+                row.append(InlineKeyboardButton(lbl, callback_data=f"mb#deliver_dm#{s_id}#{c_start}#{c_end}"))
+                if len(row) == 2:
+                    kb.append(row)
+                    row = []
+            if row:
+                kb.append(row)
+                
+            kb.append([InlineKeyboardButton("Full Delivery (All Files)", callback_data=f"mb#deliver_dm#{s_id}#{start_id}#{end_id}")])
+            await query.answer()
+            if lang == "hi":
+                p_text = "<b>फ़ाइलें चुनें:</b>\n\nआप कौन से भाग प्राप्त करना चाहते हैं? (यह ऑटो-डिलीट होने पर दोबारा खोजने में मदद करता है)"
+            else:
+                p_text = "<b>Select Files:</b>\n\nWhich part would you like to receive? (This helps if your files auto-deleted earlier)"
+            return await query.message.edit_text(p_text, reply_markup=InlineKeyboardMarkup(kb))
+            
+        c_start = int(data[3]) if len(data) > 3 else start_id
+        c_end = int(data[4]) if len(data) > 4 else end_id
+
+        await query.answer()
         await query.message.edit_text(
             "<i>⏳ Initializing DM Delivery... Preparing your files.</i>",
             reply_markup=None
         )
-        asyncio.create_task(_do_dm_delivery(client, user_id, story, query.message))
+        asyncio.create_task(_do_dm_delivery(client, user_id, story, query.message, c_start, c_end))
 
     elif cmd == "cancel_dm":
         dm_aborts.add(user_id)
@@ -2486,15 +2520,15 @@ async def dispatch_delivery_choice(client, user_id, story):
 
     await client.send_message(user_id, del_txt, reply_markup=InlineKeyboardMarkup(kb))
 
-async def _do_dm_delivery(client, user_id, story, status_msg=None):
+async def _do_dm_delivery(client, user_id, story, status_msg=None, part_start=None, part_end=None):
     try:
         dm_aborts.discard(user_id)
         bt = await db.db.premium_bots.find_one({"id": client.me.id})
         bt_cfg = bt.get("config", {}) if bt else {}
         user_obj = await client.get_users(user_id)
         src = story.get('source')
-        start = story.get('start_id')
-        end = story.get('end_id')
+        start = part_start if part_start else story.get('start_id')
+        end = part_end if part_end else story.get('end_id')
         story_id_str = str(story['_id'])
         
         if not src or not start or not end:
