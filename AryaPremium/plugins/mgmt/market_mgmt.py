@@ -199,7 +199,7 @@ async def market_callback(client, query):
             await query.message.edit_text(txt_req, reply_markup=InlineKeyboardMarkup(kb))
             return
 
-        elif cmd.startswith("req_"):
+        elif cmd.startswith("req_") and len(cmd) > 10:
             req_id = cmd.replace("req_", "")
             try:
                 from bson import ObjectId
@@ -291,7 +291,9 @@ async def market_callback(client, query):
 
         elif cmd == "req_rej":
             req_id = data[2]
-            await query.message.delete()
+            try: await query.message.delete()
+            except: pass
+            if "query" in locals() and query: await query.answer()
             import asyncio
             asyncio.create_task(_reject_request_flow(client, user_id, req_id))
 
@@ -835,6 +837,7 @@ async def market_callback(client, query):
             )
             await db.add_purchase(checkout['user_id'], str(checkout['story_id']))
             await query.message.delete()
+            if "query" in locals() and query: await query.answer()
             await client.send_message(user_id, f"✅ Payment Approved for user `{checkout['user_id']}`!")
             
             st = await db.db.premium_stories.find_one({"_id": checkout['story_id']})
@@ -864,7 +867,9 @@ async def market_callback(client, query):
 
         elif cmd.startswith("pnd_rej_"):
             p_id = cmd.split("_")[2]
-            await query.message.delete()
+            try: await query.message.delete()
+            except: pass
+            if "query" in locals() and query: await query.answer()
             asyncio.create_task(_reject_payment_flow(client, user_id, p_id))
 
         elif cmd.startswith("p_wa_"):
@@ -984,12 +989,16 @@ async def market_callback(client, query):
 
         elif cmd == "approve":
             p_id = data[2]
-            await query.message.delete()
+            try: await query.message.delete()
+            except: pass
+            if "query" in locals() and query: await query.answer()
             asyncio.create_task(_approve_payment_flow(client, user_id, p_id))
 
         elif cmd == "reject":
             p_id = data[2]
-            await query.message.delete()
+            try: await query.message.delete()
+            except: pass
+            if "query" in locals() and query: await query.answer()
             asyncio.create_task(_reject_payment_flow(client, user_id, p_id))
     except MessageNotModified:
         pass  # User tapped same button — silently ignore
