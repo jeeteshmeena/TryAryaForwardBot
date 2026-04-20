@@ -16,7 +16,18 @@ def translate_to_hindi(text: str) -> str:
     """Translates text to Hindi using deep-translator."""
     try:
         from deep_translator import GoogleTranslator
-        translated = GoogleTranslator(source='en', target='hi').translate(text)
+        translated = GoogleTranslator(source='auto', target='hi').translate(text)
+        return translated if translated else text
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Translation error: {e}")
+        return text
+
+def translate_to_english(text: str) -> str:
+    """Translates text to English using deep-translator."""
+    try:
+        from deep_translator import GoogleTranslator
+        translated = GoogleTranslator(source='auto', target='en').translate(text)
         return translated if translated else text
     except Exception as e:
         import logging

@@ -720,12 +720,20 @@ async def _show_story_profile(client, user_id, story, lang):
         loading_txt = _sc("LOADING PROFILE...")
 
     desc = story.get(f'description_{lang}', story.get('description', '')).strip()
+    
+    delivery_mode = story.get('delivery_mode', 'pool')
+    del_hi = "केवल डायरेक्ट DM (कोई चैनल नहीं)" if delivery_mode == "dm_only" else "चैनल लिंक और DM"
+    del_en = "Direct DM Only (No Channel Link)" if delivery_mode == "dm_only" else "Channel Invite + DM"
+    del_lbl = "डिलीवरी" if lang == "hi" else "Delivery"
+    del_val = del_hi if lang == "hi" else del_en
+    
     header_txt = (
         f"<b>♨️ Story:</b> {to_mathbold(name)}\n"
         f"<b>🔰 {status_lbl}:</b> <b>{status}</b>\n"
         f"<b>🖥 {plat_lbl}:</b> <b>{platform}</b>\n"
         f"<b>🧩 {genre_lbl}:</b> <b>{genre}</b>\n"
-        f"<b>🎬 {ep_lbl}:</b> <b>{episodes}</b>\n\n"
+        f"<b>🎬 {ep_lbl}:</b> <b>{episodes}</b>\n"
+        f"<b>📥 {del_lbl}:</b> <i>{del_val}</i>\n\n"
     )
     if desc and desc.lower() != "none":
         header_txt += (
