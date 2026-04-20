@@ -759,8 +759,10 @@ async def _show_story_profile(client, user_id, story, lang):
         )
     txt = header_txt
         
+    demo_btn = "👀 डेमो फ़ाइलें देखें" if lang == "hi" else "👀 View Demo Files"
     kb = [
         [InlineKeyboardButton(confirm_btn, callback_data=f"mb#show_tc#{str(story['_id'])}")],
+        [InlineKeyboardButton(demo_btn, callback_data=f"mb#demo#{str(story['_id'])}")],
         [InlineKeyboardButton(back_btn, callback_data="mb#return_main")]
     ]
     markup = InlineKeyboardMarkup(kb)
@@ -1616,6 +1618,14 @@ async def _process_callback(client, query):
         except:
             pass
         return await _show_tc(client, user_id, s_id, lang)
+
+    elif cmd == "demo":
+        s_id = data[2]
+        from bson.objectid import ObjectId
+        story = await db.db.premium_stories.find_one({"_id": ObjectId(s_id)})
+        if not story: return await query.answer("Story not found!", show_alert=True)
+        await query.answer()
+        asyncio.create_task(_send_demo_files(client, user_id, story, lang))
 
     # -- My Buys (My Stories) --
     elif cmd == "my_buys" or cmd.startswith("my_buys_page_"):
@@ -2577,6 +2587,54 @@ async def dispatch_delivery_choice(client, user_id, story):
     kb.append([InlineKeyboardButton(back_btn_txt, callback_data="mb#main_back")])
 
     await client.send_message(user_id, del_txt, reply_markup=InlineKeyboardMarkup(kb))
+
+async def _auto_delete_demo(client, user_id, msg_ids):
+    import asyncio
+    await asyncio.sleep(300)
+    for mid in msg_ids:
+        try:
+            await client.delete_messages(user_id, mid)
+        except Exception:
+            pass
+
+async def _send_demo_files(client, user_id, story, lang):
+    import asyncio
+    start = story.get("start_id")
+    end = story.get("end_id")
+    src = story.get("source")
+    if not start or not end or not src:
+        await client.send_message(user_id, "❌ Demo not available for this story.")
+        return
+        
+    start, end, src = int(start), int(end), int(src)
+    total = (end - start) + 1
+    
+    demo_ids = []
+    if total <= 3:
+        demo_ids = list(range(start, end + 1))
+    else:
+        demo_ids = [start, start + 1, end]
+        
+    msg_ids = []
+    
+    try:
+        if lang == "hi":
+            txt = "<b>👀 डेमो फ़ाइलें भेजी जा रही हैं...</b>\n\n<i>नोट: एपिसोड हमेशा अलग-अलग नहीं दिए जाते हैं; वे ग्रुप फॉर्मेट/बड़ी फाइल में भी हो सकते हैं, इसलिए कृपया इसे ध्यान में रखें।\nये डेमो फाइल्स 5 मिनट बाद सख्ती से अपने आप डिलीट हो जाएंगी।</i>"
+        else:
+            txt = "<b>👀 Sending Demo Files...</b>\n\n<i>Note: Episodes are not necessarily provided separately; they may also be delivered in a group format, so please keep that in mind.\nThese demo files will be auto-deleted strictly after 5 minutes.</i>"
+            
+        m = await client.send_message(user_id, txt)
+        msg_ids.append(m.id)
+        
+        for mid in demo_ids:
+            sent = await client.copy_message(chat_id=user_id, from_chat_id=src, message_id=mid, protect_content=True)
+            msg_ids.append(sent.id)
+            await asyncio.sleep(0.5)
+            
+        asyncio.create_task(_auto_delete_demo(client, user_id, msg_ids))
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Demo failed: {e}")
 
 async def _do_dm_delivery(client, user_id, story, status_msg=None, part_start=None, part_end=None):
     try:
