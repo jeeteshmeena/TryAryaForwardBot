@@ -2046,22 +2046,47 @@ async def _process_callback(client, query):
                 upsert=True
             )
             
+            lbl_pay = "सुरक्षित भुगतान करें" if lang == 'hi' else f"💳 Pay securely via {method.title()}"
+            lbl_ver = "भुगतान सत्यापित करें" if lang == 'hi' else "🔄 Verify Payment"
+            lbl_bck = "‹ वापस" if lang == 'hi' else "‹ Back"
+
             kb = [
-                [InlineKeyboardButton(f"💳 {_sc('PAY VIA')} {_sc(method.upper())}", url=url)],
-                [InlineKeyboardButton(f"✅ {_sc('VERIFY PAYMENT')}", callback_data=f"mb#{method}_check#{s_id}")],
-                [InlineKeyboardButton(f"« ❮ {_sc('BACK')}", callback_data="mb#return_main")]
+                [InlineKeyboardButton(lbl_pay, url=url)],
+                [InlineKeyboardButton(lbl_ver, callback_data=f"mb#{method}_check#{s_id}")],
+                [InlineKeyboardButton(lbl_bck, callback_data="mb#return_main")]
             ]
-            check_txt = (
-                f"<b>🛍️ {_sc('CHECKOUT')}</b>\n"
-                f"────────────────────\n"
-                f"<b>📦 {_sc('Item')} :</b> {story.get('story_name_en', 'Premium Story')}\n"
-                f"<b>💰 {_sc('Amount')} :</b> ₹{price}\n"
-                f"────────────────────\n"
-                f"{_sc('You are paying for this premium story.')}\n"
-                f"{_sc('Instant verification & delivery.')}\n"
-                f"────────────────────\n"
-                f"<i>{_sc('Click below to pay. Once done, tap Verify.')}</i>"
-            )
+            
+            if lang == "hi":
+                check_txt = (
+                    f"💸 <b>सुरक्षित चेकआउट</b>\n\n"
+                    f"<b>📖 कहानी:</b> <code>{story.get('story_name_en', 'Premium Story')}</code>\n"
+                    f"<b>💰 मूल्य:</b> <code>₹{price}</code>\n\n"
+                    f"<blockquote expandable>"
+                    f"<b>🛡 {method.title()} से भुगतान कैसे करें?</b>\n\n"
+                    f"1. नीचे दिए गए '{lbl_pay}' बटन पर क्लिक करें।\n"
+                    f"2. आपको सुरक्षित पेमेंट गेटवे पर भेजा जाएगा।\n"
+                    f"3. UPI या किसी भी माध्यम से भुगतान पूरा करें।\n"
+                    f"4. भुगतान सफल होने के बाद वापस आकर '{lbl_ver}' पर क्लिक करें।\n"
+                    f"5. बॉट तुरंत सत्यापित करके फाइल भेज देगा।"
+                    f"</blockquote>\n\n"
+                    f"<i>⚡ त्वरित सत्यापन और फ़ाइल वितरण।</i>"
+                )
+            else:
+                check_txt = (
+                    f"💸 <b>SECURE CHECKOUT</b>\n\n"
+                    f"<b>📖 Story Name:</b> <code>{story.get('story_name_en', 'Premium Story')}</code>\n"
+                    f"<b>💰 Total Price:</b> <code>₹{price}</code>\n\n"
+                    f"<blockquote expandable>"
+                    f"<b>🛡 How to pay via {method.title()}:</b>\n\n"
+                    f"1. Click the '{lbl_pay}' button below.\n"
+                    f"2. You will be redirected to the secure payment gateway.\n"
+                    f"3. Complete your payment using UPI, Card, or Netbanking.\n"
+                    f"4. Come back to this chat and click '{lbl_ver}'.\n"
+                    f"5. The bot will automatically verify and provide access instantly."
+                    f"</blockquote>\n\n"
+                    f"<i>⚡ Instant automated verification & delivery.</i>"
+                )
+                
             await query.message.edit_text(check_txt, reply_markup=InlineKeyboardMarkup(kb))
 
         elif method == "upi":
