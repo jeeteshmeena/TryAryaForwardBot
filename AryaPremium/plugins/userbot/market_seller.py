@@ -1082,9 +1082,6 @@ async def _process_text(client, message):
     # Intercept direct section commands
     cmd_text = txt.lower()
     if cmd_text in ["/marketplace", "/mystories", "/stories", "/arya", "/help", "/settings", "/profile"]:
-        if cmd_text in ["/mystories", "/stories"]:
-            return await _process_my_stories(client, message)
-            
         m = await message.reply_text("<i>⏳ Loading...</i>")
         
         class MockQuery:
@@ -1097,6 +1094,8 @@ async def _process_text(client, message):
                 
         mapping = {
             "/marketplace": "mb#main_marketplace",
+            "/mystories": "mb#my_buys",
+            "/stories": "mb#my_buys",
             "/arya": "mb#about_arya_0",
             "/help": "mb#main_help",
             "/settings": "mb#main_settings",
