@@ -981,10 +981,24 @@ async def _run_job(job_id: str, user_id: int):
 
                     skip_dupes = fresh2.get("skip_duplicates", False)
                     uniq_id = _get_unique_id(msg) if skip_dupes else None
-                    if skip_dupes and uniq_id and uniq_id in (fresh2.get("seen_file_ids") or []):
-                        logger.debug(f"[Job {job_id}] Batch: skipping duplicate {uniq_id}")
-                        await _update_job(job_id, batch_cursor=msg.id + 1)
-                        continue
+                    _fn_key = None
+                    if skip_dupes and getattr(msg, 'media', None):
+                        _m_attr = getattr(msg.media, 'value', str(msg.media))
+                        _m_obj = getattr(msg, _m_attr, None)
+                        if _m_obj:
+                            _fn_raw = getattr(_m_obj, 'file_name', None)
+                            if not _fn_raw and isinstance(_m_obj, list) and _m_obj:
+                                _fn_raw = getattr(_m_obj[-1], 'file_name', None)
+                            if _fn_raw:
+                                _fn_key = _fn_raw.strip().lower()
+
+                    if skip_dupes:
+                        seen_ids = fresh2.get("seen_file_ids") or []
+                        seen_names = fresh2.get("seen_file_names") or []
+                        if (uniq_id and uniq_id in seen_ids) or (_fn_key and _fn_key in seen_names):
+                            logger.debug(f"[Job {job_id}] Batch: skipping duplicate {uniq_id or _fn_key}")
+                            await _update_job(job_id, batch_cursor=msg.id + 1)
+                            continue
 
                     try:
                         success = await _forward_message(client, msg, to_chat, remove_caption, cap_tpl, forward_tag,
@@ -1001,12 +1015,19 @@ async def _run_job(job_id: str, user_id: int):
                         success = False
 
                     upd = {"batch_cursor": msg.id + 1}
-                    if success and uniq_id:
-                        seen = fresh2.get("seen_file_ids") or []
-                        if uniq_id not in seen:
-                            seen.append(uniq_id)
-                            if len(seen) > 5000: seen.pop(0)
-                        upd["seen_file_ids"] = seen
+                    if success:
+                        if uniq_id:
+                            seen_ids = fresh2.get("seen_file_ids") or []
+                            if uniq_id not in seen_ids:
+                                seen_ids.append(uniq_id)
+                                if len(seen_ids) > 5000: seen_ids.pop(0)
+                            upd["seen_file_ids"] = seen_ids
+                        if _fn_key:
+                            seen_names = fresh2.get("seen_file_names") or []
+                            if _fn_key not in seen_names:
+                                seen_names.append(_fn_key)
+                                if len(seen_names) > 5000: seen_names.pop(0)
+                            upd["seen_file_names"] = seen_names
 
                     await _update_job(job_id, **upd)
 
@@ -1339,11 +1360,14 @@ async def _run_job(job_id: str, user_id: int):
 
                 # ── Optional: file_unique_id-based dedup (exact binary match) ─
                 uniq_id = _get_unique_id(msg) if skip_dupes else None
-                if skip_dupes and uniq_id and uniq_id in (fresh.get("seen_file_ids") or []):
-                    logger.debug(f"[Job {job_id}] Live: skipping duplicate file_unique_id {uniq_id}")
-                    last_seen = max(last_seen, msg.id)
-                    await _update_job(job_id, last_seen_id=last_seen)
-                    continue
+                if skip_dupes:
+                    seen_names = fresh.get("seen_file_names") or []
+                    seen_ids = fresh.get("seen_file_ids") or []
+                    if (uniq_id and uniq_id in seen_ids) or (_fn_key and _fn_key in seen_names):
+                        logger.debug(f"[Job {job_id}] Live: skipping duplicate {uniq_id or _fn_key}")
+                        last_seen = max(last_seen, msg.id)
+                        await _update_job(job_id, last_seen_id=last_seen)
+                        continue
 
                 # Large-file owner notification
                 if notify_large_mb > 0 and msg.media:
@@ -1401,6 +1425,12 @@ async def _run_job(job_id: str, user_id: int):
                     # Mark filename as seen so duplicates are blocked going forward
                     if _fn_key:
                         _live_fn_seen.add(_fn_key)
+                        seen_names = fresh.get("seen_file_names") or []
+                        if _fn_key not in seen_names:
+                            seen_names.append(_fn_key)
+                            if len(seen_names) > 5000: seen_names.pop(0)
+                        upd["seen_file_names"] = seen_names
+                        fresh["seen_file_names"] = seen_names
                     # Track file_unique_id for binary-exact dedup
                     if uniq_id:
                         seen = fresh.get("seen_file_ids") or []
@@ -2395,6 +2425,7 @@ async def _create_job_flow(bot, user_id: int):
         "last_seen_id":       0,
         "skip_duplicates":    skip_dupelicates,
         "seen_file_ids":      [],
+        "seen_file_names":    [],
     }
     await _save_job(job)
     _start_job_task(job_id, user_id)
