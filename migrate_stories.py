@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.join(os.getcwd(), 'AryaPremium'))
 
 # Now import the correct database and utils
 from database import db
-from utils import translate_to_hindi, translate_to_english
+import utils
 
 async def migrate():
     print("Starting Story Migration (using AryaPremium context)...")
@@ -30,8 +30,9 @@ async def migrate():
             
         print(f"Processing: {source_name}")
         
-        new_hi_name = translate_to_hindi(source_name)
-        new_en_name = translate_to_english(source_name)
+        # Use transliteration for titles to preserve brand/sound recognition
+        new_hi_name = utils.transliterate_to_hindi(source_name)
+        new_en_name = utils.translate_to_english(source_name)
         
         upd = {
             "story_name_en": new_en_name,
@@ -39,8 +40,9 @@ async def migrate():
         }
         
         if source_desc:
-            upd["description"] = translate_to_english(source_desc)
-            upd["description_hi"] = translate_to_hindi(source_desc)
+            upd["description"] = utils.translate_to_english(source_desc)
+            # Use meaning-based translation for descriptions
+            upd["description_hi"] = utils.smart_translate_meaning(source_desc)
             
         await db.db.premium_stories.update_one({"_id": story["_id"]}, {"$set": upd})
         # print results carefully (handle encoding if needed or just skip print)

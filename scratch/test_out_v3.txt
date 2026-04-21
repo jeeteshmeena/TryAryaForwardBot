@@ -1,0 +1,3 @@
+'The Warrior' -> 'थे वारियर'
+'Secret Fauji' -> 'सीक्रेट फौजी'
+'Tere Aane Se' -> 'तेरे आने से'

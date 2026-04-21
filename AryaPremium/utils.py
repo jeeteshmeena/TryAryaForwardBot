@@ -13,64 +13,55 @@ def to_smallcap(text: str) -> str:
     ))
 
 def transliterate_to_hindi(text: str) -> str:
-    """Converts Romanized Hindi (Hinglish) to Devanagari Hindi using Google Input Tools."""
+    """Converts Romanized script to Devanagari Hindi using Google Input Tools (sound-based)."""
     if not text: return ""
-    # If already Hindi, don't double process
+    # If already contains Devanagari, return as is
     if any('\u0900' <= c <= '\u097f' for c in text):
         return text
     try:
         import urllib.parse, requests
-        url = f"https://inputtools.google.com/request?text={urllib.parse.quote(text)}&itc=hi-t-i0-und&num=1&cp=0&cs=1&ie=utf-8&oe=utf-8&app=test"
+        # Filter out characters that might mess up the URL
+        cleaned_text = text.replace("#", "").replace("&", "")
+        url = f"https://inputtools.google.com/request?text={urllib.parse.quote(cleaned_text)}&itc=hi-t-i0-und&num=1&cp=0&cs=1&ie=utf-8&oe=utf-8&app=test"
         r = requests.get(url, timeout=5)
         if r.status_code == 200:
             data = r.json()
             if data[0] == "SUCCESS":
+                # Extract first suggestion
                 return data[1][0][1][0]
     except Exception:
         pass
     return text
 
 def translate_to_hindi(text: str) -> str:
-    """Smart Hindi converter: Translates English or Transliterates Romanized Hindi."""
+    """Default Hindi converter: Performs script transliteration to preserve recognition."""
+    return transliterate_to_hindi(text)
+
+def smart_translate_meaning(text: str) -> str:
+    """Translates the meaning of English text into Hindi."""
     if not text: return ""
-    # 1. If already contains Devanagari, return as is
     if any('\u0900' <= c <= '\u097f' for c in text):
         return text
-    
-    # 2. Try regular translation first (e.g. "The Warrior" -> "योद्धा")
     try:
         from deep_translator import GoogleTranslator
-        # Use source='auto' to let Google detect if it's English or Romanized Hindi
         translated = GoogleTranslator(source='auto', target='hi').translate(text)
-        
-        # If translation returned the exactly same string or just same words but different case,
-        # it means Google Translate likely treated it as brand name/untranslateable English.
-        # This is very common with Romanized Hindi like "Tere Aane Se".
-        # In this case, we switch to Transliteration.
-        if translated.lower().strip() == text.lower().strip():
-            return transliterate_to_hindi(text)
-        
-        return translated if translated else transliterate_to_hindi(text)
-    except Exception as e:
-        # Fallback to pure transliteration
-        return transliterate_to_hindi(text)
+        return translated if translated else text
+    except Exception:
+        return text
 
 def translate_to_english(text: str) -> str:
-    """Translates text to English using deep-translator."""
+    """Translates text to English ONLY if it contains non-Roman characters."""
+    if not text: return ""
+    # If already all Roman characters (English/Hinglish), return as is
+    # This prevents "Fauji" -> "Army" or "Aane" -> "Coming"
+    if all(ord(c) < 128 for c in text):
+        return text
+    
     try:
         from deep_translator import GoogleTranslator
         translated = GoogleTranslator(source='auto', target='en').translate(text)
         return translated if translated else text
     except Exception:
-        pass
-    try:
-        import urllib.parse, requests
-        url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=en&dt=t&q={urllib.parse.quote(text)}"
-        r = requests.get(url, timeout=5)
-        return ''.join([part[0] for part in r.json()[0]])
-    except Exception as e:
-        import logging
-        logging.getLogger(__name__).error(f"English Translation error: {e}")
         return text
 
 def _ask_key(bot: Client, user_id: int):

@@ -1228,9 +1228,10 @@ async def _add_story_flow(client, user_id):
             return await client.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
         
         name_input = (msg_name_en.text or "").strip()
-        waiting_msg = await client.send_message(user_id, "⏳ <i>Automatically translating name...</i>")
+        waiting_msg = await client.send_message(user_id, "⏳ <i>Automatically normalizing name...</i>")
         sj['story_name_en'] = utils.translate_to_english(name_input)
-        sj['story_name_hi'] = utils.translate_to_hindi(name_input)
+        # Always use transliteration for the Title to preserve recognition
+        sj['story_name_hi'] = utils.transliterate_to_hindi(name_input)
         await waiting_msg.delete()
 
         msg_img = await native_ask(client, user_id, f"<b>❪ STEP 6: STORY IMAGE ❫</b>\n\n<b>EN:</b> {sj['story_name_en']}\n<b>HI:</b> {sj['story_name_hi']}\n\nSend the cover image for this story:", reply_markup=cancel_kb)
@@ -1266,7 +1267,8 @@ async def _add_story_flow(client, user_id):
         desc_input = (msg_desc.text or "None").strip()
         waiting_msg = await client.send_message(user_id, "⏳ <i>Automatically translating description...</i>")
         sj['description'] = utils.translate_to_english(desc_input)
-        sj['description_hi'] = utils.translate_to_hindi(desc_input)
+        # Use meaning-based translation for Descriptions
+        sj['description_hi'] = utils.smart_translate_meaning(desc_input)
         await waiting_msg.delete()
 
         msg_eps = await native_ask(client, user_id, "<b>❪ STEP 6.3: EPISODES ❫</b>\n\nHow many episodes? e.g. '595 / 595' or '100+':", reply_markup=cancel_kb)
@@ -1466,7 +1468,7 @@ async def _edit_story_flow(client, user_id, s_id, action):
                 return
         elif action == "name":
             name_en = utils.translate_to_english(msg.text)
-            name_hi = utils.translate_to_hindi(msg.text)
+            name_hi = utils.transliterate_to_hindi(msg.text)
             await db.db.premium_stories.update_one({"_id": s_id_obj}, {"$set": {"story_name_en": name_en, "story_name_hi": name_hi}})
         elif action == "image":
             if getattr(msg, 'photo', None):
@@ -1484,7 +1486,7 @@ async def _edit_story_flow(client, user_id, s_id, action):
                 return await client.send_message(user_id, "❌ Valid Photo required.", reply_markup=ReplyKeyboardRemove())
         elif action == "desc":
             desc_en = utils.translate_to_english(msg.text)
-            desc_hi = utils.translate_to_hindi(msg.text)
+            desc_hi = utils.smart_translate_meaning(msg.text)
             await db.db.premium_stories.update_one({"_id": s_id_obj}, {"$set": {"description": desc_en, "description_hi": desc_hi}})
         elif action == "genre":
             await db.db.premium_stories.update_one({"_id": s_id_obj}, {"$set": {"genre": msg.text}})
