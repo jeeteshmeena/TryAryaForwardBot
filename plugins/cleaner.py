@@ -484,19 +484,30 @@ async def _cl_run_job(job_id: str, bot=None):
             fail_count = 0
             phase_start = time.time()
             job_failed = False
+            _stop_requested = False  # in-memory stop flag — checked cheaply each loop
 
             # Loop through all message IDs
             msg_id = curr_msg_id
+            _loop_counter = 0  # used to throttle DB checks
             while msg_id <= eid:
-                # Save the loop var as progress checkpoint
-                await _cl_update_job(job_id, {"current_msg_id": msg_id})
+                _loop_counter += 1
+                # ── In-memory pause check (zero cost) ───────────────────────────────────
                 ev = _cl_paused.get(job_id)
                 if ev and not ev.is_set():
                     break  # pause triggered
-
-                job = await _cl_get_job(job_id)
-                if job.get("status") == "stopped":
+                if _stop_requested:
                     break
+
+                # ── Throttled DB stop-check: only every 50 iterations ─────────────────
+                # Previously: 2 DB round-trips on EVERY iteration (even empty msgs).
+                # Now: 1 DB read every 50 iterations. Saves ~5-10s per 1000 files.
+                if _loop_counter % 50 == 0:
+                    _jchk = await _cl_get_job(job_id)
+                    if _jchk and _jchk.get("status") == "stopped":
+                        _stop_requested = True
+                        break
+                    # Also persist current position every 50 iterations
+                    await _cl_update_job(job_id, {"current_msg_id": msg_id})
 
                 try:
                     msg = await client.get_messages(from_ch, msg_id)
@@ -1032,9 +1043,16 @@ async def _cl_callbacks(bot, update: CallbackQuery):
         await _cl_update_job(jid, {"status": "queued"})
         if jid not in _cl_paused: _cl_paused[jid] = asyncio.Event()
         _cl_paused[jid].set()
-        if jid not in _cl_tasks or _cl_tasks[jid].done():
-            bot_ref = _cl_bot_ref.get(jid) or bot
-            _cl_tasks[jid] = asyncio.create_task(_cl_run_job(jid, bot_ref))
+        # ALWAYS cancel existing task first — it may be alive but stuck waiting
+        # on the semaphore, in which case the old 'if done' check silently did
+        # nothing and resume appeared broken.
+        old = _cl_tasks.get(jid)
+        if old and not old.done():
+            old.cancel()
+            try: await asyncio.shield(asyncio.sleep(0.2))
+            except: pass
+        bot_ref = _cl_bot_ref.get(jid) or bot
+        _cl_tasks[jid] = asyncio.create_task(_cl_run_job(jid, bot_ref))
         update.data = f"cl#view#{jid}"
         return await _cl_callbacks(bot, update)
 
