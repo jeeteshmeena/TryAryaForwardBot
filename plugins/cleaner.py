@@ -309,6 +309,15 @@ async def _cl_run_job(job_id: str, bot=None):
     if is_force: await _cl_update_job(job_id, {"force_active": False})
     
     ctx = _DummySem() if is_force else _cl_semaphore
+
+    # IMPORTANT: mark as 'queued' BEFORE waiting for the semaphore.
+    # This prevents the job from showing "Running" in the UI while it's
+    # actually blocked waiting for a slot — which looks like a frozen job.
+    if not is_force:
+        current_status = job.get("status", "")
+        if current_status == "running":
+            await _cl_update_job(job_id, {"status": "queued", "error": "Waiting for a free slot..."})
+
     async with ctx:
         while True:
             ev = _cl_paused.get(job_id)
@@ -619,10 +628,10 @@ async def _cl_run_job(job_id: str, bot=None):
                     try:
                         dl_path = await asyncio.wait_for(
                             client.download_media(msg, file_name=in_path),
-                            timeout=36000  # 10 hours max for massive 4GB files
+                            timeout=3600  # 1 hour max per file — prevents silent frozen downloads
                         )
                     except asyncio.TimeoutError:
-                        raise Exception("Download timeout after 10 hours.")
+                        raise Exception("Download timeout after 1 hour. File may be inaccessible or connection dropped.")
 
                     if not dl_path or not os.path.exists(str(dl_path)):
                         raise Exception("Download failed: Pyrogram returned None or file missing.")
@@ -782,7 +791,11 @@ async def _cl_run_job(job_id: str, bot=None):
                     fail_count = 0   # reset per successfully processed file
                     msg_id += 1      # Advance to next message safely
                     curr_num_for_save = curr_num  # already incremented above
-                    await _cl_update_job(job_id, {"files_done": done, "curr_num_checkpoint": curr_num_for_save})
+                    await _cl_update_job(job_id, {
+                        "files_done": done,
+                        "curr_num_checkpoint": curr_num_for_save,
+                        "last_progress_ts": time.time()  # watchdog uses this to detect stuck jobs
+                    })
                     logger.info(f"[Cleaner {job_id}] Done {done}: {clean_title}")
 
                 except FloodWait as fw:
