@@ -246,6 +246,12 @@ async def _process_audio_ffmpeg(input_path, output_path, cover_path, meta: dict)
     CPU is throttled via _make_cl_run: nice=15, ionice=idle, cpulimit (if installed).
     """
     cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
+    # ── Tolerate non-standard AAC profiles (AAC-HE / AAC-LD) from Pocket FM ──
+    # Without these, files with HE-AAC or AAC-LD encoding crash with:
+    #   "Prediction is not allowed in AAC-LC" (exit code 234).
+    # err_detect=ignore_err  → ignore bitstream constraint violations
+    # +discardcorrupt        → drop corrupted packets instead of aborting
+    cmd += ["-err_detect", "ignore_err", "-fflags", "+discardcorrupt"]
     cmd += ["-i", input_path]
 
     if cover_path and os.path.exists(cover_path) and os.path.getsize(cover_path) > 1024:
