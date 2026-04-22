@@ -488,6 +488,11 @@ async def _cl_run_job(job_id: str, bot=None):
             phase_start = time.time()
             job_failed = False
             _stop_requested = False  # in-memory stop flag — checked cheaply each loop
+            _transient_retries: dict[int, int] = {}  # msg_id -> consecutive transient retry count
+            # ── Episode-number dedup guard ────────────────────────────────────────
+            # Tracks episode numbers already uploaded in this run so that duplicate
+            # files in the source (e.g. ep 247 re-uploaded 3 times) are skipped.
+            _seen_ep_nums: set = set()
 
             # Loop through all message IDs
             msg_id = curr_msg_id
@@ -579,6 +584,19 @@ async def _cl_run_job(job_id: str, bot=None):
                     rename_files = job.get("rename_files", True)  # True = use base_name, False = keep original
                     ep_label_res = extract_ep_label_robust(orig_fn) if orig_fn else {}
                     ep_label = ep_label_res.get("label", "")
+
+                    # ── Episode-number dedup guard ────────────────────────────────
+                    # If source channel re-uploaded the same episode (happens a lot with
+                    # badly managed channels), skip it so we don't send duplicates.
+                    _ep_num_key = ep_label_res.get("number") if ep_label_res else None
+                    if _ep_num_key and str(_ep_num_key) in _seen_ep_nums:
+                        logger.info(
+                            f"[Cleaner {job_id}] Skipping duplicate ep {_ep_num_key} "
+                            f"(msg {msg_id}, file: {orig_fn!r}) — already uploaded."
+                        )
+                        msg_id += 1
+                        continue
+
 
                     if rename_files:
                         # User wants renaming: use base_name + episode/number
@@ -801,6 +819,10 @@ async def _cl_run_job(job_id: str, bot=None):
 
                     done += 1
                     fail_count = 0   # reset per successfully processed file
+                    _transient_retries.pop(msg_id, None)  # reset transient counter on success
+                    # Mark episode number as seen so duplicates in the source are skipped
+                    if _ep_num_key:
+                        _seen_ep_nums.add(str(_ep_num_key))
                     msg_id += 1      # Advance to next message safely
                     curr_num_for_save = curr_num  # already incremented above
                     await _cl_update_job(job_id, {
@@ -815,14 +837,41 @@ async def _cl_run_job(job_id: str, bot=None):
                     continue  # retry same msg
                 except Exception as e:
                     err_str_lower = str(e).lower()
-                    # Connection/network/transient errors
+                    err_str_orig  = str(e)
+                    # ── Transient: connection/peer errors worth retrying, but NOT timeouts/FFmpeg ──
+                    # NOTE: "timeout" intentionally excluded — download/FFmpeg timeouts count as
+                    # hard failures after MAX retries to prevent infinite silent loops.
                     is_transient = any(k in err_str_lower for k in (
                         "not connected", "disconnected",
-                        "connection", "timeout", "network", "flood_wait", "forcing retry",
+                        "connection", "network", "flood_wait",
                         "channel_invalid", "peer_id_invalid", "channel invalid", "peer id invalid"
                     ))
                     if is_transient:
-                        logger.warning(f"[Cleaner {job_id}] Transient error at msg {msg_id}: {e} — retrying in 10s")
+                        _transient_retries[msg_id] = _transient_retries.get(msg_id, 0) + 1
+                        _tr = _transient_retries[msg_id]
+                        if _tr > 10:
+                            # After 10 consecutive transient retries of the SAME message,
+                            # give up on it — advance to next message so the job doesn't hang.
+                            logger.error(
+                                f"[Cleaner {job_id}] Giving up on msg {msg_id} after "
+                                f"{_tr} transient retries: {err_str_orig[:200]}. Skipping."
+                            )
+                            if bot:
+                                try:
+                                    await bot.send_message(
+                                        uid,
+                                        f"⚠️ <b>Cleaner:</b> Skipped msg <code>{msg_id}</code> after "
+                                        f"{_tr} retries (persistent transient error).\n"
+                                        f"<code>{err_str_orig[:200]}</code>"
+                                    )
+                                except Exception: pass
+                            _transient_retries.pop(msg_id, None)
+                            msg_id += 1
+                            continue
+                        logger.warning(
+                            f"[Cleaner {job_id}] Transient error [{_tr}/10] at msg {msg_id}: "
+                            f"{err_str_orig[:120]} — retrying in 10s"
+                        )
                         # For CHANNEL_INVALID: re-resolve the peer before retrying
                         if "channel_invalid" in err_str_lower or "peer_id_invalid" in err_str_lower:
                             for _repeer in [from_ch, dest_ch]:
@@ -846,6 +895,8 @@ async def _cl_run_job(job_id: str, bot=None):
                         await asyncio.sleep(10)
                         continue  # retry the same msg without incrementing fail_count
 
+                    # Reset transient counter on a non-transient error
+                    _transient_retries.pop(msg_id, None)
                     fail_count += 1
                     logger.error(f"[Cleaner {job_id}] Error at msg {msg_id}: {e}")
                     if fail_count > 5:
