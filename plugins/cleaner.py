@@ -825,8 +825,12 @@ async def _cl_run_job(job_id: str, bot=None):
                         _seen_ep_nums.add(str(_ep_num_key))
                     msg_id += 1      # Advance to next message safely
                     curr_num_for_save = curr_num  # already incremented above
+                    # ── CRITICAL: Save current_msg_id on EVERY success ──────────────
+                    # Previously current_msg_id was only saved every 50 iterations.
+                    # That caused a restart to re-send up to 49 already-uploaded files.
                     await _cl_update_job(job_id, {
                         "files_done": done,
+                        "current_msg_id": msg_id,        # ← persisted immediately
                         "curr_num_checkpoint": curr_num_for_save,
                         "last_progress_ts": time.time()  # watchdog uses this to detect stuck jobs
                     })
