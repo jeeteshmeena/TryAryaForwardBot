@@ -577,6 +577,8 @@ async def _cl_run_job(job_id: str, bot=None):
 
                     # Original filename & extension
                     orig_fn  = getattr(media_obj, 'file_name', None) or ""
+                    orig_title = getattr(media_obj, 'title', None) or ""
+                    
                     orig_ext = os.path.splitext(orig_fn)[1] if orig_fn else ''
                     if not orig_ext:
                         if msg.audio:    orig_ext = '.mp3'
@@ -588,20 +590,25 @@ async def _cl_run_job(job_id: str, bot=None):
                     # ── Determine output title ──
                     change_meta = job.get("change_metadata", True)
                     rename_files = job.get("rename_files", True)  # True = use base_name, False = keep original
-                    ep_label_res = extract_ep_label_robust(orig_fn) if orig_fn else {}
+                    
+                    combo_name = f"{orig_title} - {orig_fn}" if orig_title else orig_fn
+                    ep_label_res = extract_ep_label_robust(combo_name) if combo_name else {}
                     ep_label = ep_label_res.get("label", "")
 
                     # ── Episode-number dedup guard ────────────────────────────────
                     # If source channel re-uploaded the same episode (happens a lot with
                     # badly managed channels), skip it so we don't send duplicates.
-                    _ep_num_key = ep_label_res.get("number") if ep_label_res else None
-                    if _ep_num_key and str(_ep_num_key) in _seen_ep_nums:
+                    _ep_num_key = ep_label if ep_label else None
+                    if _ep_num_key and _ep_num_key in _seen_ep_nums:
                         logger.info(
                             f"[Cleaner {job_id}] Skipping duplicate ep {_ep_num_key} "
-                            f"(msg {msg_id}, file: {orig_fn!r}) — already uploaded."
+                            f"(msg {msg_id}, file: {combo_name!r}) — already uploaded."
                         )
                         msg_id += 1
                         continue
+                        
+                    if _ep_num_key:
+                        _seen_ep_nums.add(_ep_num_key)
 
 
                     if rename_files:
