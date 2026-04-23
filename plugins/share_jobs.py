@@ -643,22 +643,21 @@ async def _build_share_links(bot, user_id, sj, info_msg):
             """
             Deep episode extraction — individual mode.
             Now correctly uses range parsing so range files span multiple episodes.
+            Combines Title and Filename to ensure explicit EP tags in Title override random numbers in Filename.
             """
-            # Priority 1: file_name only (most reliable)
-            for fname in _get_file_names(msg):
-                r = _extract_range_from_text(fname)
+            fname = " ".join(_get_file_names(msg))
+            t = _get_audio_title(msg)
+            
+            # Priority 1: Combined title and filename (most reliable with our robust regex engine)
+            combo_name = f"{t} - {fname}" if t else fname
+            if combo_name.strip():
+                r = _extract_range_from_text(combo_name)
                 if r: return r
 
             # Priority 2: caption text
             cap = msg.caption or msg.text or ""
             if cap.strip():
                 r = _extract_range_from_text(cap)
-                if r: return r
-
-            # Priority 3: audio title (last resort — often has track numbers)
-            t = _get_audio_title(msg)
-            if t:
-                r = _extract_range_from_text(t)
                 if r: return r
 
             return (-1, -1, False)

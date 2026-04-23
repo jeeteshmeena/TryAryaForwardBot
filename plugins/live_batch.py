@@ -132,9 +132,15 @@ async def _post_live_batch(sb_client, job: dict, chunk_msgs: list):
             # Extract numbers logically for the label
             eps = []
             for m in bucket:
-                fname = getattr(getattr(m, 'document', None) or getattr(m, 'audio', None) or getattr(m, 'video', None) or getattr(m, 'voice', None), "file_name", None) or m.caption or ""
-                res = extract_ep_label_robust(fname)
-                extracted = (res["numbers"][0], res["numbers"][-1]) if res["numbers"] else None
+                media_obj = getattr(m, 'document', None) or getattr(m, 'audio', None) or getattr(m, 'video', None) or getattr(m, 'voice', None)
+                fname = getattr(media_obj, "file_name", "") or ""
+                t = getattr(media_obj, "title", "") or ""
+                cap = m.caption or ""
+                combo_name = f"{t} - {fname}" if t else fname
+                if not combo_name.strip(): combo_name = cap
+                
+                res = extract_ep_label_robust(combo_name)
+                extracted = (res["numbers"][0], res["numbers"][-1]) if res.get("numbers") else None
                 if extracted:
                     eps.append(int(extracted[0]))
             
@@ -232,7 +238,12 @@ async def _post_live_batch(sb_client, job: dict, chunk_msgs: list):
             # Extract all numbers from all files in this entire batch call
             all_posted_nums = []
             for bucket_msg in chunk_msgs:
-                fn = getattr(getattr(bucket_msg, 'document', None) or getattr(bucket_msg, 'audio', None) or getattr(bucket_msg, 'video', None), "file_name", None) or bucket_msg.caption or ""
+                _media = getattr(bucket_msg, 'document', None) or getattr(bucket_msg, 'audio', None) or getattr(bucket_msg, 'video', None) or getattr(bucket_msg, 'voice', None)
+                _fn = getattr(_media, "file_name", "") or ""
+                _t = getattr(_media, "title", "") or ""
+                fn = f"{_t} - {_fn}" if _t else _fn
+                if not fn.strip(): fn = bucket_msg.caption or ""
+                
                 r = extract_ep_label_robust(fn)
                 if r["numbers"]:
                     all_posted_nums.extend(r["numbers"])
@@ -409,9 +420,13 @@ async def _lb_run_job(job_id: str):
                             continue
 
                         if use_dup_check:
-                            media_obj = (m.audio or m.voice or m.document or m.video or m.photo)
+                            media_obj = getattr(m, 'document', None) or getattr(m, 'audio', None) or getattr(m, 'video', None) or getattr(m, 'voice', None) or getattr(m, 'photo', None)
                             f_uid = getattr(media_obj, "file_unique_id", None)
-                            fname = getattr(media_obj, "file_name", "") or getattr(media_obj, "title", "") or m.caption or ""
+                            _fn = getattr(media_obj, "file_name", "") or ""
+                            _t = getattr(media_obj, "title", "") or ""
+                            cap = m.caption or ""
+                            fname = f"{_t} - {_fn}" if _t else _fn
+                            if not fname.strip(): fname = cap
 
                             if f_uid:
                                 uid_dup = await db.db["live_batch_seen"].find_one({"job_id": job_id, "file_uid": f_uid})
