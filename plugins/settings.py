@@ -590,21 +590,41 @@ async def settings_query(bot, query):
      if res != True: return
      await bot.send_message(user_id, "<b>Session successfully added to db</b>\nGo back to /settings to configure.")
       
-  elif type=="channels":
-     buttons = []
+  elif type.startswith("channels"):
+     parts = type.split('_')
+     page = int(parts[1]) if len(parts) > 1 else 0
+     
      channels = await db.get_user_channels(user_id)
      ch_count = len(channels)
-     for channel in channels:
-        buttons.append([InlineKeyboardButton(f"{channel['title']}",
-                         callback_data=f"settings#editchannels_{channel['chat_id']}")])
-     buttons.append([InlineKeyboardButton('Add Channel', callback_data='settings#addchannel'),
-                     InlineKeyboardButton('Multi-Delete', callback_data='settings#ch_multi'),
-                     InlineKeyboardButton('Sync Names', callback_data='settings#ch_sync')])
-     buttons.append([InlineKeyboardButton('Back', callback_data='settings#main')])
+     
+     PER_PAGE = 30
+     start_idx = page * PER_PAGE
+     end_idx = start_idx + PER_PAGE
+     current_channels = channels[start_idx:end_idx]
+     
+     buttons = []
+     # Max 30 channels per page (grouped into 1 per row)
+     for channel in current_channels:
+         buttons.append([InlineKeyboardButton(f"{channel['title']}", callback_data=f"settings#editchannels_{channel['chat_id']}")])
+         
+     nav_buttons = []
+     if page > 0:
+         nav_buttons.append(InlineKeyboardButton("⬅️ Pʀᴇᴠɪᴏᴜs", callback_data=f"settings#channels_{page-1}"))
+     if end_idx < ch_count:
+         nav_buttons.append(InlineKeyboardButton("Nᴇxᴛ ➡️", callback_data=f"settings#channels_{page+1}"))
+     if nav_buttons:
+         buttons.append(nav_buttons)
+         
+     buttons.append([InlineKeyboardButton('Aᴅᴅ Cʜᴀɴɴᴇʟ', callback_data='settings#addchannel'),
+                     InlineKeyboardButton('Mᴜʟᴛɪ-Dᴇʟᴇᴛᴇ', callback_data='settings#ch_multi'),
+                     InlineKeyboardButton('Sʏɴᴄ Nᴀᴍᴇs', callback_data='settings#ch_sync')])
+     buttons.append([InlineKeyboardButton('❮ Bᴀᴄᴋ', callback_data='settings#main')])
+     
      await query.message.edit_text(
-       f"<b><u>My Channels</u></b>  (<code>{ch_count}/100</code>)\n\n"
+       f"<b><u>Mʏ Cʜᴀɴɴᴇʟs</u></b>  (<code>{ch_count}/100</code>)\n\n"
        "<b>Manage your source / destination chats here.</b>\n"
-       "<i>Tip: Use Sync Names to refresh channel titles from Telegram.</i>",
+       "<i>Tip: Use Sync Names to refresh channel titles from Telegram.</i>\n\n"
+       f"<b>Page:</b> {page + 1}/{(max(0, ch_count - 1) // PER_PAGE) + 1}",
        reply_markup=InlineKeyboardMarkup(buttons))
 
   elif type == "ch_multi":
