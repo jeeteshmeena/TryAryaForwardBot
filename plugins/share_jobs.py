@@ -732,6 +732,79 @@ async def _build_share_links(bot, user_id, sj, info_msg):
         if not parsed_msgs:
             return await safe_edit("‣  Could not extract any episode numbers from the scanned messages.")
 
+        # ══ PASS 3: Album-aware gap-fill ═══════════════════════════════════════
+        # In a Telegram media group (album), only the FIRST message carries the
+        # caption. Subsequent files in the same album often have no file_name /
+        # caption and therefore parse as (-1, -1, False). When we can see SOME
+        # parsed episodes in an album, we can infer the rest sequentially.
+        #
+        # Strategy:
+        #   • Group every scanned message by media_group_id.
+        #   • For each album group that has ≥1 parsed episode AND ≥1 unparseable:
+        #       – Collect all parsed (ep_s, msg) pairs, sort by msg.id.
+        #       – For each unparseable message (sorted by id), find its position
+        #         relative to the parsed ones and assign the next sequential ep.
+        #   • Add the inferred entries to parsed_msgs.
+        if not GROUPED_MODE:
+            # Build album groups: media_group_id → sorted [msg] list
+            _all_msgs_by_id = {m.id: m for m in all_valid_msgs}
+            _album_groups: dict = {}  # gid → [msg, ...]
+            for msg in all_valid_msgs:
+                gid = getattr(msg, 'media_group_id', None) or getattr(msg, 'group_id', None)
+                if gid:
+                    _album_groups.setdefault(gid, []).append(msg)
+
+            if _album_groups:
+                parsed_ids = {m.id for m, _, _, _ in parsed_msgs}
+                parsed_ep_map = {m.id: (ep_s, ep_e, is_r) for m, ep_s, ep_e, is_r in parsed_msgs}
+                extra_parsed = []  # new inferred entries to add
+
+                for gid, grp_msgs in _album_groups.items():
+                    grp_sorted = sorted(grp_msgs, key=lambda x: x.id)
+                    grp_parsed  = [(m, *parsed_ep_map[m.id]) for m in grp_sorted if m.id in parsed_ids]
+                    grp_unparsed = [m for m in grp_sorted if m.id not in parsed_ids]
+
+                    if not grp_parsed or not grp_unparsed:
+                        continue  # nothing to infer
+
+
+                    # Walk all messages in album order. For each slot:
+                    # - if parsed: anchor running_ep to its known value
+                    # - if unparseable: assign (last_known_ep + gap_from_last_anchor)
+                    all_sorted_ids = [m.id for m in grp_sorted]
+                    parsed_ep_by_pos = {m.id: parsed_ep_map[m.id][0] for m, *_ in grp_parsed}
+
+                    last_anchor_ep  = None
+                    last_anchor_idx = None
+                    for idx, mid in enumerate(all_sorted_ids):
+                        if mid in parsed_ep_by_pos:
+                            last_anchor_ep  = parsed_ep_by_pos[mid]
+                            last_anchor_idx = idx
+                        elif mid not in parsed_ids:
+                            # Unparseable: offset = how many steps past the last anchor
+                            if last_anchor_ep is not None:
+                                offset = idx - last_anchor_idx
+                                inferred_ep = last_anchor_ep + offset
+                            else:
+                                # No anchor before us yet — peek forward for first anchor
+                                future = [(i, parsed_ep_by_pos[x]) for i, x in enumerate(all_sorted_ids)
+                                          if x in parsed_ep_by_pos and i > idx]
+                                if future:
+                                    first_future_idx, first_future_ep = future[0]
+                                    inferred_ep = first_future_ep - (first_future_idx - idx)
+                                else:
+                                    continue  # cannot infer at all — skip
+
+                            if inferred_ep < 1:
+                                continue
+                            msg_obj = _all_msgs_by_id[mid]
+                            extra_parsed.append((msg_obj, inferred_ep, inferred_ep, False))
+
+                parsed_msgs = parsed_msgs + extra_parsed
+                # Re-sort by message ID so bucket building stays chronological
+                parsed_msgs.sort(key=lambda x: x[0].id)
+                unparseable_count = len([m for m in all_valid_msgs if m.id not in {p[0].id for p in parsed_msgs}])
+
         total_count = len(all_valid_msgs)  # used in final report
 
 
