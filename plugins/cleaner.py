@@ -576,8 +576,10 @@ async def _cl_run_job(job_id: str, bot=None):
                         use_ffmpeg = True
 
                     # Original filename & extension
-                    orig_fn  = getattr(media_obj, 'file_name', None) or ""
+                    orig_fn    = getattr(media_obj, 'file_name', None) or ""
                     orig_title = getattr(media_obj, 'title', None) or ""
+                    # Caption on the message itself (often the episode title in grouped albums)
+                    orig_cap   = (getattr(msg, 'caption', None) or "").strip()
                     
                     orig_ext = os.path.splitext(orig_fn)[1] if orig_fn else ''
                     if not orig_ext:
@@ -588,10 +590,13 @@ async def _cl_run_job(job_id: str, bot=None):
                         else:            orig_ext = '.mp3'
 
                     # ── Determine output title ──
-                    change_meta = job.get("change_metadata", True)
+                    change_meta  = job.get("change_metadata", True)
                     rename_files = job.get("rename_files", True)  # True = use base_name, False = keep original
                     
-                    combo_name = f"{orig_title} @@@ {orig_fn}" if orig_title else orig_fn
+                    # Build a combined search string from all available name sources:
+                    # audio title / file_name / message caption (for grouped albums)
+                    _name_parts = [s for s in [orig_title, orig_fn, orig_cap] if s]
+                    combo_name  = " @@@ ".join(_name_parts) if _name_parts else ""
                     ep_label_res = extract_ep_label_robust(combo_name) if combo_name else {}
                     ep_label = ep_label_res.get("label", "")
 
@@ -623,13 +628,16 @@ async def _cl_run_job(job_id: str, bot=None):
                             clean_title = f"{base_name} {ep_to_use}"
                     else:
                         # User wants to keep original filename/title
-                        orig_title = getattr(media_obj, 'title', None)
+                        # Priority: embedded audio title → file_name → message caption → fallback
                         if orig_title:
                             clean_title = str(orig_title)
                         elif orig_fn:
                             clean_title = os.path.splitext(orig_fn)[0]
+                        elif orig_cap:
+                            # Caption is the best fallback for grouped album files
+                            clean_title = orig_cap
                         else:
-                            clean_title = f"{base_name} {curr_num}"  # fallback if no orig filename
+                            clean_title = f"{base_name} {curr_num}"  # ultimate fallback
 
                         if orig_fn:
                             clean_file_override = orig_fn
