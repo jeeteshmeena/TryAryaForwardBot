@@ -129,6 +129,14 @@ async def _warm_peer(client, chat_id) -> None:
     key = (client_id, int(chat_id))
     if key in _peer_cache and (time.time() - _peer_cache[key]) < _PEER_CACHE_TTL:
         return   # already warm — skip the network call
+    
+    from bot import BOT_INSTANCE
+    from plugins.utils import safe_resolve_peer
+    try:
+        await safe_resolve_peer(client, int(chat_id), bot=BOT_INSTANCE)
+    except Exception:
+        pass
+        
     try:
         await client.get_chat(int(chat_id))
         _peer_cache[key] = time.time()
@@ -158,24 +166,26 @@ async def check_all_subscriptions(client, user_id: int, fsub_channels: list, bot
         is_jr = ch.get('join_request', False)
 
         # Resolve numeric chat_id
-        try:
-            c_int = await client.get_chat(chat_id)
-            ch_id_int = c_int.id
-        except Exception:
-            ch_id_int = int(chat_id) if str(chat_id).lstrip('-').isdigit() else chat_id
-
-        # ONLY cache JR channels to respect user demand for instant non-JR re-verification
+        from bot import BOT_INSTANCE
+        from plugins.utils import safe_resolve_peer
+        
+        ch_id_int = int(chat_id) if str(chat_id).lstrip('-').isdigit() else chat_id
         cache_key = f"{user_id}_{ch_id_int}"
-        if is_jr and cache_key in _fsub_user_cache and _fsub_user_cache[cache_key] > now:
+        if cache_key in _fsub_user_cache and _fsub_user_cache[cache_key] > now:
             return None
 
         try:
+            await safe_resolve_peer(client, chat_id, bot=BOT_INSTANCE)
+        except Exception:
+            pass
+
+        try:
             member = await client.get_chat_member(ch_id_int, user_id)
-            if member.status in (enums.ChatMemberStatus.LEFT, enums.ChatMemberStatus.BANNED):
+            if getattr(member, 'status', None) in (enums.ChatMemberStatus.LEFT, enums.ChatMemberStatus.BANNED):
                 raise UserNotParticipant()
             else:
-                if is_jr:
-                    _fsub_user_cache[cache_key] = now + 120
+                # Aggressively Cache SUCCESS for 2 hours to prevent FloodWaits across bulk link-clicks!
+                _fsub_user_cache[cache_key] = now + 7200
                 return None
         except UserNotParticipant:
             _fsub_user_cache.pop(cache_key, None)
