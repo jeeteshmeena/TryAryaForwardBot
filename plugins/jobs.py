@@ -98,7 +98,7 @@ async def _lj_get_me_cached(client):
 
 
 # ─── Client health-check / reconnect ────────────────────────────────────
-async def _lj_ensure_client_alive(client):
+async def _lj_ensure_client_alive(client, acc: dict = None):
     """
     Verify the Pyrogram client transport is alive using a cheap MTProto Ping.
     If dead, attempt a cold restart with exponential backoff (up to 3 attempts).
@@ -147,7 +147,8 @@ async def _lj_ensure_client_alive(client):
         await asyncio.sleep(backoff)
 
         try:
-            client = await start_clone_bot(client, force_restart=True)
+            new_client = _CLIENT.client(acc) if acc else client
+            client = await start_clone_bot(new_client, force_restart=True)
             # Verify with ping (not get_me) after cold start
             if await _lj_ping_client(client):
                 logger.info(f"[LiveJob] Client reconnected successfully on attempt {attempt+1}")
@@ -566,7 +567,7 @@ async def _run_job(job_id: str, user_id: int):
 
         client = await start_clone_bot(_CLIENT.client(acc))
         # Health-check immediately after starting
-        client = await _lj_ensure_client_alive(client)
+        client = await _lj_ensure_client_alive(client, acc=acc)
         is_bot = acc.get("is_bot", True)
 
         from_chat    = job["from_chat"]
@@ -1137,7 +1138,7 @@ async def _run_job(job_id: str, user_id: int):
                     is_ok = await _lj_ping_client(client)
                     if not is_ok:
                         logger.warning(f"[Job {job_id}] Proactive ping failed — healing client")
-                        client = await _lj_ensure_client_alive(client)
+                        client = await _lj_ensure_client_alive(client, acc=acc)
                 except Exception as _ping_e:
                     logger.debug(f"[Job {job_id}] Proactive ping error: {_ping_e}")
 
@@ -1262,7 +1263,7 @@ async def _run_job(job_id: str, user_id: int):
                 if is_conn_err:
                     logger.warning(f"[Job {job_id}] Connection error in live fetch: {err_fetch}. Healing client...")
                     try:
-                        client = await _lj_ensure_client_alive(client)
+                        client = await _lj_ensure_client_alive(client, acc=acc)
                     except Exception as heal_e:
                         heal_str = str(heal_e)
                         if "LIVEJOB_RECONNECT_FAILED" in heal_str:
@@ -1413,7 +1414,7 @@ async def _run_job(job_id: str, user_id: int):
                     if is_conn_err:
                         logger.warning(f"[Job {job_id}] Connection error during forward: {fwd_err}. Healing...")
                         try:
-                            client = await _lj_ensure_client_alive(client)
+                            client = await _lj_ensure_client_alive(client, acc=acc)
                         except Exception: pass
                     else:
                         logger.debug(f"[Job {job_id}] Forward error: {fwd_err}")

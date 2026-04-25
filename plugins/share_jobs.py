@@ -639,52 +639,50 @@ async def _build_share_links(bot, user_id, sj, info_msg):
                     if t: return str(t)
             return ""
 
-        def extract_ep_individual(msg):
+        def extract_ep_final(msg):
             """
-            Deep episode extraction — individual mode.
-            Now correctly uses range parsing so range files span multiple episodes.
-            Combines Title and Filename to ensure explicit EP tags in Title override random numbers in Filename.
+            Unified robust episode extraction.
+            Checks all sources (filename, title, caption) and picks the most descriptive result:
+            - Prefers ranges (e.g., 15-20) over single numbers (15).
+            - Prefers explicit labels over noisy ones.
             """
-            fname = " ".join(_get_file_names(msg))
-            t = _get_audio_title(msg)
+            sources = []
             
-            # Priority 1: Combined title and filename (most reliable with our robust regex engine)
-            combo_name = f"{t} @@@ {fname}" if t else fname
-            if combo_name.strip():
-                r = _extract_range_from_text(combo_name)
-                if r: return r
-
-            # Priority 2: caption text
+            # Source A: Combined Audio Title + Filename
+            names_str = " ".join(_get_file_names(msg))
+            title_str = _get_audio_title(msg)
+            combo = f"{title_str} @@@ {names_str}" if title_str else names_str
+            if combo.strip():
+                sources.append(combo)
+            
+            # Source B: Caption
             cap = msg.caption or msg.text or ""
             if cap.strip():
-                r = _extract_range_from_text(cap)
-                if r: return r
+                sources.append(cap)
 
-            return (-1, -1, False)
+            best_res = (-1, -1, False)
+            
+            for src in sources:
+                res = _extract_range_from_text(src)
+                if not res: continue
+                
+                # Update best logic:
+                # 1. If we have nothing yet, take this.
+                # 2. If this is a range and previous wasn't, take this.
+                # 3. If both are ranges, take the wider one or just stick.
+                if best_res[0] == -1:
+                    best_res = res
+                elif res[2] and not best_res[2]:
+                    best_res = res
+                elif res[2] and best_res[2]:
+                    # Wider range check (optional, but robust)
+                    if (res[1] - res[0]) > (best_res[1] - best_res[0]):
+                        best_res = res
+            
+            return best_res
 
-        def extract_ep_grouped(msg):
-            """
-            Deep episode extraction — grouped mode.
-            Tries to find a range (start–end). Falls back to individual.
-            """
-            # Priority 1: file_name (range aware)
-            for fname in _get_file_names(msg):
-                r = _extract_range_from_text(fname)
-                if r: return r
-
-            # Priority 2: caption
-            cap = msg.caption or msg.text or ""
-            if cap.strip():
-                r = _extract_range_from_text(cap)
-                if r: return r
-
-            # Priority 3: audio title
-            t = _get_audio_title(msg)
-            if t:
-                r = _extract_range_from_text(t)
-                if r: return r
-
-            return (-1, -1, False)
+        extract_ep_individual = extract_ep_final
+        extract_ep_grouped    = extract_ep_final
 
         # ══ TWO-PASS PARSING ══════════════════════════════════════════════════
         # PASS 1: Parse all msgs as individual to detect MODE
@@ -745,67 +743,60 @@ async def _build_share_links(bot, user_id, sj, info_msg):
         #       – For each unparseable message (sorted by id), find its position
         #         relative to the parsed ones and assign the next sequential ep.
         #   • Add the inferred entries to parsed_msgs.
-        if not GROUPED_MODE:
-            # Build album groups: media_group_id → sorted [msg] list
-            _all_msgs_by_id = {m.id: m for m in all_valid_msgs}
-            _album_groups: dict = {}  # gid → [msg, ...]
-            for msg in all_valid_msgs:
-                gid = getattr(msg, 'media_group_id', None) or getattr(msg, 'group_id', None)
-                if gid:
-                    _album_groups.setdefault(gid, []).append(msg)
+        # ── PASS 3: Album-aware gap-fill ──────────────────────────────────────
+        # Applied to ALL modes to ensure albums (media groups) are correctly indexed.
+        _all_msgs_by_id = {m.id: m for m in all_valid_msgs}
+        _album_groups: dict = {}
+        for msg in all_valid_msgs:
+            gid = getattr(msg, 'media_group_id', None) or getattr(msg, 'group_id', None)
+            if gid:
+                _album_groups.setdefault(gid, []).append(msg)
 
-            if _album_groups:
-                parsed_ids = {m.id for m, _, _, _ in parsed_msgs}
-                parsed_ep_map = {m.id: (ep_s, ep_e, is_r) for m, ep_s, ep_e, is_r in parsed_msgs}
-                extra_parsed = []  # new inferred entries to add
+        if _album_groups:
+            parsed_ids = {m.id for m, _, _, _ in parsed_msgs}
+            parsed_ep_map = {m.id: (ep_s, ep_e, is_r) for m, ep_s, ep_e, is_r in parsed_msgs}
+            extra_parsed = []
 
-                for gid, grp_msgs in _album_groups.items():
-                    grp_sorted = sorted(grp_msgs, key=lambda x: x.id)
-                    grp_parsed  = [(m, *parsed_ep_map[m.id]) for m in grp_sorted if m.id in parsed_ids]
-                    grp_unparsed = [m for m in grp_sorted if m.id not in parsed_ids]
+            for gid, grp_msgs in _album_groups.items():
+                grp_sorted = sorted(grp_msgs, key=lambda x: x.id)
+                grp_parsed  = [(m, *parsed_ep_map[m.id]) for m in grp_sorted if m.id in parsed_ids]
+                grp_unparsed = [m for m in grp_sorted if m.id not in parsed_ids]
 
-                    if not grp_parsed or not grp_unparsed:
-                        continue  # nothing to infer
+                if not grp_parsed or not grp_unparsed:
+                    continue
 
+                all_sorted_ids = [m.id for m in grp_sorted]
+                parsed_ep_by_pos = {m.id: parsed_ep_map[m.id][0] for m, *_ in grp_parsed}
 
-                    # Walk all messages in album order. For each slot:
-                    # - if parsed: anchor running_ep to its known value
-                    # - if unparseable: assign (last_known_ep + gap_from_last_anchor)
-                    all_sorted_ids = [m.id for m in grp_sorted]
-                    parsed_ep_by_pos = {m.id: parsed_ep_map[m.id][0] for m, *_ in grp_parsed}
-
-                    last_anchor_ep  = None
-                    last_anchor_idx = None
-                    for idx, mid in enumerate(all_sorted_ids):
-                        if mid in parsed_ep_by_pos:
-                            last_anchor_ep  = parsed_ep_by_pos[mid]
-                            last_anchor_idx = idx
-                        elif mid not in parsed_ids:
-                            # Unparseable: offset = how many steps past the last anchor
-                            if last_anchor_ep is not None:
-                                offset = idx - last_anchor_idx
-                                inferred_ep = last_anchor_ep + offset
+                last_anchor_ep  = None
+                last_anchor_idx = None
+                for idx, mid in enumerate(all_sorted_ids):
+                    if mid in parsed_ep_by_pos:
+                        last_anchor_ep  = parsed_ep_by_pos[mid]
+                        last_anchor_idx = idx
+                    elif mid not in parsed_ids:
+                        if last_anchor_ep is not None:
+                            offset = idx - last_anchor_idx
+                            inferred_ep = last_anchor_ep + offset
+                        else:
+                            future = [(i, parsed_ep_by_pos[x]) for i, x in enumerate(all_sorted_ids)
+                                      if x in parsed_ep_by_pos and i > idx]
+                            if future:
+                                first_future_idx, first_future_ep = future[0]
+                                inferred_ep = first_future_ep - (first_future_idx - idx)
                             else:
-                                # No anchor before us yet — peek forward for first anchor
-                                future = [(i, parsed_ep_by_pos[x]) for i, x in enumerate(all_sorted_ids)
-                                          if x in parsed_ep_by_pos and i > idx]
-                                if future:
-                                    first_future_idx, first_future_ep = future[0]
-                                    inferred_ep = first_future_ep - (first_future_idx - idx)
-                                else:
-                                    continue  # cannot infer at all — skip
-
-                            if inferred_ep < 1:
                                 continue
-                            msg_obj = _all_msgs_by_id[mid]
-                            extra_parsed.append((msg_obj, inferred_ep, inferred_ep, False))
 
-                parsed_msgs = parsed_msgs + extra_parsed
-                # Re-sort by message ID so bucket building stays chronological
-                parsed_msgs.sort(key=lambda x: x[0].id)
-                unparseable_count = len([m for m in all_valid_msgs if m.id not in {p[0].id for p in parsed_msgs}])
+                        if inferred_ep < 1:
+                            continue
+                        msg_obj = _all_msgs_by_id[mid]
+                        extra_parsed.append((msg_obj, inferred_ep, inferred_ep, False))
 
-        total_count = len(all_valid_msgs)  # used in final report
+            parsed_msgs = parsed_msgs + extra_parsed
+            parsed_msgs.sort(key=lambda x: x[0].id)
+            unparseable_count = len([m for m in all_valid_msgs if m.id not in {p[0].id for p in parsed_msgs}])
+
+        total_count = len(all_valid_msgs)
 
 
         #  Build ep_to_msgs dict and track duplicates 

@@ -380,7 +380,7 @@ def extract_ep_label_robust(fname: str) -> dict:
 
     # ── Priority 1: Keyword-tagged episodes (Ep, Episode, Part, #, eps…) ────
     # Must come FIRST because explicit keywords are absolutely more reliable than naked ranges.
-    kw_delims = r'(?:\s*[\-\,\|\/]\s*)'
+    kw_delims = r'(?:\s*[\-\,\|\/\&\+\_]\s*)'
     kw_num_seq = f'(?:{num}(?:{kw_delims}{num})*)'
     kw_pattern = (
         r'(?i)\b(?:episode|epi|ep|e|part|#|एपिसोड|भाग|eps)(?:s)?'
@@ -395,7 +395,7 @@ def extract_ep_label_robust(fname: str) -> dict:
 
     # ── Priority 2: Greedy Range (N-M, N to M, N_TO_M, etc.) ────────────────
     # Prevent single-number fallback from stealing one end when no keyword is found.
-    range_sep = r'(?:[\s\-_,\.]+|to)+'
+    range_sep = r'(?:[\s\-_,\.\&\+]+|to)+'
     # Note: 'से' is NOT in range_sep here — it was already normalised above only when digit-bounded.
     greedy_range = re.search(
         r'(?<!\d)(' + num + r'(?:' + range_sep + num + r')+)(?!\d)',
