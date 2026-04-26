@@ -331,7 +331,7 @@ def _get_main_menu(lang='en'):
              InlineKeyboardButton("• मेरी स्टोरीज •", callback_data="mb#my_buys")],
             [InlineKeyboardButton("प्रोफाइल", callback_data="mb#main_profile"),
              InlineKeyboardButton("सेटिंग्स", callback_data="mb#main_settings")],
-            [InlineKeyboardButton("मदद / जानकारी", callback_data="mb#main_help")],
+            [InlineKeyboardButton("सपोर्ट / सहायता", callback_data="mb#main_help")],
             [
                 InlineKeyboardButton("ᴄ", callback_data="mb#main_close"),
                 InlineKeyboardButton("ʟ", callback_data="mb#main_close"),
@@ -352,7 +352,7 @@ def _get_main_menu(lang='en'):
              InlineKeyboardButton(f"• {_bs('MY STORIES')} •", callback_data="mb#my_buys")],
             [InlineKeyboardButton(f"{_sc('Profile')}", callback_data="mb#main_profile"),
              InlineKeyboardButton(f"{_sc('Settings')}", callback_data="mb#main_settings")],
-            [InlineKeyboardButton(f"{_sc('Help')}", callback_data="mb#main_help")],
+            [InlineKeyboardButton(f"{_sc('Support / Help')}", callback_data="mb#main_help")],
             [
                 InlineKeyboardButton("ᴄ", callback_data="mb#main_close"),
                 InlineKeyboardButton("ʟ", callback_data="mb#main_close"),
@@ -1635,7 +1635,7 @@ async def _show_about_arya(client, query, page: int):
 async def _show_help_menu(client, query, page: int):
     if page == 0:
         txt = (
-            f"<b>⟦ {_sc('HELP & DOCUMENTATION')} ⟧</b>\n\n"
+            f"<b>⟦ {_sc('SUPPORT & HELP CENTER')} ⟧</b>\n\n"
             f"<blockquote expandable>"
             f"<i>{_sc('Welcome to the detailed guide for using Arya Premium.')}</i>\n\n"
             f"<u>{_sc('COMMANDS:')}</u>\n"
@@ -1656,14 +1656,14 @@ async def _show_help_menu(client, query, page: int):
         kb = [
             [InlineKeyboardButton(f"{_sc('TERMS')}", callback_data="mb#help_tc"),
              InlineKeyboardButton(f"{_sc('REFUND')}", callback_data="mb#help_refund"),
-             InlineKeyboardButton("Support", url="https://t.me/ItsNewtonPlanet")],
+             InlineKeyboardButton(_sc("Direct Support"), url="https://t.me/ItsNewtonPlanet")],
             [InlineKeyboardButton(f"💬 {_sc('FEEDBACK / SUGGESTIONS')}", callback_data="mb#feedback_start")],
             [InlineKeyboardButton(f"हिंदी (NEXT) ❭", callback_data="mb#help_page_1")],
             [InlineKeyboardButton(f"« ❮ {_sc('MAIN MENU')}", callback_data="mb#main_back")]
         ]
     else:
         txt = (
-            f"<b>⟦ {_sc('सहायता और जानकारी')} ⟧</b>\n\n"
+            f"<b>⟦ {_sc('सपोर्ट एवं सहायता केंद्र')} ⟧</b>\n\n"
             f"<blockquote expandable>"
             f"<i>{_sc('आर्या प्रीमियम के विस्तृत गाइड में आपका स्वागत है।')}</i>\n\n"
             f"<u>{_sc('कमांड्स:')}</u>\n"
@@ -1684,7 +1684,7 @@ async def _show_help_menu(client, query, page: int):
         kb = [
             [InlineKeyboardButton(f"{_sc('TERMS')}", callback_data="mb#help_tc"),
              InlineKeyboardButton(f"{_sc('REFUND')}", callback_data="mb#help_refund"),
-             InlineKeyboardButton("Support", url="https://t.me/ItsNewtonPlanet")],
+             InlineKeyboardButton(_sc("Support Chat"), url="https://t.me/ItsNewtonPlanet")],
             [InlineKeyboardButton(f"💬 {_sc('FEEDBACK / SUGGESTIONS')}", callback_data="mb#feedback_start")],
             [InlineKeyboardButton(f"❬ PREV (English)", callback_data="mb#help_page_0")],
             [InlineKeyboardButton(f"« ❮ {_sc('MAIN MENU')}", callback_data="mb#main_back")]
