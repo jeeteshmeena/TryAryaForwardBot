@@ -630,7 +630,7 @@ async def settings_query(bot, query):
      
      try:
          await query.message.edit_text(
-           f"<b><u>Mʏ Cʜᴀɴɴᴇʟs</u></b>  (<code>{ch_count}/100</code>)\n\n"
+           f"<b><u>Mʏ Cʜᴀɴɴᴇʟs</u></b>  (<code>{ch_count}/200</code>)\n\n"
            "<b>Manage your source / destination chats here.</b>\n"
            "<i>Tip: Use Sync Names to refresh channel titles from Telegram.</i>\n\n"
            f"<b>Page:</b> {page + 1}/{(max(0, ch_count - 1) // PER_PAGE) + 1}",
@@ -775,9 +775,9 @@ async def settings_query(bot, query):
              pass
              
          existing_chs = await db.get_user_channels(user_id)
-         if len(existing_chs) >= 100:
+         if len(existing_chs) >= 200:
              await chat_ids.delete()
-             return await text.edit_text('<b>Maximum 100 channels reached.</b> Remove some first.',
+             return await text.edit_text('<b>Maximum 200 channels reached.</b> Remove some first.',
                                          reply_markup=InlineKeyboardMarkup(buttons))
          chat = await db.add_channel(user_id, chat_id, title, username)
          await chat_ids.delete()

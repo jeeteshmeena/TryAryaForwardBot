@@ -429,9 +429,16 @@ def _parse_msg_id(msg) -> int:
 # ─────────────────────────────────────────────────────────────────────────────
 
 _indexed_channels: set = set()  # caches verified DB channels
+_ignored_channels: set = set()  # negative cache for non-DB channels
 _index_buffer: dict = {}      # chat_id -> {msg_id: entry}
 _index_lock = asyncio.Lock()
 _indexer_started = False
+_verify_locks: dict = {}
+
+def _get_verify_lock(chat_id):
+    if chat_id not in _verify_locks:
+        _verify_locks[chat_id] = asyncio.Lock()
+    return _verify_locks[chat_id]
 
 async def _batch_indexer_task():
     """Background task to batch-commit auto-indexed files to DB to prevent bot hanging."""
@@ -479,12 +486,22 @@ async def _try_auto_index(client, message):
     chat_id = message.chat.id
     
     # 1. Verification cache bypasses DB spam
+    if chat_id in _ignored_channels:
+        return
+        
     if chat_id not in _indexed_channels:
-        # Check DB once
-        existing = await db.get_channel_index(chat_id)
-        if not existing:
-            return  # not a tracked database
-        _indexed_channels.add(chat_id)
+        async with _get_verify_lock(chat_id):
+            if chat_id in _ignored_channels:
+                return
+            if chat_id not in _indexed_channels:
+                # Check DB once
+                existing = await db.get_channel_index(chat_id)
+                if not existing:
+                    _ignored_channels.add(chat_id)
+                    # Clear negative cache after 60s in case user adds channel
+                    asyncio.get_event_loop().call_later(60, lambda: _ignored_channels.discard(chat_id))
+                    return  # not a tracked database
+                _indexed_channels.add(chat_id)
 
     # 2. File Extractor
     entry = _get_file_info(message)
