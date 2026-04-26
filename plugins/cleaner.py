@@ -186,14 +186,24 @@ def _build_ffmpeg_cmd(input_path, output_path, cover_path, meta: dict, deep_clea
            "-err_detect", "ignore_err", "-fflags", "+discardcorrupt",
            "-i", input_path]
 
+    # Multi-format cover art handling
     if cover_path and os.path.exists(cover_path) and os.path.getsize(cover_path) > 1024:
-        cmd += ["-i", cover_path,
-                "-map", "0:a:0", "-map", "1:v:0",
-                "-c:v", "mjpeg", "-id3v2_version", "3",
-                "-metadata:s:v", "title=Album cover",
-                "-metadata:s:v", "comment=Cover (front)"]
+        cmd += ["-i", cover_path, "-map", "0:a:0", "-map", "1:v:0"]
+        out_ext = os.path.splitext(output_path)[1].lower()
+        
+        if out_ext in (".mp4", ".m4a", ".m4b"):
+            # MP4 containers handle covers as video streams but need specific muxing
+            cmd += ["-c:v", "copy", "-disposition:v", "attached_pic"]
+        else:
+            # MP3 / Others
+            cmd += ["-c:v", "mjpeg", "-id3v2_version", "3", "-disposition:v", "attached_pic"]
+            
+        cmd += ["-metadata:s:v", "title=Album cover", "-metadata:s:v", "comment=Cover (front)"]
     else:
         cmd += ["-map", "0:a:0"]
+
+    # Global flags to prevent muxer errors from weird streams
+    cmd += ["-sn", "-dn"]  # No subtitles, No data streams
 
     # Ultra-Fast Stream Copy or Deep Mode
     in_ext = os.path.splitext(input_path)[1].lower()
@@ -378,9 +388,9 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                 fsize = getattr(m_obj, 'file_size', 0) or 0
                 dl_timeout = min(300, max(60, fsize // (500 * 1024)))
 
-                # 2 attempts only (fast!) — 3s gap on retry
+                # 3 attempts (was 2) — exponential backoff
                 last_err = None
-                for att in range(2):
+                for att in range(3):
                     try:
                         dp = await asyncio.wait_for(
                             client.download_media(m, file_name=ipath),
@@ -388,17 +398,19 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                         )
                         if dp and os.path.exists(str(dp)):
                             return m, str(dp), m_obj, m.id, lbl, ext   # ✓ success
+                        else:
+                            last_err = f"download_media returned {dp}"
                     except Exception as e:
                         last_err = e
-                        logger.warning(f"[Cleaner {job_id}] dl att {att+1}/2 mid={m.id}: {e}")
+                        logger.warning(f"[Cleaner {job_id}] dl att {att+1}/3 mid={m.id}: {e}")
                         try:
                             if os.path.exists(ipath): os.remove(ipath)
                         except: pass
-                        if att == 0:
-                            await asyncio.sleep(3)   # ONE short wait before retry
+                        if att < 2:
+                            await asyncio.sleep(5 * (att + 1))  # 5s, 10s wait
 
-                # Both attempts failed — raise so main loop retries from same position
-                raise Exception(f"Download failed (2 att) mid={m.id}: {last_err}")
+                # All attempts failed — raise so main loop retries from same position
+                raise Exception(f"Download failed (3 att) mid={m.id}: {type(last_err).__name__} {last_err}")
 
             return None  # no more messages in range
 
@@ -429,11 +441,16 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                     await _cl_update_job(job_id, {"status": "failed", "error": err_msg})
                     if _bot:
                         try:
+                            fail_kb = InlineKeyboardMarkup([[
+                                InlineKeyboardButton("🔁 Rᴇᴛʀʏ / Rᴇsᴛᴀʀᴛ", callback_data=f"cl#reset#{job_id}"),
+                                InlineKeyboardButton("🗑 Dᴇʟᴇᴛᴇ", callback_data=f"cl#del#{job_id}")
+                            ]])
                             await _bot.send_message(uid,
                                 f"<b>⚠️ Cleaner Job Failed!</b>\n\n"
                                 f"<b>🧹 Name:</b> {base_name}\n"
                                 f"<b>📁 Done:</b> {done} files\n"
-                                f"<b>❌ Error:</b> <code>{err_msg}</code>")
+                                f"<b>❌ Error:</b> <code>{err_msg}</code>",
+                                reply_markup=fail_kb)
                         except: pass
                     job_failed = True
                     break
@@ -606,11 +623,16 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                     await _cl_update_job(job_id, {"status": "failed", "error": err_msg})
                     if _bot:
                         try:
+                            fail_kb = InlineKeyboardMarkup([[
+                                InlineKeyboardButton("🔁 Rᴇᴛʀʏ / Rᴇsᴛᴀʀᴛ", callback_data=f"cl#reset#{job_id}"),
+                                InlineKeyboardButton("🗑 Dᴇʟᴇᴛᴇ", callback_data=f"cl#del#{job_id}")
+                            ]])
                             await _bot.send_message(uid,
                                 f"<b>⚠️ Cleaner Job Failed!</b>\n\n"
                                 f"<b>🧹 Name:</b> {base_name}\n"
                                 f"<b>📁 Done:</b> {done} files\n"
-                                f"<b>❌ Error:</b> <code>{err_msg}</code>")
+                                f"<b>❌ Error:</b> <code>{err_msg}</code>",
+                                reply_markup=fail_kb)
                         except: pass
                     if _next_task: _next_task.cancel()
                     if _upload_task: _upload_task.cancel()
@@ -682,18 +704,32 @@ async def _cl_callbacks(bot, update: CallbackQuery):
 
     if action == "main":
         jobs   = await _cl_get_all_jobs(uid)
-        active = [j for j in jobs if j.get("status") not in ("completed", "stopped", "failed")]
+        # Sort jobs by updated_at or created_at
+        jobs.sort(key=lambda x: x.get("created_at", 0), reverse=True)
+        
+        active = [j for j in jobs if j.get("status") in ("running", "queued", "paused")]
+        failed = [j for j in jobs if j.get("status") in ("failed", "stopped")][:5]
+        
         kb = [
             [InlineKeyboardButton("➕ Sᴛᴀʀᴛ Nᴇᴡ Cʟᴇᴀɴᴇʀ Jᴏʙ", callback_data="cl#new")],
             [InlineKeyboardButton("⚙️ Sᴇᴛ Cᴏᴠᴇʀ",  callback_data="cl#cfg#cover"),
              InlineKeyboardButton("⚙️ Sᴇᴛ Aʀᴛɪsᴛ", callback_data="cl#cfg#artist")],
             [InlineKeyboardButton("⚙️ Sᴇᴛ Gᴇɴʀᴇ",  callback_data="cl#cfg#genre")],
         ]
-        row = []
-        for j in active:
-            row.append(InlineKeyboardButton(f"🧹 {j.get('base_name','Job')[:12]}", callback_data=f"cl#view#{j['job_id']}"))
-            if len(row) == 2: kb.append(row); row = []
-        if row: kb.append(row)
+        
+        if active:
+            kb.append([InlineKeyboardButton("── ⚡ ACTIVE JOBS ──", callback_data="none")])
+            row = []
+            for j in active:
+                row.append(InlineKeyboardButton(f"🔄 {j.get('base_name','Job')[:12]}", callback_data=f"cl#view#{j['job_id']}"))
+                if len(row) == 2: kb.append(row); row = []
+            if row: kb.append(row)
+            
+        if failed:
+            kb.append([InlineKeyboardButton("── ⚠️ FAILED / STOPPED ──", callback_data="none")])
+            for j in failed:
+                kb.append([InlineKeyboardButton(f"❌ {j.get('base_name','Job')[:20]}", callback_data=f"cl#view#{j['job_id']}")])
+
         kb.append([InlineKeyboardButton("❮ Bᴀᴄᴋ", callback_data="settings#main")])
         df = await _cl_get_defaults(uid)
         txt = (
