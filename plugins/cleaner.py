@@ -336,34 +336,10 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                     logger.warning(f"[Cleaner {job_id}] cache fill attempt {attempt+1} err: {e}")
                     if attempt == 0: await asyncio.sleep(3)
 
-        # ── Download with retry ───────────────────────────────────────────
-        async def _download_file(m, mid) -> tuple | None:
-            """Download with backoff. Returns (path, m_obj, ext) or None.
-            Never called with 'skip on fail' — caller decides what to do."""
-            m_obj = m.audio or m.voice or m.document or m.video or m.photo
-            if not m_obj: return None
-            orig_fn = getattr(m_obj, 'file_name', '') or ''
-            ext = (os.path.splitext(orig_fn)[1]
-                   or (".mp3" if m.audio else ".mp4" if m.video else ".jpg" if m.photo else ".dat"))
-            ipath = os.path.abspath(f"temp_cl_in_{job_id}_{mid}{ext}")
-            try:
-                dp = await asyncio.wait_for(
-                    client.download_media(m, file_name=ipath),
-                    timeout=600
-                )
-                if dp and os.path.exists(str(dp)):
-                    return str(dp), m_obj, ext
-            except Exception as e:
-                logger.warning(f"[Cleaner {job_id}] dl failed mid={mid}: {e}")
-            # Clean up partial
-            try:
-                if os.path.exists(ipath): os.remove(ipath)
-            except: pass
-            return None
-
-        # ── Find next valid media message (NO DOWNLOAD here) ──────────────
-        async def _next_media_msg(start_mid: int):
-            """Returns (msg, m_obj, mid, ep_label, ext) or None. Does NOT download."""
+        # ── Next media: find message + download in background (TRUE PARALLEL PIPELINE) ─
+        # Runs as asyncio.Task so download N+1 happens while FFmpeg processes N.
+        # NEVER skips a file silently — retries 5x with backoff, then raises.
+        async def _next_media(start_mid: int):
             mid = start_mid
             while mid <= eid:
                 if mid not in _msg_cache:
@@ -382,19 +358,41 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                 lbl  = (extract_ep_label_robust(f"{_tt} @@@ {_fn} @@@ {_cp}") or {}).get("label", "")
                 if lbl and lbl in _seen: continue
 
-                # Detect extension for look-ahead next-message task (no download)
-                orig_fn2 = getattr(m_obj, 'file_name', '') or ''
-                ext = (os.path.splitext(orig_fn2)[1]
+                orig_fn = getattr(m_obj, 'file_name', '') or ''
+                ext = (os.path.splitext(orig_fn)[1]
                        or (".mp3" if m.audio else ".mp4" if m.video else ".jpg" if m.photo else ".dat"))
-                return m, m_obj, m.id, lbl, ext, mid  # mid = next start
-            return None
+                ipath = os.path.abspath(f"temp_cl_in_{job_id}_{m.id}{ext}")
+
+                # Download with retry — 5 attempts, backoff 10/20/30/40s
+                # NEVER returns None silently — raises after all attempts fail
+                last_err = None
+                for attempt in range(5):
+                    try:
+                        dp = await asyncio.wait_for(
+                            client.download_media(m, file_name=ipath),
+                            timeout=600
+                        )
+                        if dp and os.path.exists(str(dp)):
+                            return m, str(dp), m_obj, m.id, lbl, ext   # ✓ success
+                    except Exception as e:
+                        last_err = e
+                        logger.warning(f"[Cleaner {job_id}] dl {attempt+1}/5 mid={m.id}: {e}")
+                        try:
+                            if os.path.exists(ipath): os.remove(ipath)
+                        except: pass
+                        if attempt < 4:
+                            await asyncio.sleep(10 * (attempt + 1))  # 10 20 30 40s
+
+                # All 5 attempts failed — raise so main loop increments fail_count
+                raise Exception(f"Download failed (5 attempts) mid={m.id}: {last_err}")
+
+            return None  # no more messages in range
 
         # ── Main loop ─────────────────────────────────────────────────────
         msg_id = curr_mid
         await _fill_cache(msg_id)
-
-        # Look-ahead: find next MESSAGE (not download) in background
-        _next_task: asyncio.Task | None = asyncio.create_task(_next_media_msg(msg_id))
+        # Pre-kick: start downloading first file NOW in background
+        _next_task: asyncio.Task | None = asyncio.create_task(_next_media(msg_id))
 
         while True:
             # Stop / pause check
@@ -403,48 +401,16 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                 if _next_task and not _next_task.done(): _next_task.cancel()
                 break
 
-            # Await the look-ahead task (msg only, no download)
             try:
-                p_res = await _next_task
+                p_res = await _next_task   # waits for: find msg + full download
+            except asyncio.CancelledError:
+                break
             except Exception as e:
-                logger.error(f"[Cleaner {job_id}] look-ahead error: {e}")
-                p_res = None
-            _next_task = None
-
-            if not p_res:
-                break  # no more media messages in range
-
-            msg, m_obj, active_mid, ep_label, orig_ext, next_start = p_res
-            msg_id = next_start
-
-            # Kick off NEXT message look-ahead immediately (parallel with download+ffmpeg below)
-            if next_start <= eid:
-                _next_task = asyncio.create_task(_next_media_msg(next_start))
-
-            # DB stop-check every 20 files
-            if done % 20 == 0:
-                try:
-                    _jchk = await _cl_get_job(job_id)
-                    if _jchk and _jchk.get("status") == "stopped":
-                        if _next_task: _next_task.cancel()
-                        break
-                except: pass
-
-            # ── DOWNLOAD — retry same file until success or threshold ─────
-            dl_path = None
-            dl_fail = 0
-            while True:
-                res = await _download_file(msg, active_mid)
-                if res:
-                    dl_path, m_obj, orig_ext = res
-                    break  # success
-                # Download failed — retry same file, backoff, NEVER skip
-                dl_fail += 1
+                # Download permanently failed (all 5 retries) — count as failure
+                logger.error(f"[Cleaner {job_id}] fatal dl error: {e}")
                 fail_count += 1
-                wait = min(30, 5 * dl_fail)  # 5s, 10s, 15s ... max 30s
-                logger.warning(f"[Cleaner {job_id}] dl fail #{dl_fail} mid={active_mid}, wait {wait}s")
-                if fail_count > 15:
-                    err_msg = f"Download kept failing for mid={active_mid} ({dl_fail} attempts)"
+                if fail_count > 10:
+                    err_msg = str(e)[:200]
                     await _cl_update_job(job_id, {"status": "failed", "error": err_msg})
                     if _bot:
                         try:
@@ -454,11 +420,33 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                                 f"<b>📁 Done:</b> {done} files\n"
                                 f"<b>❌ Error:</b> <code>{err_msg}</code>")
                         except: pass
-                    if _next_task: _next_task.cancel()
                     job_failed = True
                     break
-                await asyncio.sleep(wait)
-            if job_failed: break
+                # Advance past this one broken message ID and try next
+                msg_id += 1
+                _next_task = asyncio.create_task(_next_media(msg_id))
+                continue
+            _next_task = None
+
+            if not p_res:
+                break  # no more media in range
+
+            msg, dl_path, m_obj, active_mid, ep_label, orig_ext = p_res
+
+            # ⚡ Kick off NEXT download IMMEDIATELY — runs parallel with FFmpeg below
+            next_start = active_mid + 1
+            if next_start <= eid:
+                _next_task = asyncio.create_task(_next_media(next_start))
+            msg_id = next_start
+
+            # DB stop-check every 20 files (cheap — not every file)
+            if done % 20 == 0:
+                try:
+                    _jchk = await _cl_get_job(job_id)
+                    if _jchk and _jchk.get("status") == "stopped":
+                        if _next_task: _next_task.cancel()
+                        break
+                except: pass
 
             try:
                 is_audio = bool(msg.audio or msg.voice)
@@ -491,7 +479,7 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                     "track":  ep_label or str(curr_num),
                 }
 
-                # FFmpeg in thread pool — event loop stays free for look-ahead
+                # FFmpeg in ThreadPoolExecutor — event loop free for _next_task download
                 if use_ff:
                     ff_cmd = _build_ffmpeg_cmd(dl_path, out_path, local_cover, meta)
                     ok, ff_err = await _ffmpeg_async(ff_cmd)
@@ -550,7 +538,7 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                 if ep_label: _seen.add(str(ep_label))
                 done      += 1
                 curr_num  += 1
-                fail_count = 0  # reset only on full success
+                fail_count = 0   # reset on full success
                 await _cl_update_job(job_id, {
                     "files_done":          done,
                     "current_msg_id":      msg_id,
@@ -566,7 +554,7 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                     try:
                         if _p and os.path.exists(_p): os.remove(_p)
                     except: pass
-                if fail_count > 15:
+                if fail_count > 10:
                     err_msg = str(e)[:200]
                     await _cl_update_job(job_id, {"status": "failed", "error": err_msg})
                     if _bot:
@@ -580,11 +568,11 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                     if _next_task: _next_task.cancel()
                     job_failed = True
                     break
-                await asyncio.sleep(3)
+                await asyncio.sleep(2)
 
-            # Safety: ensure look-ahead is always running
+            # Safety net: ensure next task is running
             if _next_task is None and msg_id <= eid:
-                _next_task = asyncio.create_task(_next_media_msg(msg_id))
+                _next_task = asyncio.create_task(_next_media(msg_id))
 
         # ── Cleanup ───────────────────────────────────────────────────────
         try:
