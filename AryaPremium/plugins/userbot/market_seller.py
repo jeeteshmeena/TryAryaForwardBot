@@ -1260,6 +1260,64 @@ async def _process_text(client, message):
         
         if cmd_text in mapping:
             return await _process_callback(client, MockQuery(m, message.from_user, mapping[cmd_text]))
+    # -- Feedback submission state handler --
+    if user.get("state") == "feedback_pending":
+        if txt.strip().lower() == "/cancel":
+            await db.update_user(user_id, {"state": None})
+            await message.reply_text("<i>❌ Feedback cancelled.</i>", reply_markup=ReplyKeyboardRemove(), parse_mode=enums.ParseMode.HTML)
+            return await _send_main_menu(client, user_id, message.from_user, lang)
+        content_type = "text"
+        if message.photo: content_type = "photo"
+        elif message.video: content_type = "video"
+        elif message.document: content_type = "document"
+        from datetime import datetime, timezone as _tz
+        fb_doc = {
+            "user_id": user_id,
+            "bot_id": client.me.id,
+            "type": content_type,
+            "text": txt,
+            "status": "open",
+            "created_at": datetime.now(_tz.utc),
+            "user_name": f"{message.from_user.first_name or ''} {message.from_user.last_name or ''}".strip(),
+            "username": message.from_user.username or "",
+        }
+        result = await db.db.premium_feedback.insert_one(fb_doc)
+        fb_id = str(result.inserted_id)
+        try:
+            from config import Config
+            admins = list(getattr(Config, 'SUDO_USERS', None) or getattr(Config, 'OWNER_IDS', []))
+            admin_txt = (
+                f"<b>📨 NEW FEEDBACK #{fb_id[:8]}</b>\n"
+                f"<b>User:</b> {fb_doc['user_name']} | <code>{user_id}</code>\n"
+                f"<b>@:</b> @{fb_doc['username'] or 'N/A'}  |  <b>Type:</b> {content_type}\n"
+                f"<b>Message:</b> {txt[:800]}"
+            )
+            kb_admin = [[InlineKeyboardButton(f"✅ Resolve #{fb_id[:8]}", callback_data=f"mk#fbresv_{fb_id}"),
+                         InlineKeyboardButton(f"💬 Reply", callback_data=f"mk#fbreply_{fb_id}_{user_id}")]]
+            if hasattr(db, 'mgmt_client') and db.mgmt_client:
+                for admin_id in admins:
+                    try:
+                        if content_type == "photo":
+                            await db.mgmt_client.send_photo(admin_id, photo=message.photo.file_id, caption=admin_txt, reply_markup=InlineKeyboardMarkup(kb_admin), parse_mode=enums.ParseMode.HTML)
+                        elif content_type == "video":
+                            await db.mgmt_client.send_video(admin_id, video=message.video.file_id, caption=admin_txt, reply_markup=InlineKeyboardMarkup(kb_admin), parse_mode=enums.ParseMode.HTML)
+                        else:
+                            await db.mgmt_client.send_message(admin_id, admin_txt, reply_markup=InlineKeyboardMarkup(kb_admin), parse_mode=enums.ParseMode.HTML)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        await db.update_user(user_id, {"state": None})
+        if lang == 'hi':
+            confirm = "✅ <b>आपका फीडबैक सफलतापूर्वक भेजा गया!</b>\n<i>हमारी टीम जल्द ही आपसे संपर्क करेगी।</i>"
+        else:
+            confirm = "✅ <b>Feedback submitted!</b>\n<i>Our team will review it and get back to you shortly.</i>"
+        await message.reply_text(
+            confirm,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(f"« {_sc('MAIN MENU')}", callback_data="mb#main_back")]]),
+            parse_mode=enums.ParseMode.HTML
+        )
+        return
 
     # Handle DM Part Selection
     pending_s_id = user.get("dm_story_id_pending")
@@ -1295,6 +1353,46 @@ async def _process_text(client, message):
             pass
         await _send_main_menu(client, user_id, message.from_user, lang)
         return
+    # -- Marketplace NEXT/PREV pagination handler --
+    _nav_next = _sc("NEXT") + " ❭"
+    _nav_prev = "❬ " + _sc("PREV")
+    _nav_next_hi = "अगला ❭"
+    _nav_prev_hi = "❬ पिछला"
+    if txt in (_nav_next, _nav_prev, _nav_next_hi, _nav_prev_hi):
+        plat = user.get("_mkt_plat")
+        cur_page = int(user.get("_mkt_page", 0))
+        if plat:
+            is_next = txt in (_nav_next, _nav_next_hi)
+            new_page = cur_page + 1 if is_next else cur_page - 1
+            STORY_PAGE_SIZE = 8
+            q_find = {"bot_id": client.me.id}
+            if plat != "Other": q_find["platform"] = plat
+            all_stories = await db.db.premium_stories.find(q_find).to_list(length=None)
+            total_pg = max(1, (len(all_stories) + STORY_PAGE_SIZE - 1) // STORY_PAGE_SIZE)
+            new_page = max(0, min(new_page, total_pg - 1))
+            await db.db.users.update_one({"id": user_id}, {"$set": {"_mkt_page": new_page}})
+            pg_stories = all_stories[new_page * STORY_PAGE_SIZE:(new_page + 1) * STORY_PAGE_SIZE]
+            MNL = 22
+            kb = []
+            for idx, s in enumerate(pg_stories, start=new_page * STORY_PAGE_SIZE + 1):
+                sn = s.get(f'story_name_{lang}', s.get('story_name_en'))
+                if len(sn) > MNL: sn = sn[:MNL - 1] + "…"
+                kb.append([f"{idx}. {sn} [ ₹ {s.get('price', 0)} ]"])
+            nav_row = []
+            if new_page > 0: nav_row.append("❬ " + (_sc("PREV") if lang == 'en' else "पिछला"))
+            if new_page < total_pg - 1: nav_row.append(_sc("NEXT") + " ❭" if lang == 'en' else "अगला ❭")
+            if nav_row: kb.append(nav_row)
+            kb.append(["🔍 " + ("SEARCH" if lang == 'en' else "खोजें")])
+            kb.append([T[lang]["cant_find_btn"]])
+            kb.append(["« " + ("𝗕𝗮𝗰𝗸 𝘁𝗼 𝗠𝗲𝗻𝘂" if lang == 'en' else "वापस मेनू")])
+            title = "AVAILABLE STORIES" if lang == 'en' else "उपलब्ध स्टोरिज"
+            return await message.reply_text(
+                f"<b>⟦ {title} — {to_mathbold(plat)} ⟧</b>\n"
+                f"<blockquote expandable><i>{_sc('Page')} {new_page+1}/{total_pg}</i></blockquote>",
+                reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True),
+                parse_mode=enums.ParseMode.HTML
+            )
+        return
 
     # Check if it's a story selection e.g. "1. STORY NAME [ ₹ 49 ]"
     if " [ ₹ " in txt and txt.endswith(" ]"):
@@ -1303,17 +1401,18 @@ async def _process_text(client, message):
         sName = raw.split(" [ ₹ ")[0].strip()
         stories = await db.db.premium_stories.find({"bot_id": client.me.id}).to_list(length=None)
         story = None
+        MAX_NAME_LEN = 22
         for st in stories:
-            candidates = [
-                st.get("story_name_en", ""),
-                st.get("story_name_hi", ""),
-                st.get("story_name_hi", ""),
-            ]
-            if sName in candidates:
-                story = st
+            for field in ("story_name_en", "story_name_hi"):
+                full_name = st.get(field, "")
+                trunc = full_name[:MAX_NAME_LEN - 1] + "…" if len(full_name) > MAX_NAME_LEN else full_name
+                if sName in (full_name, trunc):
+                    story = st
+                    break
+            if story:
                 break
         if not story:
-            return await message.reply_text("<i>Story not found or removed.</i>")
+            return await message.reply_text("<i>Story not found or removed.</i>", parse_mode=enums.ParseMode.HTML)
 
         has_paid = await db.has_purchase(user_id, str(story['_id']))
         if has_paid:
@@ -1328,19 +1427,35 @@ async def _process_text(client, message):
     platforms.append("Other")
 
     if txt in platforms:
+        # -- Paginated story listing per platform --
+        STORY_PAGE_SIZE = 8
+        s_page = int(user.get("_mkt_page", 0))
+        if user.get("_mkt_plat") != txt:
+            s_page = 0
         query_find = {"bot_id": client.me.id}
         if txt != "Other": query_find["platform"] = txt
         stories = await db.db.premium_stories.find(query_find).to_list(length=None)
         if not stories:
-            return await message.reply_text("<i>No stories found for this platform.</i>")
+            return await message.reply_text("<i>No stories found for this platform.</i>", parse_mode=enums.ParseMode.HTML)
 
+        total_s = len(stories)
+        total_pages_s = max(1, (total_s + STORY_PAGE_SIZE - 1) // STORY_PAGE_SIZE)
+        s_page = max(0, min(s_page, total_pages_s - 1))
+        await db.db.users.update_one({"id": user_id}, {"$set": {"_mkt_plat": txt, "_mkt_page": s_page}})
+        page_stories = stories[s_page * STORY_PAGE_SIZE:(s_page + 1) * STORY_PAGE_SIZE]
+        MNL = 22
         kb = []
-        for idx, s in enumerate(stories, start=1):
+        for idx, s in enumerate(page_stories, start=s_page * STORY_PAGE_SIZE + 1):
             s_name = s.get(f'story_name_{lang}', s.get('story_name_en'))
+            if len(s_name) > MNL: s_name = s_name[:MNL - 1] + "…"
             kb.append([f"{idx}. {s_name} [ ₹ {s.get('price', 0)} ]"])
-        kb.append(["🔍 " + ("SEARCH" if lang=='en' else "खोजें")])
+        nav_row = []
+        if s_page > 0: nav_row.append("❬ " + (_sc("PREV") if lang == 'en' else "पिछला"))
+        if s_page < total_pages_s - 1: nav_row.append(_sc("NEXT") + " ❭" if lang == 'en' else "अगला ❭")
+        if nav_row: kb.append(nav_row)
+        kb.append(["🔍 " + ("SEARCH" if lang == 'en' else "खोजें")])
         kb.append([T[lang]["cant_find_btn"]])
-        kb.append(["« " + ("𝗕𝗮𝗰𝗸 𝘁𝗼 𝗠𝗲𝗻𝘂" if lang=='en' else "वापस मेनू")])
+        kb.append(["« " + ("𝗕𝗮𝗰𝗸 𝘁𝗼 𝗠𝗲𝗻𝘂" if lang == 'en' else "वापस मेनू")])
 
         t = T[lang]
         title = "AVAILABLE STORIES" if lang == 'en' else "उपलब्ध स्टोरिज"
@@ -1540,7 +1655,9 @@ async def _show_help_menu(client, query, page: int):
         )
         kb = [
             [InlineKeyboardButton(f"{_sc('TERMS')}", callback_data="mb#help_tc"),
-             InlineKeyboardButton(f"{_sc('REFUND')}", callback_data="mb#help_refund")],
+             InlineKeyboardButton(f"{_sc('REFUND')}", callback_data="mb#help_refund"),
+             InlineKeyboardButton("Support", url="https://t.me/ItsNewtonPlanet")],
+            [InlineKeyboardButton(f"💬 {_sc('FEEDBACK / SUGGESTIONS')}", callback_data="mb#feedback_start")],
             [InlineKeyboardButton(f"हिंदी (NEXT) ❭", callback_data="mb#help_page_1")],
             [InlineKeyboardButton(f"« ❮ {_sc('MAIN MENU')}", callback_data="mb#main_back")]
         ]
@@ -1566,7 +1683,9 @@ async def _show_help_menu(client, query, page: int):
         )
         kb = [
             [InlineKeyboardButton(f"{_sc('TERMS')}", callback_data="mb#help_tc"),
-             InlineKeyboardButton(f"{_sc('REFUND')}", callback_data="mb#help_refund")],
+             InlineKeyboardButton(f"{_sc('REFUND')}", callback_data="mb#help_refund"),
+             InlineKeyboardButton("Support", url="https://t.me/ItsNewtonPlanet")],
+            [InlineKeyboardButton(f"💬 {_sc('FEEDBACK / SUGGESTIONS')}", callback_data="mb#feedback_start")],
             [InlineKeyboardButton(f"❬ PREV (English)", callback_data="mb#help_page_0")],
             [InlineKeyboardButton(f"« ❮ {_sc('MAIN MENU')}", callback_data="mb#main_back")]
         ]
@@ -2046,6 +2165,24 @@ async def _process_callback(client, query):
             _bt = await db.db.premium_bots.find_one({"id": client.me.id})
             _bt_cfg = (_bt or {}).get("config", {})
             return await _show_story_details(client, query, story, lang, bot_cfg=_bt_cfg)
+    elif cmd == "feedback_start":
+        await query.answer()
+        if lang == 'hi':
+            fb_txt = (
+                f"<b>⟦ {_sc('फीडबैक / सुझाव')} ⟧</b>\n\n"
+                f"<blockquote expandable>अपनी राय, सुझाव या शिकायत नीचे लिखें।\n"
+                f"आप <b>टेक्स्ट, फोटो या विडियो</b> भेज सकते हैं। /cancel कर निरस्त करें।</blockquote>"
+            )
+        else:
+            fb_txt = (
+                f"<b>⟦ {_sc('FEEDBACK / SUGGESTIONS')} ⟧</b>\n\n"
+                f"<blockquote expandable>Share your <b>feedback, suggestions or complaints</b> below.\n"
+                f"You can send <b>text, photos, or videos</b>. Type /cancel to abort.</blockquote>"
+            )
+        await db.update_user(user_id, {"state": "feedback_pending"})
+        await _safe_edit(query.message, text=fb_txt, markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"« {_sc('BACK')}", callback_data="mb#main_help")]
+        ]))
 
     elif cmd == "help_tc":
         await query.answer()

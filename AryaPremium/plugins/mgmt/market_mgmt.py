@@ -78,7 +78,8 @@ async def _render_home(client, chat_id: int, *, edit_message=None):
     kb = [
         [InlineKeyboardButton("🛒 " + utils.to_smallcap("Add Story"), callback_data="mk#add_story"),
          InlineKeyboardButton("💸 " + utils.to_smallcap("Pending"), callback_data="mk#pending")],
-        [InlineKeyboardButton("📝 " + utils.to_smallcap("Story Requests"), callback_data="mk#reqs_0")],
+        [InlineKeyboardButton("📝 " + utils.to_smallcap("Story Requests"), callback_data="mk#reqs_0"),
+         InlineKeyboardButton("📨 " + utils.to_smallcap("Support Panel"), callback_data="mk#fb_panel_0")],
         [InlineKeyboardButton("📦 " + utils.to_smallcap("Manage Stories"), callback_data="mk#manage_stories"),
          InlineKeyboardButton("📡 " + utils.to_smallcap("Channels"), callback_data="mk#channels")],
         [InlineKeyboardButton("🤖 " + utils.to_smallcap("Accounts"), callback_data="mk#accounts"),
@@ -160,6 +161,107 @@ async def market_callback(client, query):
                 [InlineKeyboardButton("« Back", callback_data="mk#back")]
             ]
             await query.message.edit_text("<b>⚙️ Ecosystem Settings</b>\n\nConfigure your global payment settings here. Channel management is available in Channels.", reply_markup=InlineKeyboardMarkup(kb))
+
+        # ── Support Panel (Feedback/Suggestions) ──
+        elif cmd.startswith("fb_panel_"):
+            await _safe_answer(query)
+            page = int(cmd.replace("fb_panel_", ""))
+            items_pp = 8
+            total = await db.db.premium_feedback.count_documents({})
+            total_pages = max(1, (total + items_pp - 1) // items_pp)
+            if page >= total_pages: page = total_pages - 1
+            if page < 0: page = 0
+            fbs = await db.db.premium_feedback.find({}).sort("created_at", -1).skip(page * items_pp).limit(items_pp).to_list(length=items_pp)
+            open_c = await db.db.premium_feedback.count_documents({"status": "open"})
+            solved_c = await db.db.premium_feedback.count_documents({"status": "solved"})
+            kb = []
+            for fb in fbs:
+                fb_id = str(fb['_id'])
+                status_icon = "🟢" if fb.get("status") == "solved" else "🔴"
+                uname = fb.get("user_name") or str(fb.get("user_id"))
+                if len(uname) > 16: uname = uname[:14] + ".."
+                txt_preview = (fb.get("text") or "")[:25].replace("\n", " ")
+                if len(txt_preview) == 25: txt_preview += ".."
+                kb.append([InlineKeyboardButton(f"{status_icon} {uname} — {txt_preview}", callback_data=f"mk#fb_view_{fb_id}")])
+            nav = []
+            if page > 0: nav.append(InlineKeyboardButton("❬ Prev", callback_data=f"mk#fb_panel_{page-1}"))
+            if page < total_pages - 1: nav.append(InlineKeyboardButton("Next ❭", callback_data=f"mk#fb_panel_{page+1}"))
+            if nav: kb.append(nav)
+            kb.append([InlineKeyboardButton("« " + utils.to_smallcap("Home"), callback_data="mk#back")])
+            panel_txt = (
+                f"<b>📨 SUPPORT PANEL</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━\n"
+                f"<b>🔴 Open:</b> <code>{open_c}</code>  |  <b>🟢 Solved:</b> <code>{solved_c}</code>  |  <b>Total:</b> <code>{total}</code>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━\n"
+                f"<i>Tap any entry to view details and reply.</i>"
+            )
+            await query.message.edit_text(panel_txt, reply_markup=InlineKeyboardMarkup(kb), parse_mode=enums.ParseMode.HTML)
+
+        elif cmd.startswith("fb_view_"):
+            await _safe_answer(query)
+            fb_id = cmd.replace("fb_view_", "")
+            try:
+                from bson import ObjectId
+                fb = await db.db.premium_feedback.find_one({"_id": ObjectId(fb_id)})
+            except: fb = None
+            if not fb:
+                return await _safe_answer(query, "Feedback not found.", show_alert=True)
+            status = fb.get("status", "open")
+            status_label = "🟢 Solved" if status == "solved" else "🔴 Open"
+            created = fb.get("created_at")
+            date_str = created.strftime('%d %b %Y, %H:%M UTC') if hasattr(created, 'strftime') else "N/A"
+            fb_txt = (
+                f"<b>📨 FEEDBACK DETAIL</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━\n"
+                f"<b>ID:</b> <code>{fb_id[:8]}</code>\n"
+                f"<b>User:</b> {fb.get('user_name', 'N/A')} | <code>{fb.get('user_id')}</code>\n"
+                f"<b>@:</b> @{fb.get('username') or 'N/A'}  |  <b>Type:</b> {fb.get('type', 'text')}\n"
+                f"<b>Date:</b> {date_str}\n"
+                f"<b>Status:</b> {status_label}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━\n"
+                f"<b>Message:</b>\n{(fb.get('text') or '')[:1000]}"
+            )
+            resolve_label = "✅ Mark Solved" if status == "open" else "🔄 Reopen"
+            resolve_cb = f"mk#fbresv_{fb_id}"
+            kb = [
+                [InlineKeyboardButton(resolve_label, callback_data=resolve_cb),
+                 InlineKeyboardButton("💬 Reply to User", callback_data=f"mk#fbreply_{fb_id}_{fb.get('user_id')}")],
+                [InlineKeyboardButton("🗑 Delete Entry", callback_data=f"mk#fbdel_{fb_id}")],
+                [InlineKeyboardButton("« " + utils.to_smallcap("Back"), callback_data="mk#fb_panel_0")]
+            ]
+            await query.message.edit_text(fb_txt, reply_markup=InlineKeyboardMarkup(kb), parse_mode=enums.ParseMode.HTML)
+
+        elif cmd.startswith("fbresv_"):
+            fb_id = cmd.replace("fbresv_", "")
+            try:
+                from bson import ObjectId
+                fb = await db.db.premium_feedback.find_one({"_id": ObjectId(fb_id)})
+            except: fb = None
+            if not fb:
+                return await _safe_answer(query, "Not found.", show_alert=True)
+            new_status = "solved" if fb.get("status") == "open" else "open"
+            await db.db.premium_feedback.update_one({"_id": fb['_id']}, {"$set": {"status": new_status, "resolved_at": datetime.utcnow()}})
+            await _safe_answer(query, f"Marked as {new_status}!", show_alert=True)
+            query.data = f"mk#fb_view_{fb_id}"
+            return await market_callback(client, query)
+
+        elif cmd.startswith("fbdel_"):
+            fb_id = cmd.replace("fbdel_", "")
+            try:
+                from bson import ObjectId
+                await db.db.premium_feedback.delete_one({"_id": ObjectId(fb_id)})
+            except: pass
+            await _safe_answer(query, "Feedback entry deleted.", show_alert=True)
+            query.data = "mk#fb_panel_0"
+            return await market_callback(client, query)
+
+        elif cmd.startswith("fbreply_"):
+            # format: fbreply_{fb_id}_{user_id}
+            parts_r = cmd.split("_", 2)
+            fb_id = parts_r[1] if len(parts_r) > 1 else ""
+            target_uid = int(parts_r[2]) if len(parts_r) > 2 else 0
+            await query.message.delete()
+            asyncio.create_task(_fb_reply_flow(client, user_id, fb_id, target_uid))
 
         elif cmd.startswith("reqs_"):
             page = int(cmd.replace("reqs_", ""))
@@ -1083,7 +1185,131 @@ async def _reject_request_flow(client, user_id, req_id):
     await client.send_message(user_id, f"✅ Request rejected and user notified.\nReason: {reason}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« " + utils.to_smallcap("Back to List"), callback_data="mk#reqs_0")]]))
 
 
+async def _fb_reply_flow(client, user_id, fb_id: str, target_uid: int):
+    """Admin flow: compose and send a reply to a user's feedback."""
+    from bson.objectid import ObjectId
+
+    # Fetch feedback doc
+    try:
+        fb = await db.db.premium_feedback.find_one({"_id": ObjectId(fb_id)})
+    except Exception:
+        fb = None
+    if not fb:
+        return await client.send_message(user_id, "<i>Feedback entry not found.</i>", parse_mode=enums.ParseMode.HTML)
+
+    preview = (fb.get("text") or "")[:120].replace("\n", " ")
+    prompt = (
+        f"<b>\ud83d\udcac REPLY TO USER</b>\n"
+        f"\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
+        f"<b>User:</b> {fb.get('user_name', 'N/A')} (<code>{target_uid}</code>)\n"
+        f"<b>Preview:</b> {preview or 'N/A'}\n"
+        f"\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
+        f"<i>Send your reply below (text / photo / video). "
+        f"Type /cancel to abort.</i>"
+    )
+    cancel_kb = ReplyKeyboardMarkup([["⛔ Cancel"]], resize_keyboard=True, one_time_keyboard=True)
+    reply_msg = await native_ask(client, user_id, prompt, reply_markup=cancel_kb, parse_mode=enums.ParseMode.HTML)
+
+    if _is_cancel(reply_msg):
+        return await client.send_message(
+            user_id, "<i>Reply cancelled.</i>",
+            reply_markup=ReplyKeyboardRemove(), parse_mode=enums.ParseMode.HTML
+        )
+
+    # Determine which seller bot client belongs to this feedback
+    bot_id = fb.get("bot_id")
+    seller_cli = None
+    if bot_id:
+        try:
+            from plugins.userbot.market_seller import market_clients
+            seller_cli = market_clients.get(str(bot_id))
+        except Exception:
+            pass
+
+    # Compose reply header
+    reply_header = (
+        f"\ud83d\udcec <b>Reply from Arya Premium Support</b>\n"
+        f"\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
+    )
+    back_kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("\u00ab Main Menu", callback_data="mb#main_back")
+    ]])
+
+    delivered = False
+    send_client = seller_cli or client  # fallback to mgmt client
+
+    try:
+        if reply_msg.photo:
+            caption = reply_header + (reply_msg.caption or "")
+            await send_client.send_photo(
+                target_uid,
+                photo=reply_msg.photo.file_id,
+                caption=caption,
+                reply_markup=back_kb,
+                parse_mode=enums.ParseMode.HTML
+            )
+        elif reply_msg.video:
+            caption = reply_header + (reply_msg.caption or "")
+            await send_client.send_video(
+                target_uid,
+                video=reply_msg.video.file_id,
+                caption=caption,
+                reply_markup=back_kb,
+                parse_mode=enums.ParseMode.HTML
+            )
+        elif reply_msg.document:
+            caption = reply_header + (reply_msg.caption or "")
+            await send_client.send_document(
+                target_uid,
+                document=reply_msg.document.file_id,
+                caption=caption,
+                reply_markup=back_kb,
+                parse_mode=enums.ParseMode.HTML
+            )
+        else:
+            txt = reply_header + (reply_msg.text or "")
+            await send_client.send_message(
+                target_uid, txt,
+                reply_markup=back_kb,
+                parse_mode=enums.ParseMode.HTML
+            )
+        delivered = True
+    except Exception as e:
+        logger.error(f"_fb_reply_flow: failed to deliver to {target_uid}: {e}")
+
+    if delivered:
+        # Mark feedback as solved
+        try:
+            from datetime import datetime as _dt
+            await db.db.premium_feedback.update_one(
+                {"_id": fb["_id"]},
+                {"$set": {"status": "solved", "resolved_at": _dt.utcnow(), "reply_sent": True}}
+            )
+        except Exception:
+            pass
+        await client.send_message(
+            user_id,
+            f"\u2705 <b>Reply sent successfully!</b>\nFeedback #{fb_id[:8]} marked as <b>solved</b>.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("\ud83d\udce8 Support Panel", callback_data="mk#fb_panel_0"),
+                InlineKeyboardButton("\u00ab Home", callback_data="mk#back")
+            ]]),
+            parse_mode=enums.ParseMode.HTML
+        )
+    else:
+        await client.send_message(
+            user_id,
+            f"\u274c <b>Failed to deliver reply to user <code>{target_uid}</code>.</b>\n"
+            f"<i>They may have blocked the bot. Feedback remains open.</i>",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("\ud83d\udce8 Support Panel", callback_data="mk#fb_panel_0")
+            ]]),
+            parse_mode=enums.ParseMode.HTML
+        )
+
+
 async def _settings_flow(client, user_id, cmd):
+
     cancel_kb = InlineKeyboardMarkup([[InlineKeyboardButton("↩️ Back", callback_data="ask_cancel")]])
     if cmd == "set_upi":
         msg = await native_ask(client, user_id, "<b>❪ SET UPI ID ❫</b>\n\nEnter your UPI ID (e.g. <code>heyjeetx@naviaxis</code>):", reply_markup=cancel_kb)
