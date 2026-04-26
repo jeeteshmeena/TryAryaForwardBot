@@ -195,10 +195,13 @@ def _build_ffmpeg_cmd(input_path, output_path, cover_path, meta: dict) -> list:
     else:
         cmd += ["-map", "0:a:0"]
 
-    cmd += ["-af", "dynaudnorm=f=150:g=15,aresample=44100"]
-    cmd += ["-c:a", "libmp3lame", "-b:a", "128k", "-ac", "1",
-            "-threads", "1",
-            "-map_metadata", "-1"]
+    # Ultra-Fast Copy or Fast Transcode (No CPU-Heavy Audio Filters)
+    if input_path.lower().endswith(".mp3") and output_path.lower().endswith(".mp3"):
+        cmd += ["-c:a", "copy"]
+    else:
+        cmd += ["-c:a", "libmp3lame", "-b:a", "128k", "-ac", "1", "-threads", "1"]
+
+    cmd += ["-map_metadata", "-1"]
 
     for k, v in meta.items():
         if v: cmd += ["-metadata", f"{k}={v}"]
@@ -518,22 +521,22 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                                     edit_mid = repl_sid + c_done
                                     from pyrogram.types import InputMediaAudio, InputMediaVideo
                                     if is_ff or is_aud:
-                                        _g = await u_cli.send_audio("me", p_out)
+                                        _g = await asyncio.wait_for(u_cli.send_audio("me", p_out), timeout=300)
                                         _im = InputMediaAudio(_g.audio.file_id, caption=cap, title=c_title, performer=art, thumb=thumb)
                                     elif is_vid:
-                                        _g = await u_cli.send_video("me", p_out)
+                                        _g = await asyncio.wait_for(u_cli.send_video("me", p_out), timeout=300)
                                         _im = InputMediaVideo(_g.video.file_id, caption=cap, thumb=thumb)
                                     else: break
-                                    await u_cli.edit_message_media(dest_ch, edit_mid, media=_im)
+                                    await asyncio.wait_for(u_cli.edit_message_media(dest_ch, edit_mid, media=_im), timeout=120)
                                     try: await _g.delete()
                                     except: pass
                                 else:
                                     if is_ff or is_aud:
-                                        await u_cli.send_audio(dest_ch, p_out, caption=cap, title=c_title, performer=art, file_name=c_file, thumb=thumb)
+                                        await asyncio.wait_for(u_cli.send_audio(dest_ch, p_out, caption=cap, title=c_title, performer=art, file_name=c_file, thumb=thumb), timeout=300)
                                     elif is_vid:
-                                        await u_cli.send_video(dest_ch, p_out, caption=cap, file_name=c_file, thumb=thumb)
+                                        await asyncio.wait_for(u_cli.send_video(dest_ch, p_out, caption=cap, file_name=c_file, thumb=thumb), timeout=300)
                                     else:
-                                        await u_cli.send_document(dest_ch, p_out, caption=cap, file_name=c_file, thumb=thumb)
+                                        await asyncio.wait_for(u_cli.send_document(dest_ch, p_out, caption=cap, file_name=c_file, thumb=thumb), timeout=300)
                                 break
                             except FloodWait as fw:
                                 await asyncio.sleep(fw.value + 2)
