@@ -338,7 +338,7 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
 
         # ── Next media: find message + download in background (TRUE PARALLEL PIPELINE) ─
         # Runs as asyncio.Task so download N+1 happens while FFmpeg processes N.
-        # NEVER skips a file silently — retries 5x with backoff, then raises.
+        # On download fail: tries ONCE more (3s gap), then raises — never skips silently.
         async def _next_media(start_mid: int):
             mid = start_mid
             while mid <= eid:
@@ -363,28 +363,31 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                        or (".mp3" if m.audio else ".mp4" if m.video else ".jpg" if m.photo else ".dat"))
                 ipath = os.path.abspath(f"temp_cl_in_{job_id}_{m.id}{ext}")
 
-                # Download with retry — 5 attempts, backoff 10/20/30/40s
-                # NEVER returns None silently — raises after all attempts fail
+                # Size-aware timeout: 1s per 500KB, min 60s, max 300s
+                fsize = getattr(m_obj, 'file_size', 0) or 0
+                dl_timeout = min(300, max(60, fsize // (500 * 1024)))
+
+                # 2 attempts only (fast!) — 3s gap on retry
                 last_err = None
-                for attempt in range(5):
+                for att in range(2):
                     try:
                         dp = await asyncio.wait_for(
                             client.download_media(m, file_name=ipath),
-                            timeout=600
+                            timeout=dl_timeout
                         )
                         if dp and os.path.exists(str(dp)):
                             return m, str(dp), m_obj, m.id, lbl, ext   # ✓ success
                     except Exception as e:
                         last_err = e
-                        logger.warning(f"[Cleaner {job_id}] dl {attempt+1}/5 mid={m.id}: {e}")
+                        logger.warning(f"[Cleaner {job_id}] dl att {att+1}/2 mid={m.id}: {e}")
                         try:
                             if os.path.exists(ipath): os.remove(ipath)
                         except: pass
-                        if attempt < 4:
-                            await asyncio.sleep(10 * (attempt + 1))  # 10 20 30 40s
+                        if att == 0:
+                            await asyncio.sleep(3)   # ONE short wait before retry
 
-                # All 5 attempts failed — raise so main loop increments fail_count
-                raise Exception(f"Download failed (5 attempts) mid={m.id}: {last_err}")
+                # Both attempts failed — raise so main loop retries from same position
+                raise Exception(f"Download failed (2 att) mid={m.id}: {last_err}")
 
             return None  # no more messages in range
 
