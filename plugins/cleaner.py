@@ -180,7 +180,7 @@ async def _ffmpeg_async(cmd: list) -> tuple:
     return await loop.run_in_executor(_FFMPEG_POOL, _run_ffmpeg_sync, cmd)
 
 
-def _build_ffmpeg_cmd(input_path, output_path, cover_path, meta: dict) -> list:
+def _build_ffmpeg_cmd(input_path, output_path, cover_path, meta: dict, deep_clean: bool = False) -> list:
     cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
            "-analyzeduration", "10M", "-probesize", "10M",
            "-err_detect", "ignore_err", "-fflags", "+discardcorrupt",
@@ -195,11 +195,14 @@ def _build_ffmpeg_cmd(input_path, output_path, cover_path, meta: dict) -> list:
     else:
         cmd += ["-map", "0:a:0"]
 
-    # Ultra-Fast Stream Copy: Bypass CPU Transcoding if formats match
+    # Ultra-Fast Stream Copy or Deep Mode
     in_ext = os.path.splitext(input_path)[1].lower()
     out_ext = os.path.splitext(output_path)[1].lower()
 
-    if in_ext == out_ext:
+    if deep_clean:
+        cmd += ["-af", "afftdn,dynaudnorm=f=150:g=15,aresample=44100"]
+        cmd += ["-c:a", "libmp3lame", "-b:a", "128k", "-ac", "1"]
+    elif in_ext == out_ext:
         cmd += ["-c:a", "copy"]
         if out_ext in (".mp4", ".mkv"):
             cmd += ["-c:v", "copy"]
@@ -478,8 +481,11 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                 else:
                     clean_title = orig_title or os.path.splitext(orig_fn)[0] or orig_cap or f"{base_name} {curr_num}"
 
+                deep_clean = job.get("deep_clean", False)
                 if use_ff:
-                    if is_audio and orig_ext.lower() in (".mp3", ".m4a", ".flac", ".wav", ".aac", ".ogg"):
+                    if deep_clean:
+                        out_ext = ".mp3"
+                    elif is_audio and orig_ext.lower() in (".mp3", ".m4a", ".flac", ".wav", ".aac", ".ogg"):
                         out_ext = orig_ext
                     elif is_video:
                         out_ext = orig_ext if orig_ext else ".mp4"
@@ -501,7 +507,7 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
 
                 # FFmpeg in ThreadPoolExecutor — event loop free for _next_task download
                 if use_ff:
-                    ff_cmd = _build_ffmpeg_cmd(dl_path, out_path, local_cover, meta)
+                    ff_cmd = _build_ffmpeg_cmd(dl_path, out_path, local_cover, meta, deep_clean=deep_clean)
                     ok, ff_err = await _ffmpeg_async(ff_cmd)
                     try: os.remove(dl_path)
                     except: pass
@@ -939,6 +945,16 @@ async def _create_cl_flow(bot, user_id):
     if _cancelled(r_cv): return await _abort()
     convert_videos = "yes" in (r_cv.text or "").lower()
 
+    # Deep Clean
+    r_adv = await _cl_ask(bot, user_id, 
+        "<b>» Step 6b/9 — Deep Audio Clean?</b>\n\n"
+        "<i>(Forces .MP3, Volume Normalize, & Noise Removal)\n"
+        "⚠️ Warning: This uses 100% CPU and makes the bot run normally (much slower/takes longer).</i>",
+        reply_markup=ReplyKeyboardMarkup([["✅ Yes, Deep Clean", "❌ No, Fast Output"], [CANCEL_BTN]],
+                                          resize_keyboard=True, one_time_keyboard=True))
+    if _cancelled(r_adv): return await _abort()
+    deep_clean = "yes" in (r_adv.text or "").lower()
+
     # Metadata from defaults
     df = await _cl_get_defaults(user_id)
     adv_artist = df.get("artist", "")
@@ -1042,7 +1058,7 @@ async def _create_cl_flow(bot, user_id):
         "start_id": sid, "end_id": eid, "total_files": total, "files_done": 0,
         "base_name": base_name, "starting_number": start_num,
         "name_format": name_format, "rename_files": rename_files,
-        "convert_videos": convert_videos,
+        "convert_videos": convert_videos, "deep_clean": deep_clean,
         "artist": adv_artist, "year": adv_year, "album": adv_album, "genre": adv_genre,
         "cover_file_id": adv_cover, "use_caption": use_caption,
         "account_id": sel_acc.get("id"), "is_bot": sel_acc.get("is_bot", True),
