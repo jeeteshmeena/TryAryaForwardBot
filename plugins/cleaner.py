@@ -396,6 +396,7 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
         await _fill_cache(msg_id)
         # Pre-kick: start downloading first file NOW in background
         _next_task: asyncio.Task | None = asyncio.create_task(_next_media(msg_id))
+        _upload_task: asyncio.Task | None = None
 
         while True:
             # Stop / pause check
@@ -493,62 +494,83 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                 else:
                     shutil.move(dl_path, out_path)
 
-                # Upload
+                # ── TRUE PARALLEL UPLOAD PIPELINE ──
+                # 1. Wait for PREVIOUS file to finish uploading (Strict Ordering)
+                if _upload_task:
+                    up_ok, up_err = await _upload_task
+                    _upload_task = None
+                    if not up_ok:
+                        raise Exception(f"Upload failed: {up_err}")
+
+                # 2. Kick off CURRENT file upload in background!
                 out_size = os.path.getsize(out_path) if os.path.exists(out_path) else 0
-                up = _bot if (_bot and out_size < 50 * 1024 * 1024 and not repl_mode) else client
-                thumb = local_cover if (local_cover and os.path.exists(local_cover)) else None
-                cap   = f"**{clean_file}**" if use_cap else ""
+                bg_up = _bot if (_bot and out_size < 50 * 1024 * 1024 and not repl_mode) else client
+                bg_th = local_cover if (local_cover and os.path.exists(local_cover)) else None
+                bg_cap = f"**{clean_file}**" if use_cap else ""
 
-                for att in range(4):
+                async def _background_upload_and_done(
+                    u_cli, p_out, is_ff, is_aud, is_vid, cap, c_title, art, c_file, thumb, c_mid, l_ep, c_done
+                ):
                     try:
-                        if repl_mode:
-                            edit_mid = repl_sid + done
-                            from pyrogram.types import InputMediaAudio, InputMediaVideo
-                            if use_ff or is_audio:
-                                _g  = await up.send_audio("me", out_path)
-                                _im = InputMediaAudio(_g.audio.file_id, caption=cap,
-                                                      title=clean_title, performer=art, thumb=thumb)
-                            elif is_video:
-                                _g  = await up.send_video("me", out_path)
-                                _im = InputMediaVideo(_g.video.file_id, caption=cap, thumb=thumb)
-                            else: break
-                            await up.edit_message_media(dest_ch, edit_mid, media=_im)
-                            try: await _g.delete()
-                            except: pass
-                        else:
-                            if use_ff or is_audio:
-                                await up.send_audio(dest_ch, out_path, caption=cap,
-                                                    title=clean_title, performer=art,
-                                                    file_name=clean_file, thumb=thumb)
-                            elif is_video:
-                                await up.send_video(dest_ch, out_path, caption=cap,
-                                                    file_name=clean_file, thumb=thumb)
-                            else:
-                                await up.send_document(dest_ch, out_path, caption=cap,
-                                                       file_name=clean_file, thumb=thumb)
-                        break
-                    except FloodWait as fw:
-                        await asyncio.sleep(fw.value + 2)
-                    except Exception as ue:
-                        if att >= 3: raise
-                        logger.warning(f"[Cleaner {job_id}] upload retry {att}: {ue}")
-                        up = client
-                        await asyncio.sleep(3 * (att + 1))
+                        for att in range(4):
+                            try:
+                                if repl_mode:
+                                    edit_mid = repl_sid + c_done
+                                    from pyrogram.types import InputMediaAudio, InputMediaVideo
+                                    if is_ff or is_aud:
+                                        _g = await u_cli.send_audio("me", p_out)
+                                        _im = InputMediaAudio(_g.audio.file_id, caption=cap, title=c_title, performer=art, thumb=thumb)
+                                    elif is_vid:
+                                        _g = await u_cli.send_video("me", p_out)
+                                        _im = InputMediaVideo(_g.video.file_id, caption=cap, thumb=thumb)
+                                    else: break
+                                    await u_cli.edit_message_media(dest_ch, edit_mid, media=_im)
+                                    try: await _g.delete()
+                                    except: pass
+                                else:
+                                    if is_ff or is_aud:
+                                        await u_cli.send_audio(dest_ch, p_out, caption=cap, title=c_title, performer=art, file_name=c_file, thumb=thumb)
+                                    elif is_vid:
+                                        await u_cli.send_video(dest_ch, p_out, caption=cap, file_name=c_file, thumb=thumb)
+                                    else:
+                                        await u_cli.send_document(dest_ch, p_out, caption=cap, file_name=c_file, thumb=thumb)
+                                break
+                            except FloodWait as fw:
+                                await asyncio.sleep(fw.value + 2)
+                            except Exception as ue:
+                                if att >= 3: return False, str(ue)
+                                logger.warning(f"[Cleaner bg-up {job_id}] retry {att}: {ue}")
+                                u_cli = client
+                                await asyncio.sleep(3 * (att + 1))
 
-                try: os.remove(out_path)
-                except: pass
+                        try: os.remove(p_out)
+                        except: pass
 
-                if ep_label: _seen.add(str(ep_label))
-                done      += 1
-                curr_num  += 1
-                fail_count = 0   # reset on full success
-                await _cl_update_job(job_id, {
-                    "files_done":          done,
-                    "current_msg_id":      msg_id,
-                    "curr_num_checkpoint": curr_num,
-                    "last_progress_ts":    time.time(),
-                })
-                logger.info(f"[Cleaner {job_id}] ✓ {done} | mid={active_mid} | {clean_title}")
+                        # Access safely via nonlocal
+                        nonlocal done, curr_num, fail_count, msg_id
+                        if l_ep: _seen.add(str(l_ep))
+                        done += 1
+                        curr_num += 1
+                        fail_count = 0  # reset on full success
+                        
+                        await _cl_update_job(job_id, {
+                            "files_done": done,
+                            "current_msg_id": msg_id,  # next message ID already assigned in main loop safely
+                            "curr_num_checkpoint": curr_num,
+                            "last_progress_ts": time.time(),
+                        })
+                        logger.info(f"[Cleaner {job_id}] ✓ {done} | mid={c_mid} | {c_title}")
+                        return True, None
+                    except Exception as fatal:
+                        return False, str(fatal)
+
+                # Spawn background upload task - it runs CONCURRENTLY with next N+1 Download and N+1 FFmpeg
+                _upload_task = asyncio.create_task(
+                    _background_upload_and_done(
+                        bg_up, out_path, use_ff, is_audio, is_video, bg_cap,
+                        clean_title, art, clean_file, bg_th, active_mid, ep_label, done
+                    )
+                )
 
             except Exception as e:
                 logger.error(f"[Cleaner {job_id}] ✗ mid={active_mid}: {e}")
@@ -569,6 +591,7 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                                 f"<b>❌ Error:</b> <code>{err_msg}</code>")
                         except: pass
                     if _next_task: _next_task.cancel()
+                    if _upload_task: _upload_task.cancel()
                     job_failed = True
                     break
                 await asyncio.sleep(2)
@@ -578,6 +601,14 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                 _next_task = asyncio.create_task(_next_media(msg_id))
 
         # ── Cleanup ───────────────────────────────────────────────────────
+        # Ensure final pending upload is strictly finished before we complete the job
+        if _upload_task and not _upload_task.done():
+            up_ok, up_err = await _upload_task
+            if not up_ok:
+                err_msg = str(up_err)[:200]
+                await _cl_update_job(job_id, {"status": "failed", "error": err_msg})
+                job_failed = True
+
         try:
             if local_cover and os.path.exists(local_cover): os.remove(local_cover)
         except: pass
