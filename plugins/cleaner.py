@@ -317,6 +317,9 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
         use_cap   = job.get("use_caption", True)
         repl_mode = job.get("replace_mode", False)
         repl_sid  = job.get("replace_start_msg_id", 0)
+        deep_clean = job.get("deep_clean", False)
+        inject_ads = job.get("inject_ads", False)
+        ads_config = job.get("ads_config", {})
 
         # ── Peer Resolution ───────────────────────────────────────────────
         from plugins.utils import safe_resolve_peer
@@ -336,6 +339,51 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
             except: local_cover = None
         elif not cov_fid:
             local_cover = None
+
+        # ── Audio Ad Injection Setup ───────────────────────────────────────
+        # Download ad files once for the entire job, reuse for each injection
+        _ad_local = {}   # {"hindi": path, "eng": path, "cleaner": path}
+        _ad_report = []  # [(serial_num, ad_type, at_ts)] — for final report
+
+        # Compute which serial numbers get which ad type (based on total batch size)
+        # Batch Rule: ≤50 files → 1+1+1; >50 → 2+2+1
+        # Marathon Rule (per-file injection if file itself is > 1hr): 1+1+1 per hour tier
+        _ad_schedule: dict[int, str] = {}   # serial_num → ad_type
+
+        if inject_ads and ads_config:
+            total_files = (eid - sid + 1) if (sid and eid) else 0
+
+            # Download all 3 ad audio files upfront (once per job)
+            _ad_dl_cli = _bot or client
+            for _akey, _afid in ads_config.items():
+                if not _afid: continue
+                _ap = os.path.abspath(f"temp_ad_{job_id}_{_akey}.mp3")
+                if not os.path.exists(_ap):
+                    try:
+                        dlr = await _ad_dl_cli.download_media(_afid, file_name=_ap)
+                        if not dlr or not os.path.exists(_ap): continue
+                    except Exception as e:
+                        logger.warning(f"[Cleaner {job_id}] Failed to download ad '{_akey}': {e}")
+                        continue
+                _ad_local[_akey] = _ap
+
+            if _ad_local:
+                import random as _random
+                _all_serials = list(range(curr_num, curr_num + total_files))
+                _n_h = 2 if total_files > 50 else 1
+                _n_e = 2 if total_files > 50 else 1
+                _n_c = 1
+                _ad_pool = (["hindi"] * _n_h + ["eng"] * _n_e + ["cleaner"] * _n_c)
+                # Only pick serials we have actual ad files for
+                _ad_pool = [a for a in _ad_pool if a in _ad_local]
+                _pick_count = min(len(_ad_pool), len(_all_serials))
+                if _pick_count > 0:
+                    _chosen = _random.sample(_all_serials, _pick_count)
+                    _chosen.sort()
+                    _random.shuffle(_ad_pool)
+                    for _sn, _at in zip(_chosen, _ad_pool):
+                        _ad_schedule[_sn] = _at
+                    logger.info(f"[Cleaner {job_id}] Ad schedule: {_ad_schedule}")
 
         _seen      = set()
         fail_count = 0
@@ -522,7 +570,6 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                 else:
                     clean_title = orig_title or os.path.splitext(orig_fn)[0] or orig_cap or f"{base_name} {curr_num}"
 
-                deep_clean = job.get("deep_clean", False)
                 if use_ff:
                     if deep_clean:
                         out_ext = ".mp3"
@@ -590,6 +637,66 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                         except: pass
                 else:
                     shutil.move(dl_path, out_path)
+
+                # ── Audio Ad Injection (only for the scheduled serial numbers) ──
+                if inject_ads and _ad_schedule and curr_num in _ad_schedule and out_path and os.path.exists(out_path):
+                    _ad_type = _ad_schedule[curr_num]
+                    _ad_path = _ad_local.get(_ad_type)
+                    if _ad_path and os.path.exists(_ad_path):
+                        _injected_path = os.path.abspath(f"temp_cl_injected_{job_id}_{active_mid}.mp3")
+                        try:
+                            # Probe duration of the main file
+                            _probe_cmd = [
+                                "ffprobe", "-v", "error", "-show_entries", "format=duration",
+                                "-of", "default=noprint_wrappers=1:nokey=1", out_path
+                            ]
+                            _loop = asyncio.get_event_loop()
+                            _probe_res = await _loop.run_in_executor(
+                                _FFMPEG_POOL,
+                                lambda: __import__("subprocess").run(_probe_cmd, capture_output=True, text=True)
+                            )
+                            _dur = float(_probe_res.stdout.strip() or "0")
+
+                            # Marathon Rule: how many times to inject in this single long file
+                            # ≤1h: 1+1+1 total → already covered by schedule
+                            # >1h single file: inject at 1/2 duration midpoint
+                            # For long files that appear multiple times in schedule, midpoint selected
+                            _inject_at = max(30.0, _dur / 2)  # always in the middle
+
+                            # Build filter_complex injection command
+                            # Converts both streams to float pcm, concatenates, re-encodes
+                            _ff_inject = [
+                                "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                                "-i", out_path,
+                                "-i", _ad_path,
+                                "-filter_complex",
+                                (
+                                    f"[0:a]atrim=0:{_inject_at:.3f},asetpts=PTS-STARTPTS[before];"
+                                    f"[0:a]atrim={_inject_at:.3f},asetpts=PTS-STARTPTS[after];"
+                                    f"[1:a]asetpts=PTS-STARTPTS[ad];"
+                                    f"[before][ad][after]concat=n=3:v=0:a=1[outa]"
+                                ),
+                                "-map", "[outa]",
+                                "-c:a", "libmp3lame", "-b:a", "128k", "-ac", "1",
+                                _injected_path
+                            ]
+                            _inj_ok, _inj_err = await _ffmpeg_async(_ff_inject)
+                            if _inj_ok and os.path.exists(_injected_path) and os.path.getsize(_injected_path) > 1024:
+                                try: os.remove(out_path)
+                                except: pass
+                                out_path = _injected_path
+                                _ad_report.append((curr_num, _ad_type, f"{int(_inject_at//60)}m{int(_inject_at%60)}s"))
+                                logger.info(f"[Cleaner {job_id}] Ad injected @ serial={curr_num} type={_ad_type} at={_inject_at:.0f}s")
+                            else:
+                                logger.warning(f"[Cleaner {job_id}] Ad inject failed serial={curr_num}: {_inj_err[:80]}")
+                                try:
+                                    if os.path.exists(_injected_path): os.remove(_injected_path)
+                                except: pass
+                        except Exception as _ae:
+                            logger.warning(f"[Cleaner {job_id}] Ad injection error serial={curr_num}: {_ae}")
+                            try:
+                                if os.path.exists(_injected_path): os.remove(_injected_path)
+                            except: pass
 
                 # ── TRUE PARALLEL UPLOAD PIPELINE ──
                 # 1. Wait for PREVIOUS file to finish uploading (Strict Ordering)
@@ -724,6 +831,12 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
             if local_cover and os.path.exists(local_cover): os.remove(local_cover)
         except: pass
 
+        # Cleanup ad temp files
+        for _ap in _ad_local.values():
+            try:
+                if os.path.exists(_ap): os.remove(_ap)
+            except: pass
+
         # FIX #2: Pop bot_ref AFTER we've saved it to _bot (local var)
         _cl_bot_ref.pop(job_id, None)
 
@@ -742,11 +855,19 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
             # FIX #2: Completion notification — uses local _bot var, always works
             if _bot:
                 try:
+                    _ad_rep_txt = ""
+                    if _ad_report:
+                        _ad_lines = "\n".join(
+                            f"  ➥ Ep <b>{sn}</b>: <i>{at}</i> ad @ {ts}"
+                            for sn, at, ts in _ad_report
+                        )
+                        _ad_rep_txt = f"\n\n<b>🎵 Audio Ads Injected:</b> {len(_ad_report)}\n{_ad_lines}"
                     await _bot.send_message(uid,
                         f"<b>🎉 Cleaner Job Completed!</b>\n\n"
                         f"<b>🧹 Name:</b> {base_name}\n"
                         f"<b>📄 Files Processed:</b> {done}\n"
-                        f"<b>🔢 Numbered:</b> {job.get('starting_number',1)} → {job.get('starting_number',1)+done-1}\n"
+                        f"<b>🔢 Numbered:</b> {job.get('starting_number',1)} → {job.get('starting_number',1)+done-1}"
+                        f"{_ad_rep_txt}\n"
                         f"<i>Engine: Stable Turbo v4 ⚡</i>")
                 except Exception as ex:
                     logger.error(f"[Cleaner {job_id}] completion notify failed: {ex}")
@@ -1155,6 +1276,51 @@ async def _create_cl_flow(bot, user_id):
     if _cancelled(r_cap): return await _abort()
     use_caption = "no, empty" not in (r_cap.text or "").lower()
 
+    # Audio Ad Injection
+    r_ads = await _cl_ask(bot, user_id,
+        "<b>» Step 10 — Inject Audio Ads? (Premium)</b>\n\n"
+        "<i>Injects your promotional short audio clips into random files cleanly.</i>\n\n"
+        "Do you want to inject Custom Ads?",
+        reply_markup=ReplyKeyboardMarkup([["✅ Yes, Inject Ads", "❌ No Ads"], ["⚙️ Edit Saved Ads"], [CANCEL_BTN]],
+                                          resize_keyboard=True, one_time_keyboard=True))
+    if _cancelled(r_ads): return await _abort()
+    
+    inject_ads = False
+    ads_config = {}
+    r_ads_text = (r_ads.text or "").lower()
+    
+    if "yes" in r_ads_text or "edit" in r_ads_text:
+        inject_ads = "yes" in r_ads_text
+        saved_ads = df.get("audio_ads", {})
+        
+        if "edit" in r_ads_text or not saved_ads or len(saved_ads) < 3:
+            s_btn = ReplyKeyboardMarkup([["⏭ Skip (Use Saved)"], [CANCEL_BTN]], resize_keyboard=True, one_time_keyboard=True) if saved_ads else mk_c
+            
+            r_ad1 = await _cl_ask(bot, user_id, "<b>» Mᴀɪɴ Pʀᴇᴍɪᴜᴍ Aᴅ (Hɪɴᴅɪ)</b>\nPlease forward/upload a 10-20s Hindi Promo Audio.", reply_markup=s_btn)
+            if _cancelled(r_ad1): return await _abort()
+            h_fid = r_ad1.audio.file_id if r_ad1.audio else (r_ad1.voice.file_id if r_ad1.voice else None)
+            
+            r_ad2 = await _cl_ask(bot, user_id, "<b>» Sᴇᴄᴏɴᴅᴀʀʏ Aᴅ (Eɴɢʟɪsʜ)</b>\nPlease forward/upload a 10-20s English Promo Audio.", reply_markup=s_btn)
+            if _cancelled(r_ad2): return await _abort()
+            e_fid = r_ad2.audio.file_id if r_ad2.audio else (r_ad2.voice.file_id if r_ad2.voice else None)
+            
+            r_ad3 = await _cl_ask(bot, user_id, "<b>» Cʟᴇᴀɴᴇʀ Aᴅ (Aʀʏᴀ Bᴏᴛ)</b>\nPlease forward/upload a 10-20s Cleaner Promo Audio.", reply_markup=s_btn)
+            if _cancelled(r_ad3): return await _abort()
+            c_fid = r_ad3.audio.file_id if r_ad3.audio else (r_ad3.voice.file_id if r_ad3.voice else None)
+            
+            ads_config = {
+                "hindi": h_fid or saved_ads.get("hindi"),
+                "eng": e_fid or saved_ads.get("eng"),
+                "cleaner": c_fid or saved_ads.get("cleaner")
+            }
+            await _cl_save_default(user_id, "audio_ads", ads_config)
+            
+            if "edit" in r_ads_text:
+                await bot.send_message(user_id, "✅ Custom Ads saved & updated successfully!", reply_markup=ReplyKeyboardRemove())
+                return await _abort() # End wizard if just editing
+        else:
+            ads_config = saved_ads
+
     # Save and launch
     job_id = str(uuid.uuid4())
     total  = (eid - sid + 1) if (sid and eid) else 0
@@ -1169,6 +1335,7 @@ async def _create_cl_flow(bot, user_id):
         "convert_videos": convert_videos, "deep_clean": deep_clean,
         "artist": adv_artist, "year": adv_year, "album": adv_album, "genre": adv_genre,
         "cover_file_id": adv_cover, "use_caption": use_caption,
+        "inject_ads": inject_ads, "ads_config": ads_config,
         "account_id": sel_acc.get("id"), "is_bot": sel_acc.get("is_bot", True),
         "created_at": _ist_now().strftime('%Y-%m-%d %H:%M:%S'),
         "target_title": "DM" if dest_chat == user_id else "Channel",
