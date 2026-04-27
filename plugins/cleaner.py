@@ -184,7 +184,7 @@ async def _ffmpeg_async(cmd: list) -> tuple:
         return await loop.run_in_executor(_FFMPEG_POOL, _run_ffmpeg_sync, cmd)
 
 
-def _build_ffmpeg_cmd(input_path, output_path, cover_path, meta: dict, deep_clean: bool = False) -> list:
+def _build_ffmpeg_cmd(input_path, output_path, cover_path, meta: dict, deep_clean: bool = False, force_reencode: bool = False) -> list:
     cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
            "-analyzeduration", "10M", "-probesize", "10M",
            "-err_detect", "ignore_err", "-fflags", "+discardcorrupt",
@@ -216,7 +216,7 @@ def _build_ffmpeg_cmd(input_path, output_path, cover_path, meta: dict, deep_clea
     if deep_clean:
         cmd += ["-af", "afftdn,dynaudnorm=f=150:g=15,aresample=44100"]
         cmd += ["-c:a", "libmp3lame", "-b:a", "128k", "-ac", "1"]
-    elif in_ext == out_ext:
+    elif in_ext == out_ext and not force_reencode:
         cmd += ["-c:a", "copy"]
         if out_ext in (".mp4", ".mkv", ".webm"):
             cmd += ["-c:v", "copy"]
@@ -544,11 +544,23 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                 }
 
                 # FFmpeg in ThreadPoolExecutor — event loop free for _next_task download
+                # FFmpeg in ThreadPoolExecutor — event loop free for _next_task download
                 if use_ff:
                     ff_cmd = _build_ffmpeg_cmd(dl_path, out_path, local_cover, meta, deep_clean=deep_clean)
                     ok, ff_err = await _ffmpeg_async(ff_cmd)
+                    
+                    # Rety with forced re-encoding if stream copy failed due to fake extensions
+                    if not ok and not deep_clean:
+                        _ff_lower = ff_err.lower()
+                        if "invalid audio stream" in _ff_lower or "exactly one mp3 audio stream is required" in _ff_lower:
+                            try:
+                                if os.path.exists(out_path): os.remove(out_path)
+                            except: pass
+                            logger.warning(f"[Cleaner {job_id}] mid={active_mid}: Fake extension detected. Forcing re-encode...")
+                            ff_cmd_retry = _build_ffmpeg_cmd(dl_path, out_path, local_cover, meta, deep_clean=deep_clean, force_reencode=True)
+                            ok, ff_err = await _ffmpeg_async(ff_cmd_retry)
+
                     if not ok:
-                        # Distinguish skippable codec/stream errors from fatal system errors
                         _ff_skip_phrases = (
                             "invalid audio stream", "no audio", "invalid data",
                             "could not find codec", "decoder not found", "encoder not found",
@@ -561,7 +573,6 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                             try:
                                 if os.path.exists(out_path): os.remove(out_path)
                             except: pass
-                            # FATAL FIX: Never skip files! Fallback to standard renaming bypassing FFmpeg
                             out_ext = orig_ext
                             out_path = os.path.abspath(f"temp_cl_out_{job_id}_{active_mid}{out_ext}")
                             clean_file = f"{clean_title}{out_ext}"
