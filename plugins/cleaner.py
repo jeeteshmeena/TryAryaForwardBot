@@ -42,6 +42,7 @@ MAX_CONCURRENT = 100  # Allow up to 100 jobs to run visibly without artificial b
 _cl_semaphore = asyncio.Semaphore(MAX_CONCURRENT)
 _cl_dl_sem = asyncio.Semaphore(15)  # Raise limit to aggressively saturate high-end VPS speeds
 _cl_ul_sem = asyncio.Semaphore(15)
+_cl_ff_sem = asyncio.Semaphore(2)  # Stop CPU thrashing: limit global FFmpeg concurrent processes
 IST_OFFSET = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
 
 # Thread pool for FFmpeg — runs in OS threads so asyncio loop stays free
@@ -179,7 +180,8 @@ def _run_ffmpeg_sync(cmd: list) -> tuple:
 async def _ffmpeg_async(cmd: list) -> tuple:
     """Runs _run_ffmpeg_sync in thread pool so event loop stays free for downloads."""
     loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(_FFMPEG_POOL, _run_ffmpeg_sync, cmd)
+    async with _cl_ff_sem:
+        return await loop.run_in_executor(_FFMPEG_POOL, _run_ffmpeg_sync, cmd)
 
 
 def _build_ffmpeg_cmd(input_path, output_path, cover_path, meta: dict, deep_clean: bool = False) -> list:
