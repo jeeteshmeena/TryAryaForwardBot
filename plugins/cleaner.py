@@ -357,8 +357,12 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                     else: raise Exception(f"Failed to fetch batch starting at mid={start} — {type(e).__name__}: {e}")
 
         # ── Next media: find message + download in background (TRUE PARALLEL PIPELINE) ─
-        # Runs as asyncio.Task so download N+1 happens while FFmpeg processes N.
-        # On download fail: tries ONCE more (3s gap), then raises — never skips silently.
+        # ── Next media: find message + download ───────────────────────────
+        # Strategy:
+        #   • download_media returns None  → media expired/deleted on Telegram; SKIP silently (nothing to do)
+        #   • download_media returns coroutine that resolves to None → same; SKIP silently
+        #   • NoneType coroutine bug → guard against it; SKIP
+        #   • Network/Timeout/Auth/Flood error → RAISE so main loop pauses the job
         async def _next_media(start_mid: int):
             mid = start_mid
             while mid <= eid:
@@ -387,31 +391,53 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                 fsize = getattr(m_obj, 'file_size', 0) or 0
                 dl_timeout = min(300, max(60, fsize // (500 * 1024)))
 
-                # 3 attempts (was 2) — exponential backoff
-                last_err = None
-                for att in range(3):
-                    try:
-                        dp = await asyncio.wait_for(
-                            client.download_media(m, file_name=ipath),
-                            timeout=dl_timeout
-                        )
-                        if dp and os.path.exists(str(dp)):
-                            return m, str(dp), m_obj, m.id, lbl, ext   # ✓ success
-                        else:
-                            last_err = f"download_media returned {dp}"
-                    except Exception as e:
-                        last_err = e
-                        logger.warning(f"[Cleaner {job_id}] dl att {att+1}/3 mid={m.id}: {e}")
+                try:
+                    # Guard: download_media sometimes returns None synchronously (not a coroutine)
+                    # when Telegram can't locate the file. Catch this before awaiting.
+                    coro = client.download_media(m, file_name=ipath)
+                    if coro is None:
+                        # Media reference is gone — skip this message, continue to next
+                        logger.warning(f"[Cleaner {job_id}] mid={m.id}: download_media returned None (media expired/deleted — skipping)")
                         try:
                             if os.path.exists(ipath): os.remove(ipath)
                         except: pass
-                        if att < 2:
-                            await asyncio.sleep(5 * (att + 1))  # 5s, 10s wait
+                        continue
 
-                # All attempts failed — raise so main loop retries from same position
-                raise Exception(f"Download failed (3 att) mid={m.id}: {type(last_err).__name__} {last_err}")
+                    dp = await asyncio.wait_for(coro, timeout=dl_timeout)
+
+                    if dp and os.path.exists(str(dp)):
+                        return m, str(dp), m_obj, m.id, lbl, ext   # ✓ success
+                    else:
+                        # download completed but returned None (e.g. Telegram purged the file)
+                        logger.warning(f"[Cleaner {job_id}] mid={m.id}: download_media resolved to None (media expired — skipping)")
+                        try:
+                            if os.path.exists(ipath): os.remove(ipath)
+                        except: pass
+                        continue  # skip, try next message
+
+                except asyncio.TimeoutError:
+                    try:
+                        if os.path.exists(ipath): os.remove(ipath)
+                    except: pass
+                    raise Exception(f"Download timed out (>{dl_timeout}s) for mid={m.id}")
+
+                except Exception as e:
+                    err_upper = str(e).upper()
+                    # Media-gone errors: skip silently, don't pause the job
+                    if any(x in err_upper for x in ("FILE_REFERENCE_EXPIRED", "FILE_ID_INVALID", "MSG_ID_INVALID", "MEDIA_EMPTY")):
+                        logger.warning(f"[Cleaner {job_id}] mid={m.id}: media reference expired ({e}) — skipping")
+                        try:
+                            if os.path.exists(ipath): os.remove(ipath)
+                        except: pass
+                        continue
+                    # All other errors (network, auth, flood) → pause job
+                    try:
+                        if os.path.exists(ipath): os.remove(ipath)
+                    except: pass
+                    raise Exception(f"Download error at mid={m.id}: {type(e).__name__}: {e}")
 
             return None  # no more messages in range
+
 
         # ── Main loop ─────────────────────────────────────────────────────
         msg_id = curr_mid
