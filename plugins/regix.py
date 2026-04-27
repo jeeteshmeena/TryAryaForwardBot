@@ -796,8 +796,11 @@ async def is_cancelled(client, user, msg, sts):
 
 async def stop(client, user):
    try:
-     # Do NOT stop the shared client instance here.
-     pass
+     # Release the reference count instead of stopping the shared client directly
+     client_name = getattr(client, 'name', None)
+     if client_name:
+         from plugins.test import release_client
+         await release_client(client_name)
    except:
      pass 
    await db.rmve_frwd(user)
