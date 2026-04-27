@@ -2424,17 +2424,6 @@ async def settings_query(bot, query):
     alert = type.split('_')[1]
     await query.answer(alert, show_alert=True)
 
-  elif type == "toggle_mode":
-    data = await get_configs(user_id)
-    current = data.get('bot_mode', 'forward')
-    new_mode = 'merger' if current == 'forward' else 'forward'
-    await update_configs(user_id, 'bot_mode', new_mode)
-    mode_lbl = "🔀 Merger" if new_mode == 'merger' else "📤 Forward"
-    await query.answer(f"Mode switched to {mode_lbl}!", show_alert=True)
-    await query.message.edit_text(
-        await t(user_id, 'settings_title'),
-        reply_markup=await main_buttons(user_id)
-    )
 
 async def main_buttons(user_id=None):
   # Get current mode
@@ -2449,11 +2438,8 @@ async def main_buttons(user_id=None):
           pass
 
   if mode == 'merger':
-      #  MERGER MODE: Clean separate menu 
+      #  MERGER MODE: Clean separate menu
       buttons = [[
-           InlineKeyboardButton('Mᴇʀɢᴇʀ Mᴏᴅᴇ  Tᴀᴘ Tᴏ Sᴡɪᴛᴄʜ',
-                        callback_data='settings#toggle_mode')
-           ],[
            InlineKeyboardButton('Aᴄᴄᴏᴜɴᴛs',
                         callback_data='settings#accounts'),
            InlineKeyboardButton('Cʜᴀɴɴᴇʟs',
@@ -2469,12 +2455,10 @@ async def main_buttons(user_id=None):
            ],[
            InlineKeyboardButton('❮ Bᴀᴄᴋ', callback_data='back')
            ]]
+
   else:
-      #  FORWARD MODE: Full original menu 
+      #  FORWARD MODE: Full original menu
       buttons = [[
-           InlineKeyboardButton('Fᴏʀᴡᴀʀᴅ Mᴏᴅᴇ  Tᴀᴘ Tᴏ Sᴡɪᴛᴄʜ',
-                        callback_data='settings#toggle_mode')
-           ],[
            InlineKeyboardButton('Aᴄᴄᴏᴜɴᴛs',
                         callback_data='settings#accounts'),
            InlineKeyboardButton('Cʜᴀɴɴᴇʟs',
@@ -2497,6 +2481,7 @@ async def main_buttons(user_id=None):
            ],[
            InlineKeyboardButton('❮ Bᴀᴄᴋ', callback_data='back')
            ]]
+
   return InlineKeyboardMarkup(buttons)
 
 
