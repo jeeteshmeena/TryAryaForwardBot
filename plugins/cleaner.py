@@ -40,8 +40,8 @@ _cl_bot_ref: dict[str, object] = {}
 _cl_cancel_users: set = set()
 MAX_CONCURRENT = 100  # Allow up to 100 jobs to run visibly without artificial blocks
 _cl_semaphore = asyncio.Semaphore(MAX_CONCURRENT)
-_cl_dl_sem = asyncio.Semaphore(15)  # Raise limit to aggressively saturate high-end VPS speeds
-_cl_ul_sem = asyncio.Semaphore(15)
+_cl_dl_sem = asyncio.Semaphore(4)   # 4 concurrent downloads — prevents bandwidth saturation across multiple jobs
+_cl_ul_sem = asyncio.Semaphore(8)
 _cl_ff_sem = asyncio.Semaphore(4)  # 4GB RAM VPS: allow up to 4 parallel FFmpeg processes
 IST_OFFSET = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
 
@@ -395,69 +395,47 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                        or (".mp3" if m.audio else ".mp4" if m.video else ".jpg" if m.photo else ".dat"))
                 ipath = os.path.abspath(f"temp_cl_in_{job_id}_{m.id}{ext}")
 
-                # Size-aware timeout: 1s per 500KB, min 60s, max 300s
+                # Size-aware timeout: 1s per 200KB, min 300s, max 600s
                 fsize = getattr(m_obj, 'file_size', 0) or 0
-                dl_timeout = min(300, max(60, fsize // (500 * 1024)))
+                dl_timeout = min(600, max(300, fsize // (200 * 1024)))
 
-                # Retry download up to 3 times; double timeout each attempt
-                _dl_success = False
-                for _dl_attempt in range(3):
-                    _attempt_timeout = dl_timeout * (2 ** _dl_attempt)  # 60s → 120s → 240s
-                    try:
-                        async with _cl_dl_sem:
-                            coro = client.download_media(m, file_name=ipath)
-                            if coro is None:
-                                logger.warning(f"[Cleaner {job_id}] mid={m.id}: download_media returned None (expired) — skipping")
-                                try:
-                                    if os.path.exists(ipath): os.remove(ipath)
-                                except: pass
-                                break  # skip this message
-
-                            dp = await asyncio.wait_for(coro, timeout=_attempt_timeout)
-
-                        if dp and os.path.exists(str(dp)):
-                            _dl_success = True
-                            break  # ✓ downloaded successfully
-                        else:
-                            logger.warning(f"[Cleaner {job_id}] mid={m.id}: download resolved to None (expired) — skipping")
+                try:
+                    async with _cl_dl_sem:
+                        coro = client.download_media(m, file_name=ipath)
+                        if coro is None:
+                            # Media reference is gone — skip this message silently
+                            logger.warning(f"[Cleaner {job_id}] mid={m.id}: download_media returned None (media expired/deleted)")
                             try:
                                 if os.path.exists(ipath): os.remove(ipath)
                             except: pass
-                            break  # skip, try next message
-
-                    except asyncio.TimeoutError:
-                        try:
-                            if os.path.exists(ipath): os.remove(ipath)
-                        except: pass
-                        logger.warning(f"[Cleaner {job_id}] mid={m.id}: download timeout attempt {_dl_attempt+1}/3 (>{_attempt_timeout}s)")
-                        if _dl_attempt < 2:
-                            await asyncio.sleep(5 * (_dl_attempt + 1))
-                            continue  # retry
-                        else:
-                            logger.warning(f"[Cleaner {job_id}] mid={m.id}: all 3 download attempts timed out — skipping file")
-                            break  # skip after 3 failures
-
-                    except Exception as e:
-                        err_upper = str(e).upper()
-                        try:
-                            if os.path.exists(ipath): os.remove(ipath)
-                        except: pass
-                        if any(x in err_upper for x in ("FILE_REFERENCE_EXPIRED", "FILE_ID_INVALID", "MSG_ID_INVALID", "MEDIA_EMPTY")):
-                            logger.warning(f"[Cleaner {job_id}] mid={m.id}: media reference expired ({e}) — skipping")
-                            break  # skip
-                        # Network/auth error — retry
-                        logger.warning(f"[Cleaner {job_id}] mid={m.id}: download error attempt {_dl_attempt+1}/3: {e}")
-                        if _dl_attempt < 2:
-                            await asyncio.sleep(5 * (_dl_attempt + 1))
                             continue
-                        else:
-                            logger.warning(f"[Cleaner {job_id}] mid={m.id}: all 3 download attempts failed — skipping file")
-                            break
 
-                if not _dl_success:
-                    continue  # skip to next message in range
+                        dp = await asyncio.wait_for(coro, timeout=dl_timeout)
 
-                return m, str(dp), m_obj, m.id, lbl, ext   # ✓ success
+                    if dp and os.path.exists(str(dp)):
+                        return m, str(dp), m_obj, m.id, lbl, ext   # ✓ success
+                    else:
+                        logger.warning(f"[Cleaner {job_id}] mid={m.id}: download resolved to None (media expired)")
+                        try:
+                            if os.path.exists(ipath): os.remove(ipath)
+                        except: pass
+                        continue
+
+                except asyncio.TimeoutError:
+                    try:
+                        if os.path.exists(ipath): os.remove(ipath)
+                    except: pass
+                    raise Exception(f"Download timed out (>{dl_timeout}s) for mid={m.id}")
+
+                except Exception as e:
+                    err_upper = str(e).upper()
+                    try:
+                        if os.path.exists(ipath): os.remove(ipath)
+                    except: pass
+                    if any(x in err_upper for x in ("FILE_REFERENCE_EXPIRED", "FILE_ID_INVALID", "MSG_ID_INVALID", "MEDIA_EMPTY")):
+                        logger.warning(f"[Cleaner {job_id}] mid={m.id}: media reference expired ({e}) — skipping")
+                        continue
+                    raise Exception(f"Download error at mid={m.id}: {type(e).__name__}: {e}")
 
             return None  # no more messages in range
 
@@ -715,7 +693,10 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
         # ── Cleanup ───────────────────────────────────────────────────────
         # Ensure final pending upload is strictly finished before we complete the job
         if _upload_task and not _upload_task.done():
-            up_ok, up_err = await _upload_task
+            try:
+                up_ok, up_err, _up_mid = await _upload_task
+            except Exception as _ue:
+                up_ok, up_err = False, str(_ue)
             if not up_ok:
                 err_msg = str(up_err)[:200]
                 await _cl_update_job(job_id, {"status": "paused", "error": err_msg})
