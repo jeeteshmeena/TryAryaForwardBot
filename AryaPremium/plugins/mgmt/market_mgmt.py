@@ -856,14 +856,39 @@ async def market_callback(client, query):
             query.data = "mk#accounts"
             return await market_callback(client, query)
 
-        elif cmd == "manage_stories":
+        elif cmd == "manage_stories" or cmd.startswith("ms_list_"):
             await _safe_answer(query)
-            stories = await db.db.premium_stories.find().to_list(length=30)
+            page = 0
+            if cmd.startswith("ms_list_"):
+                try: page = int(cmd.replace("ms_list_", ""))
+                except: page = 0
+            items_pp = 8
+            total = await db.db.premium_stories.count_documents({})
+            total_pages = max(1, (total + items_pp - 1) // items_pp)
+            if page >= total_pages: page = total_pages - 1
+            if page < 0: page = 0
+            stories = await db.db.premium_stories.find().sort("story_name_en", 1).skip(page * items_pp).limit(items_pp).to_list(length=items_pp)
             kb = []
-            for s in stories:
-                kb.append([InlineKeyboardButton(f"📖 {s.get('story_name_en', 'Unknown')} - ₹{s.get('price')}", callback_data=f"mk#st_view_{str(s['_id'])}")])
-            kb.append([InlineKeyboardButton("« Back", callback_data="mk#back")])
-            await query.message.edit_text("<b>📦 Manage Stories</b>\n\nTap a story below to manage or delete it:", reply_markup=InlineKeyboardMarkup(kb))
+            start_num = page * items_pp + 1
+            for i, s in enumerate(stories):
+                num = start_num + i
+                raw = s.get('story_name_en', 'Unknown')
+                name = raw if len(raw) <= 28 else raw[:26] + ".."  
+                price = s.get('price', 0)
+                num_str = f"{num:02d}."
+                kb.append([InlineKeyboardButton(f"{num_str} {name}  ₹{price}", callback_data=f"mk#st_view_{str(s['_id'])}")])
+            nav = []
+            if page > 0: nav.append(InlineKeyboardButton("❬ Prev", callback_data=f"mk#ms_list_{page-1}"))
+            if total_pages > 1: nav.append(InlineKeyboardButton(f"{page+1}/{total_pages}", callback_data="mk#ignore"))
+            if page < total_pages - 1: nav.append(InlineKeyboardButton("Next ❭", callback_data=f"mk#ms_list_{page+1}"))
+            if nav: kb.append(nav)
+            kb.append([InlineKeyboardButton("« Home", callback_data="mk#back")])
+            panel_txt = (
+                f"<b>⟦ Manage Stories ⟧</b>\n\n"
+                f"<blockquote expandable>Total: <code>{total}</code>   Page: <code>{page+1}/{total_pages}</code>\n\n"
+                f"<i>Tap a story to manage or edit it.</i></blockquote>"
+            )
+            await query.message.edit_text(panel_txt, reply_markup=InlineKeyboardMarkup(kb), parse_mode=enums.ParseMode.HTML)
 
         elif cmd.startswith("st_view_"):
             s_id = cmd.split("_")[2]
@@ -871,21 +896,46 @@ async def market_callback(client, query):
             story = await db.db.premium_stories.find_one({"_id": ObjectId(s_id)})
             if not story:
                 return await _safe_answer(query, "Not found!")
-        
+            await _safe_answer(query)
+
+            sname_en = story.get('story_name_en', 'N/A')
+            sname_hi = story.get('story_name_hi', 'N/A')
+            platform  = story.get('platform', 'N/A')
+            price     = story.get('price', 0)
+            genre     = story.get('genre', 'N/A')
+            episodes  = story.get('episodes', 'N/A')
+            status    = story.get('status', 'N/A')
+            desc_raw  = (story.get('description') or '').strip()
+            desc      = desc_raw[:200] + ('...' if len(desc_raw) > 200 else '') if desc_raw else 'N/A'
+
+            detail_txt = (
+                f"<b>⟦ {sname_en} ⟧</b>\n\n"
+                f"<blockquote>"
+                f"<b>⨉ Name (HI)   ⟶</b> {sname_hi}\n"
+                f"<b>⨉ Platform    ⟶</b> {platform}\n"
+                f"<b>⨉ Price       ⟶</b> ₹{price}\n"
+                f"<b>⨉ Genre       ⟶</b> {genre}\n"
+                f"<b>⨉ Episodes    ⟶</b> {episodes}\n"
+                f"<b>⨉ Status      ⟶</b> {status}\n"
+                f"<b>⨉ DB ID       ⟶</b> <code>{s_id}</code>"
+                f"</blockquote>\n\n"
+                f"<i>{desc}</i>\n\n"
+                f"<i>Select a field below to update:</i>"
+            )
             kb = [
-                [InlineKeyboardButton(utils.to_smallcap("Edit Name (EN)"), callback_data=f"mk#st_edit_{s_id}_name"),
-                 InlineKeyboardButton(utils.to_smallcap("Edit Name (HI)"), callback_data=f"mk#st_edit_{s_id}_namehi")],
-                [InlineKeyboardButton(utils.to_smallcap("Edit Price"), callback_data=f"mk#st_edit_{s_id}_price"),
-                 InlineKeyboardButton(utils.to_smallcap("Edit Image"), callback_data=f"mk#st_edit_{s_id}_image")],
-                [InlineKeyboardButton(utils.to_smallcap("Edit Desc"), callback_data=f"mk#st_edit_{s_id}_desc"),
-                 InlineKeyboardButton(utils.to_smallcap("Edit Status"), callback_data=f"mk#st_edit_{s_id}_status")],
-                [InlineKeyboardButton(utils.to_smallcap("Edit Genre"), callback_data=f"mk#st_edit_{s_id}_genre"),
-                 InlineKeyboardButton(utils.to_smallcap("Edit Episodes"), callback_data=f"mk#st_edit_{s_id}_episodes")],
-                [InlineKeyboardButton(utils.to_smallcap("Edit DB Range"), callback_data=f"mk#st_edit_{s_id}_eps")],
-                [InlineKeyboardButton(utils.to_smallcap("Remove Story"), callback_data=f"mk#st_confirm_rm_{s_id}")],
-                [InlineKeyboardButton(utils.to_smallcap("Back"), callback_data="mk#manage_stories")],
+                [InlineKeyboardButton("Name (EN)", callback_data=f"mk#st_edit_{s_id}_name"),
+                 InlineKeyboardButton("Name (HI)", callback_data=f"mk#st_edit_{s_id}_namehi")],
+                [InlineKeyboardButton("Price", callback_data=f"mk#st_edit_{s_id}_price"),
+                 InlineKeyboardButton("Image", callback_data=f"mk#st_edit_{s_id}_image")],
+                [InlineKeyboardButton("Description", callback_data=f"mk#st_edit_{s_id}_desc"),
+                 InlineKeyboardButton("Status", callback_data=f"mk#st_edit_{s_id}_status")],
+                [InlineKeyboardButton("Genre", callback_data=f"mk#st_edit_{s_id}_genre"),
+                 InlineKeyboardButton("Episodes", callback_data=f"mk#st_edit_{s_id}_episodes")],
+                [InlineKeyboardButton("DB Range", callback_data=f"mk#st_edit_{s_id}_eps")],
+                [InlineKeyboardButton("Remove Story", callback_data=f"mk#st_confirm_rm_{s_id}")],
+                [InlineKeyboardButton("« Back", callback_data="mk#ms_list_0")],
             ]
-            await query.message.edit_text(f"<b>📖 {story.get('story_name_en')}\n» Platform: {story.get('platform', 'N/A')}\n» Price: ₹{story.get('price', 0)}\n» DB ID: <code>{s_id}</code></b>\n\nWhat would you like to update?", reply_markup=InlineKeyboardMarkup(kb))
+            await query.message.edit_text(detail_txt, reply_markup=InlineKeyboardMarkup(kb), parse_mode=enums.ParseMode.HTML)
 
         elif cmd.startswith("st_edit_"):
             parts = cmd.split("_")
@@ -897,22 +947,23 @@ async def market_callback(client, query):
         elif cmd.startswith("st_confirm_rm_"):
             s_id = cmd.split("_")[3]
             kb = [
-                [InlineKeyboardButton("🚫 " + utils.to_smallcap("Yes, Remove It"), callback_data=f"mk#st_rm_{s_id}")],
-                [InlineKeyboardButton(utils.to_smallcap("Cancel"), callback_data=f"mk#st_view_{s_id}")]
+                [InlineKeyboardButton("Yes, Remove It", callback_data=f"mk#st_rm_{s_id}")],
+                [InlineKeyboardButton("Cancel", callback_data=f"mk#st_view_{s_id}")]
             ]
             await query.message.edit_text(
-                "<b>⚠️ CRITICAL WARNING</b>\n\n"
-                "Are you sure you want to completely remove this story from the Marketplace?\n"
-                "<i>This will permanently delete it and users will no longer see it.</i>",
-                reply_markup=InlineKeyboardMarkup(kb)
+                "<b>⚠️ Confirm Removal</b>\n\n"
+                "<blockquote>Are you sure you want to permanently remove this story from the Marketplace?\n"
+                "<i>Users will no longer see or purchase it.</i></blockquote>",
+                reply_markup=InlineKeyboardMarkup(kb),
+                parse_mode=enums.ParseMode.HTML
             )
 
         elif cmd.startswith("st_rm_"):
             s_id = cmd.split("_")[2]
             from bson.objectid import ObjectId
             await db.db.premium_stories.delete_one({"_id": ObjectId(s_id)})
-            await _safe_answer(query, "Story completely removed!", show_alert=True)
-            query.data = "mk#manage_stories"
+            await _safe_answer(query, "Story removed!", show_alert=True)
+            query.data = "mk#ms_list_0"
             return await market_callback(client, query)
 
         elif cmd == "pending":
@@ -1741,12 +1792,23 @@ async def _edit_story_flow(client, user_id, s_id, action):
     story = await db.db.premium_stories.find_one({"_id": s_id_obj})
     if not story: return await client.send_message(user_id, "Story missing.")
     
-    label = action.capitalize()
-    msg = await native_ask(client, user_id, f"<b>✏️ Edit Story {label}</b>\n\nSend the new {label} for <code>{story.get('story_name_en')}</code>.", reply_markup=ReplyKeyboardMarkup([["⛔ Cancel"]], resize_keyboard=True))
+    label_map = {
+        "name": "Name (EN)", "namehi": "Name (HI)", "price": "Price",
+        "image": "Cover Image", "desc": "Description", "status": "Status",
+        "genre": "Genre", "episodes": "Episodes", "eps": "DB Range"
+    }
+    label = label_map.get(action, action.capitalize())
+    sname = story.get('story_name_en', 'Unknown')
+    prompt_txt = (
+        f"<b>⟦ Edit Story ⟧</b>\n\n"
+        f"<blockquote><b>Story:</b> {sname}\n<b>Field:</b> {label}</blockquote>\n\n"
+        f"<i>Send the new value for <b>{label}</b>. Type /cancel to abort.</i>"
+    )
+    msg = await native_ask(client, user_id, prompt_txt, reply_markup=ReplyKeyboardMarkup([["⛔ Cancel"]], resize_keyboard=True), parse_mode=enums.ParseMode.HTML)
     from pyrogram.types import CallbackQuery as _CQ
     _txt = getattr(msg, 'text', '') or ''
     if isinstance(msg, _CQ) or "Cancel" in _txt or not _txt:
-        return await client.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
+        return await client.send_message(user_id, "<i>Cancelled.</i>", reply_markup=ReplyKeyboardRemove(), parse_mode=enums.ParseMode.HTML)
 
     try:
         if action == "price":
@@ -1839,7 +1901,7 @@ async def _edit_story_flow(client, user_id, s_id, action):
             await db.db.premium_stories.update_one({"_id": s_id_obj}, {"$set": {"genre": msg.text}})
         elif action == "episodes":
             await db.db.premium_stories.update_one({"_id": s_id_obj}, {"$set": {"episodes": msg.text}})
-        await client.send_message(user_id, f"✅ **Story {label} Updated!**", reply_markup=ReplyKeyboardRemove())
+        await client.send_message(user_id, f"✅ <b>{label} updated successfully.</b>", reply_markup=ReplyKeyboardRemove(), parse_mode=enums.ParseMode.HTML)
     except Exception as e:
         await client.send_message(user_id, f"❌ Invalid format. Please try again.", reply_markup=ReplyKeyboardRemove())
 
