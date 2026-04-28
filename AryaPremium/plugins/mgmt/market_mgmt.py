@@ -56,37 +56,42 @@ async def _render_home(client, chat_id: int, *, edit_message=None):
     bots = await db.db.premium_bots.count_documents({})
     stories = await db.db.premium_stories.count_documents({})
     pendings = await db.db.premium_checkout.count_documents({"status": "pending_admin_approval"})
+    approved = await db.db.premium_checkout.count_documents({"status": "approved"})
     buyers = await db.db.users.count_documents({"purchases.0": {"$exists": True}})
     db_ch = await db.db.premium_channels.count_documents({"type": "db"})
     dl_ch = await db.db.premium_channels.count_documents({"type": "delivery"})
 
     txt = (
-        f"<b>⟦ 𝗠𝗔𝗥𝗞𝗘𝗧𝗣𝗟𝗔𝗖𝗘 𝗗𝗔𝗦𝗛𝗕𝗢𝗔𝗥𝗗 ⟧</b>\n\n"
+        f"<b>╔══════════════════════╗</b>\n"
+        f"<b>        𝗠𝗔𝗥𝗞𝗘𝗧𝗣𝗟𝗔𝗖𝗘 𝗗𝗔𝗦𝗛𝗕𝗢𝗔𝗥𝗗</b>\n"
+        f"<b>╚══════════════════════╝</b>\n\n"
+        f"<b>⧉ SYSTEM OVERVIEW</b>\n"
         f'<blockquote expandable="true">'
-        f"<b>⧉ ʙᴏᴛꜱ        ⟶</b> <code>{bots}</code>\n"
-        f"<b>⧉ ꜱᴛᴏʀɪᴇꜱ     ⟶</b> <code>{stories}</code>\n"
-        f"<b>⧉ ᴘᴇɴᴅɪɴɢ     ⟶</b> <code>{pendings}</code>\n"
-        f"<b>⧉ ʙᴜʏᴇʀꜱ      ⟶</b> <code>{buyers}</code>\n"
-        f"<b>⧉ ᴅʙ ᴄʜᴀɴɴᴇʟꜱ ⟶</b> <code>{db_ch}</code>\n"
-        f"<b>⧉ ᴅᴇʟɪᴠᴇʀʏ    ⟶</b> <code>{dl_ch}</code>"
+        f"<b>• TOTAL BOTS    ⟶</b> <code>{bots}</code>\n"
+        f"<b>• ACTIVE STORIES ⟶</b> <code>{stories}</code>\n"
+        f"<b>• TOTAL BUYERS   ⟶</b> <code>{buyers}</code>\n"
+        f"<b>• DB CHANNELS    ⟶</b> <code>{db_ch}</code>\n"
+        f"<b>• DELIVERY POOL  ⟶</b> <code>{dl_ch}</code>\n"
         f'</blockquote>\n'
-        f'<blockquote expandable="true"><i>💡 <b>𝗧𝗶𝗽:</b> Use "Channels → Bulk Add" for large delivery pools.</i></blockquote>'
+        f"<b>⧉ TRANSACTION SUMMARY</b>\n"
+        f'<blockquote expandable="true">'
+        f"<b>• APPROVED       ⟶</b> <code>{approved}</code>\n"
+        f"<b>• PENDING        ⟶</b> <code>{pendings}</code>\n"
+        f'</blockquote>\n'
+        f'<i>💡 <b>𝗧𝗶𝗽:</b> Monitor "Support Panel" for new user feedbacks.</i>'
     )
 
-
-
     kb = [
-        [InlineKeyboardButton("🛒 " + utils.to_smallcap("Add Story"), callback_data="mk#add_story"),
-         InlineKeyboardButton("💸 " + utils.to_smallcap("Pending"), callback_data="mk#pending")],
-        [InlineKeyboardButton("📝 " + utils.to_smallcap("Story Requests"), callback_data="mk#reqs_0"),
-         InlineKeyboardButton("📨 " + utils.to_smallcap("Support Panel"), callback_data="mk#fb_panel_0")],
-        [InlineKeyboardButton("📦 " + utils.to_smallcap("Manage Stories"), callback_data="mk#manage_stories"),
-         InlineKeyboardButton("📡 " + utils.to_smallcap("Channels"), callback_data="mk#channels")],
-        [InlineKeyboardButton("🤖 " + utils.to_smallcap("Accounts"), callback_data="mk#accounts"),
-         InlineKeyboardButton("👥 " + utils.to_smallcap("Users"), callback_data="mk#users")],
-        [InlineKeyboardButton("⚙️ " + utils.to_smallcap("Settings"), callback_data="mk#settings"),
-         InlineKeyboardButton("🔄 " + utils.to_smallcap("Refresh"), callback_data="mk#refresh")],
-        [InlineKeyboardButton("✖️ " + utils.to_smallcap("Close"), callback_data="mk#close")]
+        [InlineKeyboardButton("ADD STORY", callback_data="mk#add_story"),
+         InlineKeyboardButton("PENDING APPROVALS", callback_data="mk#pending")],
+        [InlineKeyboardButton("STORY REQUESTS", callback_data="mk#reqs_0"),
+         InlineKeyboardButton("SUPPORT PANEL", callback_data="mk#fb_panel_0")],
+        [InlineKeyboardButton("MANAGE STORIES", callback_data="mk#manage_stories"),
+         InlineKeyboardButton("CHANNELS", callback_data="mk#channels")],
+        [InlineKeyboardButton("ACCOUNTS", callback_data="mk#accounts"),
+         InlineKeyboardButton("BUYERS", callback_data="mk#users")],
+        [InlineKeyboardButton("SETTINGS", callback_data="mk#settings")],
+        [InlineKeyboardButton("CLOSE PANEL", callback_data="mk#close")]
     ]
     markup = InlineKeyboardMarkup(kb)
 
@@ -148,10 +153,6 @@ async def market_callback(client, query):
         if cmd == "close":
             return await query.message.delete()
         
-        elif cmd == "refresh":
-            if "query" in locals() and query:
-                await query.answer()
-            return await _render_home(client, user_id, edit_message=query.message)
         
         elif cmd == "settings":
             if "query" in locals() and query:
