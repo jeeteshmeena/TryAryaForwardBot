@@ -269,11 +269,12 @@ async def market_callback(client, query):
 
         elif cmd.startswith("reqs_"):
             page = int(cmd.replace("reqs_", ""))
+            # Fetch all unresolved requests
             reqs = await db.db.premium_requests.find({}).sort("created_at", -1).to_list(length=None)
             
             if not reqs:
                 if "query" in locals() and query:
-                    return await query.answer("No story requests found.", show_alert=True)
+                    return await query.answer("No active story requests.", show_alert=True)
                 return
                 
             items_per_page = 10
@@ -283,24 +284,29 @@ async def market_callback(client, query):
             
             subset = reqs[page*items_per_page : (page+1)*items_per_page]
             
-            txt_req = f"<b>📝 User Story Requests (Page {page+1}/{total_pages})</b>\n\nClick on any request to manage it:"
+            txt_req = (
+                f"<b>╔══════════════════════╗</b>\n"
+                f"<b>        𝗦𝗧𝗢𝗥𝗬 𝗥𝗘𝗤𝗨𝗘𝗦𝗧𝗦</b>\n"
+                f"<b>╚══════════════════════╝</b>\n\n"
+                f"<b>⧉ PAGE {page+1} 𝗢𝗙 {total_pages}</b>\n"
+                f"<i>Click an entry to view details & update status:</i>\n"
+            )
             kb = []
             for r in subset:
                 sname = r.get('story_name', 'Unknown')
-                if len(sname) > 25: sname = sname[:22] + "..."
-                status_emoji = {
-                    "Sent": "📮", "Pending": "⏳", "Searching": "🔍", "Posting": "📤", "Posted": "✅", "Completed": "🎉"
-                }.get(r.get('status', 'Sent'), "📌")
-                kb.append([InlineKeyboardButton(f"{status_emoji} {sname} ({r.get('user_id')})", callback_data=f"mk#req_{str(r['_id'])}")])
+                if len(sname) > 22: sname = sname[:20] + ".."
+                stt = r.get('status', 'Sent').upper()
+                # Clean status tags
+                kb.append([InlineKeyboardButton(f"• {sname} [{stt}]", callback_data=f"mk#req_{str(r['_id'])}")])
             
             nav = []
             if page > 0:
-                nav.append(InlineKeyboardButton("❬ Prev", callback_data=f"mk#reqs_{page-1}"))
+                nav.append(InlineKeyboardButton("PREVIOUS", callback_data=f"mk#reqs_{page-1}"))
             if page < total_pages - 1:
-                nav.append(InlineKeyboardButton("Next ❭", callback_data=f"mk#reqs_{page+1}"))
+                nav.append(InlineKeyboardButton("NEXT", callback_data=f"mk#reqs_{page+1}"))
             if nav: kb.append(nav)
             
-            kb.append([InlineKeyboardButton("« " + utils.to_smallcap("Home"), callback_data="mk#back")])
+            kb.append([InlineKeyboardButton("BACK TO DASHBOARD", callback_data="mk#back")])
             
             await query.message.edit_text(txt_req, reply_markup=InlineKeyboardMarkup(kb))
             return
@@ -318,29 +324,36 @@ async def market_callback(client, query):
                 return
                 
             t_str = r.get("created_at").strftime('%d %b %Y, %H:%M') if r.get("created_at") else "Unknown"
-            status = r.get('status', 'Sent')
+            status = r.get('status', 'Sent').upper()
             txt_d = (
-                f"<b>📝 MANAGE STORY REQUEST</b>\n"
-                f"━━━━━━━━━━━━━━━━━━━━━\n"
-                f"<b>📖 Name:</b> {r.get('story_name')}\n"
-                f"<b>🎧 Platform:</b> {r.get('platform')}\n"
-                f"<b>📑 Type:</b> {r.get('completion_type', 'N/A')}\n"
-                f"<b>👤 User ID:</b> <code>{r.get('user_id')}</code>\n"
-                f"<b>🤖 Bot ID:</b> <code>{r.get('bot_id')}</code>\n"
-                f"<b>📅 Date:</b> {t_str}\n"
-                f"━━━━━━━━━━━━━━━━━━━━━\n"
-                f"<b>📌 Status:</b> <code>{status}</code>\n\n"
-                f"<i>Select a new status below to notify the user instantly:</i>"
+                f"<b>╔══════════════════════╗</b>\n"
+                f"<b>        𝗥𝗘𝗤𝗨𝗘𝗦𝗧 𝗗𝗘𝗧𝗔𝗜𝗟𝗦</b>\n"
+                f"<b>╚══════════════════════╝</b>\n\n"
+                f"<b>⧉ STORY INFO</b>\n"
+                f'<blockquote expandable="true">'
+                f"<b>• NAME      ⟶</b> {r.get('story_name')}\n"
+                f"<b>• PLATFORM  ⟶</b> {r.get('platform')}\n"
+                f"<b>• TYPE      ⟶</b> {r.get('completion_type', 'N/A')}\n"
+                f"<b>• REQUESTED ⟶</b> {t_str}\n"
+                f'</blockquote>\n'
+                f"<b>⧉ USER INFO</b>\n"
+                f'<blockquote expandable="true">'
+                f"<b>• USER ID   ⟶</b> <code>{r.get('user_id')}</code>\n"
+                f"<b>• BOT ID    ⟶</b> <code>{r.get('bot_id')}</code>\n"
+                f'</blockquote>\n'
+                f"<b>⧉ CURRENT STATUS</b>\n"
+                f"<blockquote><b>[ {status} ]</b></blockquote>\n\n"
+                f"<i>Update status to notify user:</i>"
             )
             
             kb = [
-                [InlineKeyboardButton("Pending ⏳", callback_data=f"mk#rstat#{req_id}#Pending"),
-                 InlineKeyboardButton("Searching 🔍", callback_data=f"mk#rstat#{req_id}#Searching")],
-                [InlineKeyboardButton("Posting 📤", callback_data=f"mk#rstat#{req_id}#Posting"),
-                 InlineKeyboardButton("Posted ✅", callback_data=f"mk#rstat#{req_id}#Posted")],
-                [InlineKeyboardButton("Completed 🎉", callback_data=f"mk#rstat#{req_id}#Completed")],
-                [InlineKeyboardButton("❌ Reject with Reason", callback_data=f"mk#req_rej#{req_id}")],
-                [InlineKeyboardButton("« " + utils.to_smallcap("Back to List"), callback_data="mk#reqs_0")]
+                [InlineKeyboardButton("PENDING", callback_data=f"mk#rstat#{req_id}#Pending"),
+                 InlineKeyboardButton("SEARCHING", callback_data=f"mk#rstat#{req_id}#Searching")],
+                [InlineKeyboardButton("POSTING", callback_data=f"mk#rstat#{req_id}#Posting"),
+                 InlineKeyboardButton("POSTED", callback_data=f"mk#rstat#{req_id}#Posted")],
+                [InlineKeyboardButton("COMPLETED", callback_data=f"mk#rstat#{req_id}#Completed")],
+                [InlineKeyboardButton("REJECT & REMOVE", callback_data=f"mk#req_rej#{req_id}")],
+                [InlineKeyboardButton("BACK TO LIST", callback_data="mk#reqs_0")]
             ]
             await query.message.edit_text(txt_d, reply_markup=InlineKeyboardMarkup(kb))
             return
@@ -1221,7 +1234,8 @@ async def _reject_request_flow(client, user_id, req_id):
     reason = (getattr(msg, 'text', '') or 'Not specified.').strip()
     
     from datetime import datetime
-    await db.db.premium_requests.update_one({"_id": r['_id']}, {"$set": {"status": f"Rejected: {reason}", "updated_at": datetime.now()}})
+    # Fix: Actually remove from list after rejection and notification
+    await db.db.premium_requests.delete_one({"_id": r['_id']})
     
     bot_id_str = str(r.get('bot_id'))
     from plugins.userbot.market_seller import market_clients
