@@ -1871,14 +1871,39 @@ async def _edit_story_flow(client, user_id, s_id, action):
                         if store_cli:
                             bot_users = await db.db.users.find({}, {"id": 1}).to_list(length=None)
                             story_name = story.get('story_name_en', 'Premium Story')
-                            trend = "DECREASED" if new_price < old_price else "INCREASED"
-                            msg_text = (f"<b>Price Update</b>\n\nStory: {story_name}\nOld: \u20b9{old_price}  New: \u20b9{new_price}")
+                            genre = story.get('genre', 'N/A')
+                            plat = story.get('platform', 'N/A')
+                            episodes = story.get('episodes', 'N/A')
+                            stt = story.get('status', 'N/A').upper()
+                            
+                            trend_icon = "📈" if new_price > old_price else "📉"
+                            trend_text = "HIKE" if new_price > old_price else "DROP"
+                            
+                            # Premium UI for Price Broadcast
+                            msg_text = (
+                                f"<b>╔══════════════════════╗</b>\n"
+                                f"<b>        𝗣𝗥𝗜𝗖𝗘 𝗨𝗣𝗗𝗔𝗧𝗘</b>\n"
+                                f"<b>╚══════════════════════╝</b>\n\n"
+                                f"<b>⧉ 𝗦𝗧𝗢𝗥𝗬 𝗗𝗘𝗧𝗔𝗜𝗟𝗦</b>\n"
+                                f"<b>• Name     ⟶</b> {story_name}\n"
+                                f"<b>• Genre    ⟶</b> {genre}\n"
+                                f"<b>• Platform ⟶</b> {plat}\n"
+                                f"<b>• Status   ⟶</b> {stt} ({episodes} Eps)\n\n"
+                                f"<b>⧉ 𝗣𝗥𝗜𝗖𝗜𝗡𝗚 𝗖𝗛𝗔𝗡𝗚𝗘 [ {trend_icon} {trend_text} ]</b>\n"
+                                f"<b>• Old Price ⟶</b> ₹{old_price}\n"
+                                f"<b>• New Price ⟶</b> <ins>₹{new_price}</ins>\n\n"
+                                f"<i>🛒 Click the button below to buy now at the updated price!</i>"
+                            )
+                            
+                            buy_link = f"https://t.me/{story.get('bot_username')}?start=buy_{s_id}"
+                            kb_buy = InlineKeyboardMarkup([[InlineKeyboardButton("🛍️ VIEW & BUY STORY", url=buy_link)]])
+
                             sent = 0
                             for u in bot_users:
                                 uid_int = u.get("id")
                                 if uid_int:
                                     try:
-                                        await store_cli.send_message(uid_int, msg_text, parse_mode=enums.ParseMode.HTML)
+                                        await store_cli.send_message(uid_int, msg_text, reply_markup=kb_buy, parse_mode=enums.ParseMode.HTML)
                                         sent += 1
                                         await asyncio.sleep(0.05)
                                     except Exception:
