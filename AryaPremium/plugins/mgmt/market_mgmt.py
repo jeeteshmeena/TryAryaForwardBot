@@ -1808,14 +1808,19 @@ async def _edit_story_flow(client, user_id, s_id, action):
     from pyrogram.types import CallbackQuery as _CQ
     _txt = getattr(msg, 'text', '') or ''
     if isinstance(msg, _CQ) or "Cancel" in _txt or not _txt:
-        return await client.send_message(user_id, "<i>Cancelled.</i>", reply_markup=ReplyKeyboardRemove(), parse_mode=enums.ParseMode.HTML)
+        back_kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"« Back to Story", callback_data=f"mk#st_view_{s_id}")],
+            [InlineKeyboardButton("« Story List", callback_data="mk#ms_list_0")]
+        ])
+        return await client.send_message(user_id, "<i>Cancelled.</i>", reply_markup=back_kb, parse_mode=enums.ParseMode.HTML)
 
     try:
         if action == "price":
             try:
                 new_price = int(msg.text)
             except ValueError:
-                return await client.send_message(user_id, "❌ Valid integer price required.", reply_markup=ReplyKeyboardRemove())
+                back_kb = InlineKeyboardMarkup([[InlineKeyboardButton("« Back to Story", callback_data=f"mk#st_view_{s_id}")]])
+                return await client.send_message(user_id, "❌ Valid integer price required.", reply_markup=back_kb, parse_mode=enums.ParseMode.HTML)
                 
             old_price = int(story.get("price", 0))
             await db.db.premium_stories.update_one({"_id": s_id_obj}, {"$set": {"price": new_price}})
@@ -1863,14 +1868,26 @@ async def _edit_story_flow(client, user_id, s_id, action):
                                         await asyncio.sleep(0.05)
                                     except Exception:
                                         pass
-                            await client.send_message(user_id, f"✅ Broadcasting completed. Sent to {sent} users.")
+                    await client.send_message(user_id, f"✅ Broadcasting completed. Sent to {sent} users.",
+                        reply_markup=InlineKeyboardMarkup([[
+                            InlineKeyboardButton("« Back to Story", callback_data=f"mk#st_view_{s_id}"),
+                            InlineKeyboardButton("« Story List", callback_data="mk#ms_list_0")
+                        ]]), parse_mode=enums.ParseMode.HTML)
                         else:
-                            await client.send_message(user_id, "⚠️ Store bot is offline. Could not send broadcast.", reply_markup=ReplyKeyboardRemove())
+                            await client.send_message(user_id, "⚠️ Store bot is offline. Could not send broadcast.",
+                                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Back to Story", callback_data=f"mk#st_view_{s_id}")]]),
+                                parse_mode=enums.ParseMode.HTML)
                     except Exception as e:
                         logger.error(f"Broadcast error: {e}")
-                        await client.send_message(user_id, "⚠️ Error during broadcast.")
+                        await client.send_message(user_id, "⚠️ Error during broadcast.",
+                            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Back to Story", callback_data=f"mk#st_view_{s_id}")]]),
+                            parse_mode=enums.ParseMode.HTML)
                 else:
-                    await client.send_message(user_id, f"✅ **Story {label} Updated!** (No broadcast sent)", reply_markup=ReplyKeyboardRemove())
+                    await client.send_message(user_id, f"✅ <b>Price updated to ₹{new_price}.</b> (No broadcast sent)",
+                        reply_markup=InlineKeyboardMarkup([[
+                            InlineKeyboardButton("« Back to Story", callback_data=f"mk#st_view_{s_id}"),
+                            InlineKeyboardButton("« Story List", callback_data="mk#ms_list_0")
+                        ]]), parse_mode=enums.ParseMode.HTML)
                 return
         elif action == "name":
             name_en = utils.translate_to_english(msg.text)
@@ -1892,7 +1909,8 @@ async def _edit_story_flow(client, user_id, s_id, action):
                 except Exception as e:
                     await db.db.premium_stories.update_one({"_id": s_id_obj}, {"$set": {"image": msg.photo.file_id}})
             else:
-                return await client.send_message(user_id, "❌ Valid Photo required.", reply_markup=ReplyKeyboardRemove())
+                back_kb = InlineKeyboardMarkup([[InlineKeyboardButton("« Back to Story", callback_data=f"mk#st_view_{s_id}")]])
+                return await client.send_message(user_id, "❌ A valid photo is required.", reply_markup=back_kb, parse_mode=enums.ParseMode.HTML)
         elif action == "desc":
             desc_en = utils.translate_to_english(msg.text)
             desc_hi = utils.smart_translate_meaning(msg.text)
@@ -1901,9 +1919,22 @@ async def _edit_story_flow(client, user_id, s_id, action):
             await db.db.premium_stories.update_one({"_id": s_id_obj}, {"$set": {"genre": msg.text}})
         elif action == "episodes":
             await db.db.premium_stories.update_one({"_id": s_id_obj}, {"$set": {"episodes": msg.text}})
-        await client.send_message(user_id, f"✅ <b>{label} updated successfully.</b>", reply_markup=ReplyKeyboardRemove(), parse_mode=enums.ParseMode.HTML)
+        await client.send_message(
+            user_id,
+            f"✅ <b>{label} updated successfully.</b>",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("« Back to Story", callback_data=f"mk#st_view_{s_id}"),
+                 InlineKeyboardButton("« Story List", callback_data="mk#ms_list_0")]
+            ]),
+            parse_mode=enums.ParseMode.HTML
+        )
     except Exception as e:
-        await client.send_message(user_id, f"❌ Invalid format. Please try again.", reply_markup=ReplyKeyboardRemove())
+        await client.send_message(
+            user_id,
+            "❌ Invalid format. Please try again.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Back to Story", callback_data=f"mk#st_view_{s_id}")]]),
+            parse_mode=enums.ParseMode.HTML
+        )
 
 async def _approve_payment_flow(client, user_id, p_id):
     try:
