@@ -3035,13 +3035,13 @@ async def _send_demo_files(client, user_id, story, lang):
         else:
             txt = "<b>👀 Sending Demo Files...</b>\n\n<i>Note: Episodes are not necessarily provided separately; they may also be delivered in a group format, so please keep that in mind.\nThese demo files will be auto-deleted strictly after 5 minutes.</i>"
             
-        m = await client.send_message(user_id, txt)
+        m = await client.send_message(user_id, txt, protect_content=True)
         msg_ids.append(m.id)
         
         lbl_start = "<b>1️⃣ स्टार्टिंग फ़ाइलें (शुरुआत) 👇</b>" if lang == "hi" else "<b>1️⃣ STARTING FILES 👇</b>"
         lbl_end = f"<b>2️⃣ अंतिम फ़ाइल (कुल: {total} फ़ाइलें) 👇</b>" if lang == "hi" else f"<b>2️⃣ ENDING FILE (Total: {total} files) 👇</b>"
         
-        m_s = await client.send_message(user_id, lbl_start)
+        m_s = await client.send_message(user_id, lbl_start, protect_content=True)
         msg_ids.append(m_s.id)
         
         s_count = 2 if total >= 2 else 1
@@ -3051,12 +3051,13 @@ async def _send_demo_files(client, user_id, story, lang):
             await asyncio.sleep(0.5)
             
         if total > 2:
-            m_e = await client.send_message(user_id, lbl_end)
+            m_e = await client.send_message(user_id, lbl_end, protect_content=True)
             msg_ids.append(m_e.id)
             sent_end = await client.copy_message(chat_id=user_id, from_chat_id=src, message_id=end, protect_content=True)
             msg_ids.append(sent_end.id)
             
         asyncio.create_task(_auto_delete_demo(client, user_id, msg_ids))
+
     except Exception as e:
         import logging
         logging.getLogger(__name__).error(f"Demo failed: {e}")
