@@ -2191,7 +2191,28 @@ async def _create_flow(bot, uid, mtype="audio"):
             reply_markup=ReplyKeyboardRemove())
         if not msg.text or (('cancel' in msg.text.lower() or 'cᴀɴᴄᴇʟ' in msg.text.lower() or '⛔' in msg.text) or 'cᴀɴᴄᴇʟ' in msg.text.lower() or '⛔' in msg.text):
             return await bot.send_message(uid, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
-        out_name = re.sub(r'[<>:"/\\|?*]', '_', msg.text.strip())
+        def _clean_out_name(raw: str) -> str:
+            import re as _re
+            s = raw.strip()
+            # Replace episode-range separators: digits separated by / or _ → digits-hyphen-digits
+            # e.g. "31/32" → "31-32", "31_32" → "31-32"
+            s = _re.sub(r'(\d+)[/_](\d+)', r'\1-\2', s)
+            # Strip forbidden filesystem chars (do NOT replace with underscore)
+            s = _re.sub(r'[<>:"/\\|?*]', '', s)
+            # Collapse multiple spaces/underscores to single space
+            s = _re.sub(r'[ _]{2,}', ' ', s)
+            # Ensure separator between ep-num and story name is " - " (not "- " or " -")
+            s = _re.sub(r'\s*-\s*', ' - ', s)
+            # Title-case the story name part (everything after the last " - ")
+            if ' - ' in s:
+                prefix, story = s.rsplit(' - ', 1)
+                story = story.title()
+                s = f"{prefix} - {story}"
+            else:
+                s = s.title()
+            return s.strip()
+        out_name = _clean_out_name(msg.text.strip())
+
 
         # Scan files for total size and duration
         scan_msg = None
