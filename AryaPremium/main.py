@@ -68,7 +68,7 @@ async def main():
             cli.add_handler(MessageHandler(_process_start, filters.command("start") & filters.private))
             cli.add_handler(MessageHandler(_process_my_stories, filters.command(["mystories", "stories"]) & filters.private))
             # Media handler (feedback + screenshot) — must come before _process_screenshot
-            cli.add_handler(MessageHandler(_process_media, (filters.photo | filters.video | filters.animation | filters.document) & filters.private))
+            cli.add_handler(MessageHandler(_process_media, (filters.photo | filters.video | filters.animation | filters.document | filters.voice | filters.audio) & filters.private))
             cli.add_handler(MessageHandler(_process_text, filters.text & filters.private))
             cli.add_handler(CallbackQueryHandler(_process_callback, filters.regex(r'^mb#')))
             cli.add_handler(ChatMemberUpdatedHandler(_process_chat_member))

@@ -1297,45 +1297,54 @@ async def _fb_reply_flow(client, user_id, fb_id: str, target_uid: int):
     ]])
 
     delivered = False
+    tmp_path = None
 
     try:
-        if reply_msg.photo:
-            caption = reply_header + (reply_msg.caption or "")
-            await seller_cli.send_photo(
-                target_uid,
-                photo=reply_msg.photo.file_id,
-                caption=caption,
-                reply_markup=back_kb,
-                parse_mode=enums.ParseMode.HTML
-            )
-        elif reply_msg.video:
-            caption = reply_header + (reply_msg.caption or "")
-            await seller_cli.send_video(
-                target_uid,
-                video=reply_msg.video.file_id,
-                caption=caption,
-                reply_markup=back_kb,
-                parse_mode=enums.ParseMode.HTML
-            )
-        elif reply_msg.document:
-            caption = reply_header + (reply_msg.caption or "")
-            await seller_cli.send_document(
-                target_uid,
-                document=reply_msg.document.file_id,
-                caption=caption,
-                reply_markup=back_kb,
-                parse_mode=enums.ParseMode.HTML
-            )
+        import os
+        # Determine media type in admin's reply message
+        has_media = any([
+            reply_msg.photo, reply_msg.video, reply_msg.animation,
+            reply_msg.document, reply_msg.voice, reply_msg.audio
+        ])
+
+        if has_media:
+            # Download via mgmt bot, re-upload via seller_cli
+            # (file_ids are bot-specific — cross-bot direct use causes MEDIA_EMPTY)
+            if reply_msg.photo: ext = ".jpg"
+            elif reply_msg.video: ext = ".mp4"
+            elif reply_msg.animation: ext = ".mp4"
+            elif reply_msg.voice: ext = ".ogg"
+            elif reply_msg.audio: ext = ".mp3"
+            else: ext = ""
+
+            tmp_path = await client.download_media(reply_msg, file_name=f"downloads/fbreply_{fb_id}{ext}")
+
+        caption_text = reply_header + (reply_msg.caption or "")
+
+        if tmp_path and reply_msg.photo:
+            await seller_cli.send_photo(target_uid, photo=tmp_path, caption=caption_text, reply_markup=back_kb, parse_mode=enums.ParseMode.HTML)
+        elif tmp_path and reply_msg.video:
+            await seller_cli.send_video(target_uid, video=tmp_path, caption=caption_text, reply_markup=back_kb, parse_mode=enums.ParseMode.HTML)
+        elif tmp_path and reply_msg.animation:
+            await seller_cli.send_animation(target_uid, animation=tmp_path, caption=caption_text, reply_markup=back_kb, parse_mode=enums.ParseMode.HTML)
+        elif tmp_path and reply_msg.voice:
+            await seller_cli.send_voice(target_uid, voice=tmp_path, caption=caption_text, reply_markup=back_kb, parse_mode=enums.ParseMode.HTML)
+        elif tmp_path and reply_msg.audio:
+            await seller_cli.send_audio(target_uid, audio=tmp_path, caption=caption_text, reply_markup=back_kb, parse_mode=enums.ParseMode.HTML)
+        elif tmp_path and reply_msg.document:
+            await seller_cli.send_document(target_uid, document=tmp_path, caption=caption_text, reply_markup=back_kb, parse_mode=enums.ParseMode.HTML)
         else:
             txt = reply_header + (reply_msg.text or "")
-            await seller_cli.send_message(
-                target_uid, txt,
-                reply_markup=back_kb,
-                parse_mode=enums.ParseMode.HTML
-            )
+            await seller_cli.send_message(target_uid, txt, reply_markup=back_kb, parse_mode=enums.ParseMode.HTML)
         delivered = True
     except Exception as e:
         logger.error(f"_fb_reply_flow: failed to deliver to {target_uid}: {e}")
+    finally:
+        if tmp_path:
+            try:
+                import os
+                if os.path.exists(tmp_path): os.remove(tmp_path)
+            except: pass
 
     if delivered:
         try:

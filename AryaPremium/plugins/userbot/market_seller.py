@@ -1183,22 +1183,41 @@ async def _submit_feedback(client, message, user_id: int, user: dict, lang: str,
 
     try:
         from config import Config
+        import os
         admins = list(getattr(Config, 'SUDO_USERS', None) or getattr(Config, 'OWNER_IDS', []))
         if hasattr(db, 'mgmt_client') and db.mgmt_client:
+            # Download media via seller bot, then re-upload via mgmt_client
+            # (file_ids are bot-specific — cross-bot direct use causes MEDIA_EMPTY)
+            tmp_path = None
+            if content_type in ("photo", "video", "animation", "document", "voice", "audio"):
+                try:
+                    file_ext = {"photo": ".jpg", "video": ".mp4", "animation": ".mp4", "document": "", "voice": ".ogg", "audio": ".mp3"}.get(content_type, "")
+                    tmp_path = await client.download_media(message, file_name=f"downloads/fb_{fb_id}{file_ext}")
+                except Exception as dl_err:
+                    logger.warning(f"Feedback media download failed: {dl_err}")
+
             for admin_id in admins:
                 try:
-                    if content_type == "photo":
-                        await db.mgmt_client.send_photo(admin_id, photo=message.photo.file_id, caption=admin_txt, reply_markup=InlineKeyboardMarkup(kb_admin), parse_mode=enums.ParseMode.HTML)
-                    elif content_type == "video":
-                        await db.mgmt_client.send_video(admin_id, video=message.video.file_id, caption=admin_txt, reply_markup=InlineKeyboardMarkup(kb_admin), parse_mode=enums.ParseMode.HTML)
-                    elif content_type == "animation":
-                        await db.mgmt_client.send_animation(admin_id, animation=message.animation.file_id, caption=admin_txt, reply_markup=InlineKeyboardMarkup(kb_admin), parse_mode=enums.ParseMode.HTML)
-                    elif content_type == "document":
-                        await db.mgmt_client.send_document(admin_id, document=message.document.file_id, caption=admin_txt, reply_markup=InlineKeyboardMarkup(kb_admin), parse_mode=enums.ParseMode.HTML)
+                    if tmp_path and content_type == "photo":
+                        await db.mgmt_client.send_photo(admin_id, photo=tmp_path, caption=admin_txt, reply_markup=InlineKeyboardMarkup(kb_admin), parse_mode=enums.ParseMode.HTML)
+                    elif tmp_path and content_type == "video":
+                        await db.mgmt_client.send_video(admin_id, video=tmp_path, caption=admin_txt, reply_markup=InlineKeyboardMarkup(kb_admin), parse_mode=enums.ParseMode.HTML)
+                    elif tmp_path and content_type == "animation":
+                        await db.mgmt_client.send_animation(admin_id, animation=tmp_path, caption=admin_txt, reply_markup=InlineKeyboardMarkup(kb_admin), parse_mode=enums.ParseMode.HTML)
+                    elif tmp_path and content_type == "document":
+                        await db.mgmt_client.send_document(admin_id, document=tmp_path, caption=admin_txt, reply_markup=InlineKeyboardMarkup(kb_admin), parse_mode=enums.ParseMode.HTML)
+                    elif tmp_path and content_type == "voice":
+                        await db.mgmt_client.send_voice(admin_id, voice=tmp_path, caption=admin_txt, reply_markup=InlineKeyboardMarkup(kb_admin), parse_mode=enums.ParseMode.HTML)
+                    elif tmp_path and content_type == "audio":
+                        await db.mgmt_client.send_audio(admin_id, audio=tmp_path, caption=admin_txt, reply_markup=InlineKeyboardMarkup(kb_admin), parse_mode=enums.ParseMode.HTML)
                     else:
                         await db.mgmt_client.send_message(admin_id, admin_txt, reply_markup=InlineKeyboardMarkup(kb_admin), parse_mode=enums.ParseMode.HTML)
                 except Exception:
                     pass
+            # Cleanup temp file
+            if tmp_path and os.path.exists(tmp_path):
+                try: os.remove(tmp_path)
+                except: pass
     except Exception:
         pass
 
@@ -1228,6 +1247,10 @@ async def _process_media(client, message):
             content_type = "video"
         elif message.animation:
             content_type = "animation"
+        elif message.voice:
+            content_type = "voice"
+        elif message.audio:
+            content_type = "audio"
         elif message.document:
             content_type = "document"
         else:
