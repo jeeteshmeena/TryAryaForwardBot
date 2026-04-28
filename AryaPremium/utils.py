@@ -95,7 +95,7 @@ def setup_ask_router(bot: Client):
     bot.add_handler(MessageHandler(_input_router, filters.private), group=-100)
     bot.add_handler(CallbackQueryHandler(_cb_input_router), group=-100)
 
-async def native_ask(bot, user_id: int, text: str, reply_markup=None, timeout: int = 300):
+async def native_ask(bot, user_id: int, text: str, reply_markup=None, timeout: int = 300, parse_mode=None):
     loop = asyncio.get_event_loop()
     fut: asyncio.Future = loop.create_future()
     key = _ask_key(bot, user_id)
@@ -105,7 +105,10 @@ async def native_ask(bot, user_id: int, text: str, reply_markup=None, timeout: i
         old.cancel()
 
     _waiting_futures[key] = fut
-    await bot.send_message(user_id, text, reply_markup=reply_markup)
+    send_kwargs = {"reply_markup": reply_markup}
+    if parse_mode is not None:
+        send_kwargs["parse_mode"] = parse_mode
+    await bot.send_message(user_id, text, **send_kwargs)
     
     try:
         return await asyncio.wait_for(fut, timeout=timeout)
