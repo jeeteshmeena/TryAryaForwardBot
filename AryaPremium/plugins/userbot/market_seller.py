@@ -321,21 +321,45 @@ Our team will search for this story and update you soon. Check status in <b>Prof
 def _get_main_menu(lang='en'):
     if lang == 'hi':
         kb = [
-            [InlineKeyboardButton("🛒 मार्केटप्लेस", callback_data="mb#main_marketplace"),
-             InlineKeyboardButton("📖 मेरी स्टोरीज", callback_data="mb#my_buys")],
-            [InlineKeyboardButton("👤 प्रोफाइल", callback_data="mb#main_profile"),
-             InlineKeyboardButton("⚙️ सेटिंग्स", callback_data="mb#main_settings")],
-            [InlineKeyboardButton("🆘 सपोर्ट / सहायता", callback_data="mb#main_help")],
-            [InlineKeyboardButton("✖️ बंद करें (Close)", callback_data="mb#main_close")]
+            [
+                InlineKeyboardButton("ᴀ", callback_data="mb#about_arya_0"),
+                InlineKeyboardButton("ʀ", callback_data="mb#about_arya_0"),
+                InlineKeyboardButton("ʏ", callback_data="mb#about_arya_0"),
+                InlineKeyboardButton("ᴀ", callback_data="mb#about_arya_0")
+            ],
+            [InlineKeyboardButton("• मार्केटप्लेस •", callback_data="mb#main_marketplace"),
+             InlineKeyboardButton("• मेरी स्टोरीज •", callback_data="mb#my_buys")],
+            [InlineKeyboardButton("प्रोफाइल", callback_data="mb#main_profile"),
+             InlineKeyboardButton("सेटिंग्स", callback_data="mb#main_settings")],
+            [InlineKeyboardButton("सपोर्ट / सहायता", callback_data="mb#main_help")],
+            [
+                InlineKeyboardButton("ᴄ", callback_data="mb#main_close"),
+                InlineKeyboardButton("ʟ", callback_data="mb#main_close"),
+                InlineKeyboardButton("ᴏ", callback_data="mb#main_close"),
+                InlineKeyboardButton("ꜱ", callback_data="mb#main_close"),
+                InlineKeyboardButton("ᴇ", callback_data="mb#main_close")
+            ]
         ]
     else:
         kb = [
-            [InlineKeyboardButton("🛒 MARKETPLACE", callback_data="mb#main_marketplace"),
-             InlineKeyboardButton("📖 MY STORIES", callback_data="mb#my_buys")],
-            [InlineKeyboardButton("👤 Profile", callback_data="mb#main_profile"),
-             InlineKeyboardButton("⚙️ Settings", callback_data="mb#main_settings")],
-            [InlineKeyboardButton("🆘 Support / Help", callback_data="mb#main_help")],
-            [InlineKeyboardButton("✖️ Close", callback_data="mb#main_close")]
+            [
+                InlineKeyboardButton("ᴀ", callback_data="mb#about_arya_0"),
+                InlineKeyboardButton("ʀ", callback_data="mb#about_arya_0"),
+                InlineKeyboardButton("ʏ", callback_data="mb#about_arya_0"),
+                InlineKeyboardButton("ᴀ", callback_data="mb#about_arya_0")
+            ],
+            [InlineKeyboardButton(f"• {_bs('MARKETPLACE')} •", callback_data="mb#main_marketplace"),
+             InlineKeyboardButton(f"• {_bs('MY STORIES')} •", callback_data="mb#my_buys")],
+            [InlineKeyboardButton(f"{_sc('Profile')}", callback_data="mb#main_profile"),
+             InlineKeyboardButton(f"{_sc('Settings')}", callback_data="mb#main_settings")],
+            [InlineKeyboardButton(f"{_sc('Support / Help')}", callback_data="mb#main_help")],
+            [
+                InlineKeyboardButton("ᴄ", callback_data="mb#main_close"),
+                InlineKeyboardButton("ʟ", callback_data="mb#main_close"),
+                InlineKeyboardButton("ᴏ", callback_data="mb#main_close"),
+                InlineKeyboardButton("ꜱ", callback_data="mb#main_close"),
+                InlineKeyboardButton("ᴇ", callback_data="mb#main_close")
+            ]
         ]
     return InlineKeyboardMarkup(kb)
 
@@ -359,9 +383,9 @@ def _get_premium_menu_markup(bt_cfg: dict, lang: str):
         if r:
             rows.append(r)
     base = _get_main_menu(lang).inline_keyboard
-    # Insert URL row above Close button
+    # Insert URL row above Close
     if rows:
-        base = base[:-1] + rows + base[-1:]
+        base = base[:2] + rows + base[2:]
     return InlineKeyboardMarkup(base)
 
 
@@ -375,10 +399,11 @@ def _menu_card_text(user, bt_cfg: dict, bot_name: str, lang: str = 'en') -> str:
         import re
         return re.sub(r'\s+', '', val) == re.sub(r'\s+', '', default_val)
 
-    DEFAULT_WELCOME_EN = "Hey {name} | {bot_name}"
-    DEFAULT_ABOUT_EN = "Explore our premium story collection from Pocket FM, Kuku FM and more. Tap Marketplace to start browsing!"
-    DEFAULT_QUOTE_EN = "Quality Stories • Instant Delivery • Automated"
-    DEFAULT_AUTHOR_EN = "— Arya Premium"
+    DEFAULT_WELCOME_EN = """›› ʜᴇʏ, {name} | {bot_name}"""
+    DEFAULT_ABOUT_EN = """ʙʀᴏᴡꜱᴇ ᴘʀᴇᴍɪᴜᴍ ꜱᴛᴏʀɪᴇꜱ ꜰʀᴏᴍ pocket fm, kuku fm, headphone & more.
+ᴛᴀᴘ marketplace ᴛᴏ ᴇxᴘʟᴏʀᴇ ꜱᴛᴏʀɪᴇꜱ ʙʏ platform."""
+    DEFAULT_QUOTE_EN = """ǫᴜᴀʟɪᴛʏ ꜱᴛᴏʀɪᴇꜱ • ɪɴꜱᴛᴀɴᴛ ᴅᴇʟɪᴠᴇʀʏ • ᴀᴜᴛᴏᴍᴀᴛᴇᴅ"""
+    DEFAULT_AUTHOR_EN = """— ᴀʀʏᴀ ᴘʀᴇᴍɪᴜᴍ"""
     
     DEFAULT_WELCOME_HI = """नमस्ते {name}, आपका आर्या बोट में स्वागत है।"""
     DEFAULT_ABOUT_HI = """यहाँ आपको प्रसिद्ध ऐप्स की कहानियाँ मिलेंगी, जिन्हें आप “मार्केटप्लेस” पर जाकर खरीद सकते हैं।"""
