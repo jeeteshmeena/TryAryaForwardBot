@@ -363,29 +363,31 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
             for _akey, _afid in _ads_cfg_load.items():
                 if not _afid: continue
                 _ap = os.path.abspath(f"temp_ad_{job_id}_{_akey}.mp3")
-                if not os.path.exists(_ap):
-                    try:
-                        dlr = await _ad_dl_cli.download_media(_afid, file_name=_ap)
-                        if not dlr or not os.path.exists(_ap): continue
-                    except Exception as e:
-                        logger.warning(f"[Cleaner {job_id}] Failed to download ad '{_akey}': {e}")
-                        continue
+                # Always re-download to ensure fresh ad (never use stale cached file)
+                try:
+                    if os.path.exists(_ap): os.remove(_ap)
+                    dlr = await _ad_dl_cli.download_media(_afid, file_name=_ap)
+                    if not dlr or not os.path.exists(_ap): continue
+                except Exception as e:
+                    logger.warning(f"[Cleaner {job_id}] Failed to download ad '{_akey}': {e}")
+                    continue
                 _ad_local[_akey] = _ap
 
             if _ad_local:
                 import random as _random
                 _all_serials = list(range(curr_num, curr_num + total_files))
-                # Distribution: hindi:eng:arya_premium:channel = 2:2:1:1 (>50 files), 1:1:1:1 (<=50)
-                _ad_ratios = [
-                    ("hindi",        2 if total_files > 50 else 1),
-                    ("eng",          2 if total_files > 50 else 1),
-                    ("arya_premium", 1),
-                    ("channel",      1),
-                ]
+                # Distribution: strictly 1:1:1:1 for ≤50 files, 2:2:1:1 for >50 files
+                # Priority order: hindi → eng → arya_premium → channel
+                _priority = ["hindi", "eng", "arya_premium", "channel"]
                 _ad_pool = []
-                for _at_key, _at_cnt in _ad_ratios:
-                    if _at_key in _ad_local:
-                        _ad_pool.extend([_at_key] * _at_cnt)
+                if total_files <= 50:
+                    # Exactly 1 of each available type — guaranteed no duplicates
+                    _ad_pool = [k for k in _priority if k in _ad_local]
+                else:
+                    # 2 hindi + 2 eng + 1 arya_premium + 1 channel
+                    for _k in _priority:
+                        if _k in _ad_local:
+                            _ad_pool.extend([_k] * (2 if _k in ("hindi", "eng") else 1))
                 _pick_count = min(len(_ad_pool), len(_all_serials))
                 if _pick_count > 0:
                     _chosen = _random.sample(_all_serials, _pick_count)
@@ -783,9 +785,14 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                 bg_up = _bot if (_bot and out_size < 50 * 1024 * 1024 and not repl_mode) else client
                 bg_th = local_cover if (local_cover and os.path.exists(local_cover)) else None
                 if job.get("ad_inject_only"):
-                    bg_cap = orig_cap
+                    bg_cap  = orig_cap
+                    # Preserve original metadata: performer + filename (NOT temp names)
+                    bg_art  = getattr(m_obj, 'performer', '') or ''
+                    bg_file = orig_fn or clean_file
                 else:
-                    bg_cap = f"**{clean_file}**" if use_cap else ""
+                    bg_cap  = f"**{clean_file}**" if use_cap else ""
+                    bg_art  = art
+                    bg_file = clean_file
 
                 async def _background_upload_and_done(
                     u_cli, p_out, is_ff, is_aud, is_vid, cap, c_title, art, c_file, thumb, c_mid, l_ep, c_done
@@ -798,11 +805,12 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                                         edit_mid = c_mid if job.get("ad_inject_only") else (repl_sid + c_done)
                                         from pyrogram.types import InputMediaAudio, InputMediaVideo
                                         if job.get("ad_inject_only"):
-                                            # Direct: upload local file + edit in one Pyrogram call (no "send to me" hop)
+                                            # Direct upload + edit — preserve original title/performer/filename
                                             if is_ff or is_aud:
-                                                _im = InputMediaAudio(p_out, caption=cap)
+                                                _im = InputMediaAudio(p_out, caption=cap,
+                                                    title=c_title, performer=art, file_name=c_file)
                                             elif is_vid:
-                                                _im = InputMediaVideo(p_out, caption=cap)
+                                                _im = InputMediaVideo(p_out, caption=cap, file_name=c_file)
                                             else: break
                                             await asyncio.wait_for(u_cli.edit_message_media(dest_ch, edit_mid, media=_im), timeout=360)
                                         else:
@@ -859,7 +867,7 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                 _upload_task = asyncio.create_task(
                     _background_upload_and_done(
                         bg_up, out_path, use_ff, is_audio, is_video, bg_cap,
-                        clean_title, art, clean_file, bg_th, active_mid, ep_label, done
+                        clean_title, bg_art, bg_file, bg_th, active_mid, ep_label, done
                     )
                 )
 
@@ -1397,22 +1405,42 @@ async def _create_cl_flow(bot, user_id):
         "<i>Injects promo audio into files based on duration (1 ad/hour for long files).\n"
         "You can skip any individual ad type.</i>\n\n"
         "Do you want to inject Audio Ads?",
-        reply_markup=ReplyKeyboardMarkup([["✅ Yes, Inject Ads", "❌ No Ads"], ["⚙️ Edit Saved Ads"], [CANCEL_BTN]],
-                                          resize_keyboard=True, one_time_keyboard=True))
+        reply_markup=ReplyKeyboardMarkup(
+            [["✅ Yes, Inject Ads", "❌ No Ads"],
+             ["⚙️ Edit Saved Ads", "🗑 Reset All Ads"],
+             [CANCEL_BTN]],
+            resize_keyboard=True, one_time_keyboard=True))
     if _cancelled(r_ads): return await _abort()
 
     inject_ads = False
     ads_config = {}
     r_ads_text = (r_ads.text or "").lower()
 
-    if "yes" in r_ads_text or "edit" in r_ads_text:
+    if "reset" in r_ads_text:
+        # Wipe all saved ads from DB and show fresh edit flow
+        await _cl_save_default(user_id, "audio_ads", {})
+        # Delete any stale cached temp ad files on disk
+        import glob as _glob
+        for _stale in _glob.glob(os.path.abspath("temp_ad_*.mp3")):
+            try: os.remove(_stale)
+            except: pass
+        await bot.send_message(user_id,
+            "🗑 <b>All saved ads cleared!</b>\n"
+            "<i>Now upload your 4 new ad files below.</i>",
+            reply_markup=ReplyKeyboardRemove())
+        saved_ads = {}
+        inject_ads = True
+    elif "yes" in r_ads_text or "edit" in r_ads_text:
         inject_ads = "yes" in r_ads_text
         # Backward-compat: migrate old "cleaner" key
         saved_ads = df.get("audio_ads", {})
         if "cleaner" in saved_ads and "arya_premium" not in saved_ads:
             saved_ads["arya_premium"] = saved_ads.pop("cleaner")
+    else:
+        saved_ads = {}
 
-        if "edit" in r_ads_text or not saved_ads:
+    if "yes" in r_ads_text or "edit" in r_ads_text or "reset" in r_ads_text:
+        if "edit" in r_ads_text or "reset" in r_ads_text or not saved_ads:
             # Ask for each of 4 ad slots individually — each can be skipped
             _ad_slots = [
                 ("hindi",        "» Aᴅ 1 — Hɪɴᴅɪ Pʀᴏᴍᴏ",         "Hindi promotional audio (10–30s)."),
@@ -1449,14 +1477,15 @@ async def _create_cl_flow(bot, user_id):
             ads_config = {k: v for k, v in ads_config.items() if v}  # drop empty
             await _cl_save_default(user_id, "audio_ads", ads_config)
 
-            if "edit" in r_ads_text:
+            if "edit" in r_ads_text or "reset" in r_ads_text:
                 _active = len(ads_config)
                 await bot.send_message(user_id,
                     f"✅ <b>Ads config saved!</b>\n"
                     f"Active slots: <b>{_active}/4</b>\n"
-                    f"Types: {', '.join(ads_config.keys()) if ads_config else 'None'}",
+                    f"Types: {', '.join(ads_config.keys()) if ads_config else 'None'}\n\n"
+                    f"<i>Starting job with ads enabled...</i>",
                     reply_markup=ReplyKeyboardRemove())
-                inject_ads = True  # User edited ads → auto-enable injection, fall through to job creation
+                inject_ads = True  # auto-enable injection, fall through to job creation
         else:
             ads_config = saved_ads
 
