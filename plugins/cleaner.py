@@ -1440,7 +1440,7 @@ async def _create_cl_flow(bot, user_id):
                     f"Active slots: <b>{_active}/4</b>\n"
                     f"Types: {', '.join(ads_config.keys()) if ads_config else 'None'}",
                     reply_markup=ReplyKeyboardRemove())
-                return await _abort()
+                inject_ads = True  # User edited ads → auto-enable injection, fall through to job creation
         else:
             ads_config = saved_ads
 
