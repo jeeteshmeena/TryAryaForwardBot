@@ -797,16 +797,27 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                                     if repl_mode:
                                         edit_mid = c_mid if job.get("ad_inject_only") else (repl_sid + c_done)
                                         from pyrogram.types import InputMediaAudio, InputMediaVideo
-                                        if is_ff or is_aud:
-                                            _g = await asyncio.wait_for(u_cli.send_audio("me", p_out), timeout=300)
-                                            _im = InputMediaAudio(_g.audio.file_id, caption=cap, title=c_title, performer=art, thumb=thumb)
-                                        elif is_vid:
-                                            _g = await asyncio.wait_for(u_cli.send_video("me", p_out), timeout=300)
-                                            _im = InputMediaVideo(_g.video.file_id, caption=cap, thumb=thumb)
-                                        else: break
-                                        await asyncio.wait_for(u_cli.edit_message_media(dest_ch, edit_mid, media=_im), timeout=120)
-                                        try: await _g.delete()
-                                        except: pass
+                                        if job.get("ad_inject_only"):
+                                            # Direct: upload local file + edit in one Pyrogram call (no "send to me" hop)
+                                            if is_ff or is_aud:
+                                                _im = InputMediaAudio(p_out, caption=cap)
+                                            elif is_vid:
+                                                _im = InputMediaVideo(p_out, caption=cap)
+                                            else: break
+                                            await asyncio.wait_for(u_cli.edit_message_media(dest_ch, edit_mid, media=_im), timeout=360)
+                                        else:
+                                            # Normal replace mode: upload to me → file_id → edit
+                                            if is_ff or is_aud:
+                                                _g = await asyncio.wait_for(u_cli.send_audio("me", p_out), timeout=300)
+                                                _im = InputMediaAudio(_g.audio.file_id, caption=cap, title=c_title, performer=art, thumb=thumb)
+                                            elif is_vid:
+                                                _g = await asyncio.wait_for(u_cli.send_video("me", p_out), timeout=300)
+                                                _im = InputMediaVideo(_g.video.file_id, caption=cap, thumb=thumb)
+                                            else: break
+                                            await asyncio.wait_for(u_cli.edit_message_media(dest_ch, edit_mid, media=_im), timeout=120)
+                                            try: await _g.delete()
+                                            except: pass
+
                                     else:
                                         if is_ff or is_aud:
                                             await asyncio.wait_for(u_cli.send_audio(dest_ch, p_out, caption=cap, title=c_title, performer=art, file_name=c_file, thumb=thumb), timeout=300)
