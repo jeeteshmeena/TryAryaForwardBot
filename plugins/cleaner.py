@@ -450,7 +450,7 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
 
                 # Ad Inject Only Logic: Skip file download completely if it's not scheduled for an ad
                 ad_inject_only = job.get("ad_inject_only", False)
-                if ad_inject_only and exp_curr not in getattr(self, "_ad_schedule", _ad_schedule):
+                if ad_inject_only and exp_curr not in _ad_schedule:
                     return m, None, m_obj, m.id, lbl, None
 
                 orig_fn = getattr(m_obj, 'file_name', '') or ''
@@ -1215,159 +1215,161 @@ async def _create_cl_flow(bot, user_id):
         elif picked != "⏭️ Skip (Send to DM)":
             dest_chat = int(picked["chat_id"])
 
-    # Topic
-    from_topic_id = 0
-    r_topic = await _cl_ask(bot, user_id,
-        "<b>» Step 4c/9 — Topic (Optional)</b>\n\n"
-        "If source is a <b>group with topics</b>, send Topic ID or message link.\n"
-        "<i>Skip for regular channels.</i>", reply_markup=mk_s)
-    if _cancelled(r_topic): return await _abort()
-    if not _skip(r_topic.text or ""):
-        m = re.search(r't\.me/c/\d+/(\d+)/\d+', r_topic.text or "")
-        if m: from_topic_id = int(m.group(1))
-        else:
-            try: from_topic_id = int((r_topic.text or "0").strip())
-            except: pass
+    if not ad_inject_only:
+        # Topic
+        from_topic_id = 0
+        r_topic = await _cl_ask(bot, user_id,
+            "<b>» Step 4c/9 — Topic (Optional)</b>\n\n"
+            "If source is a <b>group with topics</b>, send Topic ID or message link.\n"
+            "<i>Skip for regular channels.</i>", reply_markup=mk_s)
+        if _cancelled(r_topic): return await _abort()
+        if not _skip(r_topic.text or ""):
+            m = re.search(r't\.me/c/\d+/(\d+)/\d+', r_topic.text or "")
+            if m: from_topic_id = int(m.group(1))
+            else:
+                try: from_topic_id = int((r_topic.text or "0").strip())
+                except: pass
 
-    # Rename
-    r_ren = await _cl_ask(bot, user_id,
-        "<b>» Step 5/9 — Rename Files?</b>",
-        reply_markup=ReplyKeyboardMarkup([["✅ Yes", "❌ No"], [CANCEL_BTN]],
-                                          resize_keyboard=True, one_time_keyboard=True))
-    if _cancelled(r_ren): return await _abort()
-    rename_files = "yes" in (r_ren.text or "").lower()
+        # Rename
+        r_ren = await _cl_ask(bot, user_id,
+            "<b>» Step 5/9 — Rename Files?</b>",
+            reply_markup=ReplyKeyboardMarkup([["✅ Yes", "❌ No"], [CANCEL_BTN]],
+                                              resize_keyboard=True, one_time_keyboard=True))
+        if _cancelled(r_ren): return await _abort()
+        rename_files = "yes" in (r_ren.text or "").lower()
 
-    base_name, start_num, name_format = "Cleaned", 1, "format_1"
-    if rename_files:
-        rb = await _cl_ask(bot, user_id, "<b>» Step 5a — Base Name</b>", reply_markup=mk_b)
-        if _cancelled(rb): return await _abort()
-        base_name = re.sub(r'[<>:"/\\|?*]', '_', (rb.text or "Cleaned").strip())
+        base_name, start_num, name_format = "Cleaned", 1, "format_1"
+        if rename_files:
+            rb = await _cl_ask(bot, user_id, "<b>» Step 5a — Base Name</b>", reply_markup=mk_b)
+            if _cancelled(rb): return await _abort()
+            base_name = re.sub(r'[<>:"/\\|?*]', '_', (rb.text or "Cleaned").strip())
 
-        rn = await _cl_ask(bot, user_id, "<b>» Step 5b — Starting Number</b>", reply_markup=mk_b)
-        if _cancelled(rn): return await _abort()
-        try: start_num = int((rn.text or "1").strip())
-        except: start_num = 1
+            rn = await _cl_ask(bot, user_id, "<b>» Step 5b — Starting Number</b>", reply_markup=mk_b)
+            if _cancelled(rn): return await _abort()
+            try: start_num = int((rn.text or "1").strip())
+            except: start_num = 1
 
-        rf = await _cl_ask(bot, user_id, "<b>» Step 5c — Naming Format</b>",
+            rf = await _cl_ask(bot, user_id, "<b>» Step 5c — Naming Format</b>",
+                reply_markup=ReplyKeyboardMarkup(
+                    [["[Name] [N]", "[N] - [Name]", "[Name] EP [N]"], [CANCEL_BTN]],
+                    resize_keyboard=True, one_time_keyboard=True))
+            if _cancelled(rf): return await _abort()
+            if "EP"  in (rf.text or ""): name_format = "format_3"
+            elif "-" in (rf.text or ""): name_format = "format_2"
+
+        # Convert video
+        r_cv = await _cl_ask(bot, user_id, "<b>» Step 6/9 — Convert Video to Audio?</b>",
+            reply_markup=ReplyKeyboardMarkup([["✅ Yes, Convert", "❌ No, Keep Video"], [CANCEL_BTN]],
+                                              resize_keyboard=True, one_time_keyboard=True))
+        if _cancelled(r_cv): return await _abort()
+        convert_videos = "yes" in (r_cv.text or "").lower()
+
+        # Deep Clean
+        r_adv = await _cl_ask(bot, user_id, 
+            "<b>» Step 6b/10 — Deep Audio Clean?</b>\n\n"
+            "<i>(Forces .MP3, Volume Normalize, & Noise Removal)\n"
+            "⚠️ Warning: This uses 100% CPU and makes the bot run normally (much slower/takes longer).</i>",
+            reply_markup=ReplyKeyboardMarkup([["✅ Yes, Deep Clean", "❌ No, Fast Output"], [CANCEL_BTN]],
+                                              resize_keyboard=True, one_time_keyboard=True))
+        if _cancelled(r_adv): return await _abort()
+        deep_clean = "yes" in (r_adv.text or "").lower()
+
+        # Metadata from defaults
+        df = await _cl_get_defaults(user_id)
+        adv_artist = df.get("artist", "")
+        adv_album  = df.get("album", "")
+        adv_year   = df.get("year", "")
+        adv_genre  = df.get("genre", "")
+        adv_cover  = df.get("cover", "")
+
+        # Artist
+        _artists = [a.strip() for a in str(adv_artist).split("|") if a.strip()]
+        art_rows = []
+        for i in range(0, len(_artists), 2): art_rows.append([KeyboardButton(a) for a in _artists[i:i+2]])
+        art_rows.append([SKIP_BTN, CANCEL_BTN])
+        r_art = await _cl_ask(bot, user_id,
+            f"<b>> Step 7a/10 — Artist Name</b>\n<i>Saved: {', '.join(_artists[:5]) or 'None'}</i>",
+            reply_markup=ReplyKeyboardMarkup(art_rows, resize_keyboard=True))
+        if _cancelled(r_art): return await _abort()
+        if not _skip(r_art.text or ""):
+            adv_artist = (r_art.text or "").strip()
+            if adv_artist and adv_artist not in _artists:
+                _artists.append(adv_artist)
+                await _cl_save_default(user_id, "artist", "|".join(_artists))
+
+        # Album
+        _albums  = [a.strip() for a in str(df.get("album_history","") or "").split("|") if a.strip()]
+        alb_list = _albums[:6]
+        alb_rows = []
+        for i in range(0, len(alb_list), 2): alb_rows.append([KeyboardButton(a) for a in alb_list[i:i+2]])
+        alb_rows.append([KeyboardButton("🗑 Clear"), KeyboardButton("✏️ Custom")])
+        alb_rows.append([SKIP_BTN, CANCEL_BTN])
+        r_alb = await _cl_ask(bot, user_id,
+            f"<b>> Step 7b/10 — Album Name</b>\n<i>Current: {adv_album or 'None'}</i>",
+            reply_markup=ReplyKeyboardMarkup(alb_rows, resize_keyboard=True, one_time_keyboard=True))
+        if _cancelled(r_alb): return await _abort()
+        _alb_t = (r_alb.text or "").strip()
+        if "🗑 Clear" in _alb_t:
+            adv_album = ""
+        elif "✏️ Custom" in _alb_t:
+            r2 = await _cl_ask(bot, user_id, "<b>Enter Album Name:</b>", reply_markup=mk_c)
+            if _cancelled(r2): return await _abort()
+            adv_album = (r2.text or "").strip()
+            if adv_album not in _albums: _albums.append(adv_album)
+            await _cl_save_default(user_id, "album_history", "|".join(_albums[-10:]))
+        elif not _skip(_alb_t):
+            adv_album = _alb_t
+        if not adv_album: adv_album = adv_artist
+
+        # Year
+        r_yr = await _cl_ask(bot, user_id,
+            f"<b>> Step 7c — Year</b>\n<i>Current: {adv_year or 'None'}</i>",
             reply_markup=ReplyKeyboardMarkup(
-                [["[Name] [N]", "[N] - [Name]", "[Name] EP [N]"], [CANCEL_BTN]],
+                [["2022","2023","2024","2025","2026"], ["✏️ Custom", SKIP_BTN, CANCEL_BTN]],
+                resize_keyboard=True))
+        if _cancelled(r_yr): return await _abort()
+        yr_t = (r_yr.text or "").strip()
+        if "✏️ Custom" in yr_t:
+            r2 = await _cl_ask(bot, user_id, "<b>Enter Year:</b>", reply_markup=mk_c)
+            if _cancelled(r2): return await _abort()
+            yr_t = (r2.text or "").strip()
+        if not _skip(yr_t): adv_year = yr_t
+
+        # Genre
+        r_gen = await _cl_ask(bot, user_id,
+            f"<b>> Step 7d — Genre</b>\n<i>Current: {adv_genre or 'None'}</i>",
+            reply_markup=ReplyKeyboardMarkup(
+                [["Audiobook","Romance","Podcast"],
+                 ["Thriller","Comedy","Drama"],
+                 ["✏️ Custom", SKIP_BTN, CANCEL_BTN]],
+                resize_keyboard=True))
+        if _cancelled(r_gen): return await _abort()
+        _gen_t = (r_gen.text or "").strip()
+        if "✏️ Custom" in _gen_t:
+            r2 = await _cl_ask(bot, user_id, "<b>Enter Genre:</b>", reply_markup=mk_c)
+            if _cancelled(r2): return await _abort()
+            _gen_t = (r2.text or "").strip()
+        if not _skip(_gen_t): adv_genre = _gen_t
+
+        # Cover
+        r_cov = await _cl_ask(bot, user_id,
+            f"<b>> Step 8/9 — Cover Image</b>\n"
+            f"<i>{'Default cover set. ' if adv_cover else ''}Send photo or Skip.</i>",
+            reply_markup=mk_s, timeout=300)
+        if _cancelled(r_cov): return await _abort()
+        if not _skip(r_cov.text or ""):
+            if r_cov.photo: adv_cover = r_cov.photo.file_id
+            elif r_cov.document and 'image' in (r_cov.document.mime_type or ''):
+                adv_cover = r_cov.document.file_id
+
+        # Caption
+        r_cap = await _cl_ask(bot, user_id,
+            "<b>» Step 9/9 — Add Caption?</b>\n\nAdd filename as caption in target channel?",
+            reply_markup=ReplyKeyboardMarkup(
+                [["✅ Yes, Add Caption"], ["❌ No, Empty Caption"], [CANCEL_BTN]],
                 resize_keyboard=True, one_time_keyboard=True))
-        if _cancelled(rf): return await _abort()
-        if "EP"  in (rf.text or ""): name_format = "format_3"
-        elif "-" in (rf.text or ""): name_format = "format_2"
-
-    # Convert video
-    r_cv = await _cl_ask(bot, user_id, "<b>» Step 6/9 — Convert Video to Audio?</b>",
-        reply_markup=ReplyKeyboardMarkup([["✅ Yes, Convert", "❌ No, Keep Video"], [CANCEL_BTN]],
-                                          resize_keyboard=True, one_time_keyboard=True))
-    if _cancelled(r_cv): return await _abort()
-    convert_videos = "yes" in (r_cv.text or "").lower()
-
-    # Deep Clean
-    r_adv = await _cl_ask(bot, user_id, 
-        "<b>» Step 6b/10 — Deep Audio Clean?</b>\n\n"
-        "<i>(Forces .MP3, Volume Normalize, & Noise Removal)\n"
-        "⚠️ Warning: This uses 100% CPU and makes the bot run normally (much slower/takes longer).</i>",
-        reply_markup=ReplyKeyboardMarkup([["✅ Yes, Deep Clean", "❌ No, Fast Output"], [CANCEL_BTN]],
-                                          resize_keyboard=True, one_time_keyboard=True))
-    if _cancelled(r_adv): return await _abort()
-    deep_clean = "yes" in (r_adv.text or "").lower()
-
-    # Metadata from defaults
-    df = await _cl_get_defaults(user_id)
-    adv_artist = df.get("artist", "")
-    adv_album  = df.get("album", "")
-    adv_year   = df.get("year", "")
-    adv_genre  = df.get("genre", "")
-    adv_cover  = df.get("cover", "")
-
-    # Artist
-    _artists = [a.strip() for a in str(adv_artist).split("|") if a.strip()]
-    art_rows = []
-    for i in range(0, len(_artists), 2): art_rows.append([KeyboardButton(a) for a in _artists[i:i+2]])
-    art_rows.append([SKIP_BTN, CANCEL_BTN])
-    r_art = await _cl_ask(bot, user_id,
-        f"<b>> Step 7a/10 — Artist Name</b>\n<i>Saved: {', '.join(_artists[:5]) or 'None'}</i>",
-        reply_markup=ReplyKeyboardMarkup(art_rows, resize_keyboard=True))
-    if _cancelled(r_art): return await _abort()
-    if not _skip(r_art.text or ""):
-        adv_artist = (r_art.text or "").strip()
-        if adv_artist and adv_artist not in _artists:
-            _artists.append(adv_artist)
-            await _cl_save_default(user_id, "artist", "|".join(_artists))
-
-    # Album
-    _albums  = [a.strip() for a in str(df.get("album_history","") or "").split("|") if a.strip()]
-    alb_list = _albums[:6]
-    alb_rows = []
-    for i in range(0, len(alb_list), 2): alb_rows.append([KeyboardButton(a) for a in alb_list[i:i+2]])
-    alb_rows.append([KeyboardButton("🗑 Clear"), KeyboardButton("✏️ Custom")])
-    alb_rows.append([SKIP_BTN, CANCEL_BTN])
-    r_alb = await _cl_ask(bot, user_id,
-        f"<b>> Step 7b/10 — Album Name</b>\n<i>Current: {adv_album or 'None'}</i>",
-        reply_markup=ReplyKeyboardMarkup(alb_rows, resize_keyboard=True, one_time_keyboard=True))
-    if _cancelled(r_alb): return await _abort()
-    _alb_t = (r_alb.text or "").strip()
-    if "🗑 Clear" in _alb_t:
-        adv_album = ""
-    elif "✏️ Custom" in _alb_t:
-        r2 = await _cl_ask(bot, user_id, "<b>Enter Album Name:</b>", reply_markup=mk_c)
-        if _cancelled(r2): return await _abort()
-        adv_album = (r2.text or "").strip()
-        if adv_album not in _albums: _albums.append(adv_album)
-        await _cl_save_default(user_id, "album_history", "|".join(_albums[-10:]))
-    elif not _skip(_alb_t):
-        adv_album = _alb_t
-    if not adv_album: adv_album = adv_artist 
-    # Year
-    r_yr = await _cl_ask(bot, user_id,
-        f"<b>> Step 7c — Year</b>\n<i>Current: {adv_year or 'None'}</i>",
-        reply_markup=ReplyKeyboardMarkup(
-            [["2022","2023","2024","2025","2026"], ["✏️ Custom", SKIP_BTN, CANCEL_BTN]],
-            resize_keyboard=True))
-    if _cancelled(r_yr): return await _abort()
-    yr_t = (r_yr.text or "").strip()
-    if "✏️ Custom" in yr_t:
-        r2 = await _cl_ask(bot, user_id, "<b>Enter Year:</b>", reply_markup=mk_c)
-        if _cancelled(r2): return await _abort()
-        yr_t = (r2.text or "").strip()
-    if not _skip(yr_t): adv_year = yr_t
-
-    # Genre
-    r_gen = await _cl_ask(bot, user_id,
-        f"<b>> Step 7d — Genre</b>\n<i>Current: {adv_genre or 'None'}</i>",
-        reply_markup=ReplyKeyboardMarkup(
-            [["Audiobook","Romance","Podcast"],
-             ["Thriller","Comedy","Drama"],
-             ["✏️ Custom", SKIP_BTN, CANCEL_BTN]],
-            resize_keyboard=True))
-    if _cancelled(r_gen): return await _abort()
-    _gen_t = (r_gen.text or "").strip()
-    if "✏️ Custom" in _gen_t:
-        r2 = await _cl_ask(bot, user_id, "<b>Enter Genre:</b>", reply_markup=mk_c)
-        if _cancelled(r2): return await _abort()
-        _gen_t = (r2.text or "").strip()
-    if not _skip(_gen_t): adv_genre = _gen_t
-
-    # Cover
-    r_cov = await _cl_ask(bot, user_id,
-        f"<b>> Step 8/9 — Cover Image</b>\n"
-        f"<i>{'Default cover set. ' if adv_cover else ''}Send photo or Skip.</i>",
-        reply_markup=mk_s, timeout=300)
-    if _cancelled(r_cov): return await _abort()
-    if not _skip(r_cov.text or ""):
-        if r_cov.photo: adv_cover = r_cov.photo.file_id
-        elif r_cov.document and 'image' in (r_cov.document.mime_type or ''):
-            adv_cover = r_cov.document.file_id
-
-    # Caption
-    r_cap = await _cl_ask(bot, user_id,
-        "<b>» Step 9/9 — Add Caption?</b>\n\nAdd filename as caption in target channel?",
-        reply_markup=ReplyKeyboardMarkup(
-            [["✅ Yes, Add Caption"], ["❌ No, Empty Caption"], [CANCEL_BTN]],
-            resize_keyboard=True, one_time_keyboard=True))
-    if _cancelled(r_cap): return await _abort()
-    use_caption = "no, empty" not in (r_cap.text or "").lower()
+        if _cancelled(r_cap): return await _abort()
+        use_caption = "no, empty" not in (r_cap.text or "").lower()
 
     # Audio Ad Injection — 4 types, individual skip, duration-aware
     r_ads = await _cl_ask(bot, user_id,
