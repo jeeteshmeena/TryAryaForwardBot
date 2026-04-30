@@ -429,7 +429,7 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
         #   • download_media returns coroutine that resolves to None → same; SKIP silently
         #   • NoneType coroutine bug → guard against it; SKIP
         #   • Network/Timeout/Auth/Flood error → RAISE so main loop pauses the job
-        async def _next_media(start_mid: int):
+        async def _next_media(start_mid: int, exp_curr: int):
             mid = start_mid
             while mid <= eid:
                 if mid not in _msg_cache:
@@ -447,6 +447,11 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                 _cp  = (getattr(m, 'caption', '') or '').strip()
                 lbl  = (extract_ep_label_robust(f"{_tt} @@@ {_fn} @@@ {_cp}") or {}).get("label", "")
                 if lbl and lbl in _seen: continue
+
+                # Ad Inject Only Logic: Skip file download completely if it's not scheduled for an ad
+                ad_inject_only = job.get("ad_inject_only", False)
+                if ad_inject_only and exp_curr not in getattr(self, "_ad_schedule", _ad_schedule):
+                    return m, None, m_obj, m.id, lbl, None
 
                 orig_fn = getattr(m_obj, 'file_name', '') or ''
                 ext = (os.path.splitext(orig_fn)[1]
@@ -502,7 +507,7 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
         msg_id = curr_mid
         await _fill_cache(msg_id)
         # Pre-kick: start downloading first file NOW in background
-        _next_task: asyncio.Task | None = asyncio.create_task(_next_media(msg_id))
+        _next_task: asyncio.Task | None = asyncio.create_task(_next_media(msg_id, curr_num))
         _upload_task: asyncio.Task | None = None
 
         while True:
@@ -547,10 +552,36 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
 
             msg, dl_path, m_obj, active_mid, ep_label, orig_ext = p_res
 
+            # Wait for previous upload to finish (Strict Ordering) before handling skipped files
+            if _upload_task:
+                up_ok, up_err, up_mid = await _upload_task
+                _upload_task = None
+                if not up_ok:
+                    raise Exception(f"Upload task failed (mid={up_mid}): {up_err}")
+
+            # Handled skipped files in Ad Inject Only mode
+            if not dl_path:
+                if ep_label: _seen.add(str(ep_label))
+                done += 1
+                curr_num += 1
+                await _cl_update_job(job_id, {
+                    "files_done": done,
+                    "current_msg_id": active_mid + 1,
+                    "curr_num_checkpoint": curr_num,
+                    "last_progress_ts": time.time(),
+                })
+                # Kick next
+                next_start = active_mid + 1
+                if next_start <= eid:
+                    _next_task = asyncio.create_task(_next_media(next_start, curr_num))
+                else:
+                    _next_task = None
+                continue
+
             # ⚡ Kick off NEXT download IMMEDIATELY — runs parallel with FFmpeg below
             next_start = active_mid + 1
             if next_start <= eid:
-                _next_task = asyncio.create_task(_next_media(next_start))
+                _next_task = asyncio.create_task(_next_media(next_start, curr_num + 1))
             msg_id = next_start
 
             # DB stop-check every 20 files (cheap — not every file)
@@ -734,6 +765,8 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
 
                 # ── TRUE PARALLEL UPLOAD PIPELINE ──
                 # 1. Wait for PREVIOUS file to finish uploading (Strict Ordering)
+                # Wait is now handled before skipped file checks at the top of the loop
+                # This just ensures we don't start a new upload before old one finishes
                 if _upload_task:
                     up_ok, up_err, up_mid = await _upload_task
                     _upload_task = None
@@ -744,7 +777,10 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                 out_size = os.path.getsize(out_path) if os.path.exists(out_path) else 0
                 bg_up = _bot if (_bot and out_size < 50 * 1024 * 1024 and not repl_mode) else client
                 bg_th = local_cover if (local_cover and os.path.exists(local_cover)) else None
-                bg_cap = f"**{clean_file}**" if use_cap else ""
+                if job.get("ad_inject_only"):
+                    bg_cap = orig_cap
+                else:
+                    bg_cap = f"**{clean_file}**" if use_cap else ""
 
                 async def _background_upload_and_done(
                     u_cli, p_out, is_ff, is_aud, is_vid, cap, c_title, art, c_file, thumb, c_mid, l_ep, c_done
@@ -754,7 +790,7 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                             try:
                                 async with _cl_ul_sem:
                                     if repl_mode:
-                                        edit_mid = repl_sid + c_done
+                                        edit_mid = c_mid if job.get("ad_inject_only") else (repl_sid + c_done)
                                         from pyrogram.types import InputMediaAudio, InputMediaVideo
                                         if is_ff or is_aud:
                                             _g = await asyncio.wait_for(u_cli.send_audio("me", p_out), timeout=300)
@@ -1125,35 +1161,59 @@ async def _create_cl_flow(bot, user_id):
 
     # Start link
     r_start = await _cl_ask(bot, user_id,
-        "<b>» Step 2/9</b>\n\nSend the <b>Start Message Link</b> (first file):", reply_markup=mk_c)
+        "<b>» Step 2/10</b>\n\nSend the <b>Start Message Link</b> (first file):", reply_markup=mk_c)
     if _cancelled(r_start): return await _abort()
     from_chat, sid = _parse_link(r_start.text or "")
 
     # End link
     r_end = await _cl_ask(bot, user_id,
-        "<b>» Step 3/9</b>\n\nSend the <b>End Message Link</b> (last file):", reply_markup=mk_b)
+        "<b>» Step 3/10</b>\n\nSend the <b>End Message Link</b> (last file):", reply_markup=mk_b)
     if _cancelled(r_end): return await _abort()
     _, eid = _parse_link(r_end.text or "")
     if sid and eid and sid > eid: sid, eid = eid, sid
 
-    # Destination
-    from plugins.utils import ask_channel_picker
-    dest_chat = user_id; replace_mode = False; replace_start_msg_id = 0
-    picked = await ask_channel_picker(bot, user_id,
-        "<b>» Step 4/9</b>\n\nSelect <b>destination channel</b>:",
-        extra_options=["✏️ Replace/Edit Mode", "⏭️ Skip (Send to DM)"])
-    if not picked: return await _abort()
-    if picked == "✏️ Replace/Edit Mode":
+    # Mode: Full Migration vs Ad Injection Only
+    r_mode = await _cl_ask(bot, user_id,
+        "<b>» Step 4/10 — Job Type</b>\n\nChoose job type:",
+        reply_markup=ReplyKeyboardMarkup([
+            ["✨ New Migration (Full Cleaner)"],
+            ["💉 Existing Files (Ad Inject Only)"]
+        ], resize_keyboard=True, one_time_keyboard=True))
+    if _cancelled(r_mode): return await _abort()
+    ad_inject_only = "inject" in (r_mode.text or "").lower() or "existing" in (r_mode.text or "").lower()
+
+    if ad_inject_only:
+        dest_chat = from_chat
         replace_mode = True
-        pk = await ask_channel_picker(bot, user_id, "<b>Select channel to edit:</b>")
-        if not pk: return await _abort()
-        dest_chat = int(pk["chat_id"])
-        rm = await _cl_ask(bot, user_id, "<b>First message ID to replace:</b>", reply_markup=mk_c)
-        if _cancelled(rm): return await _abort()
-        try: replace_start_msg_id = int((rm.text or "0").strip())
-        except: replace_start_msg_id = 0
-    elif picked != "⏭️ Skip (Send to DM)":
-        dest_chat = int(picked["chat_id"])
+        replace_start_msg_id = sid
+        from_topic_id = 0
+        rename_files = False
+        convert_videos = False
+        deep_clean = False
+        adv_artist = ""; adv_year = ""; adv_album = ""; adv_genre = ""; adv_cover = None
+        use_caption = True
+        base_name = ""
+        start_num = 1
+        name_format = "format_1"
+    else:
+        # Destination
+        from plugins.utils import ask_channel_picker
+        dest_chat = user_id; replace_mode = False; replace_start_msg_id = 0
+        picked = await ask_channel_picker(bot, user_id,
+            "<b>» Step 5/10</b>\n\nSelect <b>destination channel</b>:",
+            extra_options=["✏️ Replace/Edit Mode", "⏭️ Skip (Send to DM)"])
+        if not picked: return await _abort()
+        if picked == "✏️ Replace/Edit Mode":
+            replace_mode = True
+            pk = await ask_channel_picker(bot, user_id, "<b>Select channel to edit:</b>")
+            if not pk: return await _abort()
+            dest_chat = int(pk["chat_id"])
+            rm = await _cl_ask(bot, user_id, "<b>First message ID to replace:</b>", reply_markup=mk_c)
+            if _cancelled(rm): return await _abort()
+            try: replace_start_msg_id = int((rm.text or "0").strip())
+            except: replace_start_msg_id = 0
+        elif picked != "⏭️ Skip (Send to DM)":
+            dest_chat = int(picked["chat_id"])
 
     # Topic
     from_topic_id = 0
@@ -1205,7 +1265,7 @@ async def _create_cl_flow(bot, user_id):
 
     # Deep Clean
     r_adv = await _cl_ask(bot, user_id, 
-        "<b>» Step 6b/9 — Deep Audio Clean?</b>\n\n"
+        "<b>» Step 6b/10 — Deep Audio Clean?</b>\n\n"
         "<i>(Forces .MP3, Volume Normalize, & Noise Removal)\n"
         "⚠️ Warning: This uses 100% CPU and makes the bot run normally (much slower/takes longer).</i>",
         reply_markup=ReplyKeyboardMarkup([["✅ Yes, Deep Clean", "❌ No, Fast Output"], [CANCEL_BTN]],
@@ -1227,7 +1287,7 @@ async def _create_cl_flow(bot, user_id):
     for i in range(0, len(_artists), 2): art_rows.append([KeyboardButton(a) for a in _artists[i:i+2]])
     art_rows.append([SKIP_BTN, CANCEL_BTN])
     r_art = await _cl_ask(bot, user_id,
-        f"<b>> Step 7a — Artist Name</b>\n<i>Saved: {', '.join(_artists[:5]) or 'None'}</i>",
+        f"<b>> Step 7a/10 — Artist Name</b>\n<i>Saved: {', '.join(_artists[:5]) or 'None'}</i>",
         reply_markup=ReplyKeyboardMarkup(art_rows, resize_keyboard=True))
     if _cancelled(r_art): return await _abort()
     if not _skip(r_art.text or ""):
@@ -1244,7 +1304,7 @@ async def _create_cl_flow(bot, user_id):
     alb_rows.append([KeyboardButton("🗑 Clear"), KeyboardButton("✏️ Custom")])
     alb_rows.append([SKIP_BTN, CANCEL_BTN])
     r_alb = await _cl_ask(bot, user_id,
-        f"<b>> Step 7b — Album Name</b>\n<i>Current: {adv_album or 'None'}</i>",
+        f"<b>> Step 7b/10 — Album Name</b>\n<i>Current: {adv_album or 'None'}</i>",
         reply_markup=ReplyKeyboardMarkup(alb_rows, resize_keyboard=True, one_time_keyboard=True))
     if _cancelled(r_alb): return await _abort()
     _alb_t = (r_alb.text or "").strip()
@@ -1258,8 +1318,7 @@ async def _create_cl_flow(bot, user_id):
         await _cl_save_default(user_id, "album_history", "|".join(_albums[-10:]))
     elif not _skip(_alb_t):
         adv_album = _alb_t
-    if not adv_album: adv_album = adv_artist
-
+    if not adv_album: adv_album = adv_artist 
     # Year
     r_yr = await _cl_ask(bot, user_id,
         f"<b>> Step 7c — Year</b>\n<i>Current: {adv_year or 'None'}</i>",
@@ -1312,7 +1371,7 @@ async def _create_cl_flow(bot, user_id):
 
     # Audio Ad Injection — 4 types, individual skip, duration-aware
     r_ads = await _cl_ask(bot, user_id,
-        "<b>» Step 10 — Inject Audio Ads? (Premium)</b>\n\n"
+        "<b>» Step 10/10 — Inject Audio Ads? (Premium)</b>\n\n"
         "<i>Injects promo audio into files based on duration (1 ad/hour for long files).\n"
         "You can skip any individual ad type.</i>\n\n"
         "Do you want to inject Audio Ads?",
@@ -1396,8 +1455,9 @@ async def _create_cl_flow(bot, user_id):
         "inject_ads": inject_ads, "ads_config": ads_config,
         "account_id": sel_acc.get("id"), "is_bot": sel_acc.get("is_bot", True),
         "created_at": _ist_now().strftime('%Y-%m-%d %H:%M:%S'),
-        "target_title": "DM" if dest_chat == user_id else "Channel",
+        "target_title": "Source (In-Place)" if ad_inject_only else ("DM" if dest_chat == user_id else "Channel"),
         "phase_start_ts": 0,
+        "ad_inject_only": ad_inject_only,
     }
     await _cl_save_job(job)
     _cl_cancel_users.discard(user_id)
