@@ -3175,6 +3175,16 @@ async def dispatch_delivery_choice(client, user_id, story):
         kb.append([InlineKeyboardButton(chan_btn_txt, callback_data=f"mb#deliver_channel#{story_id_str}")])
     kb.append([InlineKeyboardButton(back_btn_txt, callback_data="mb#main_back")])
 
+    # Forwarding protection notice
+    fwd_enabled = story.get('forwarding_enabled', True)
+    if not fwd_enabled:
+        protect_note = (
+            "\n\n<blockquote><b>🔒 Forwarding Disabled:</b> Files for this story are <b>protected</b>. Screenshots and forwarding are not allowed.</blockquote>"
+            if lang != 'hi' else
+            "\n\n<blockquote><b>🔒 फॉरवर्डिंग बंद है:</b> इस स्टोरी की फाइलें <b>सुरक्षित</b> हैं। स्क्रीनशॉट और फॉरवर्डिंग की अनुमति नहीं है।</blockquote>"
+        )
+        del_txt += protect_note
+
     await client.send_message(user_id, del_txt, reply_markup=InlineKeyboardMarkup(kb))
 
 async def _auto_delete_demo(client, user_id, msg_ids):
@@ -3320,7 +3330,7 @@ async def _do_dm_delivery(client, user_id, story, status_msg=None, part_start=No
                     chat_id=user_id,
                     from_chat_id=int(src),
                     message_id=msg_id,
-                    protect_content=bt_cfg.get("protect", False),
+                    protect_content=bt_cfg.get("protect", False) or not story.get('forwarding_enabled', True),
                 )
                 if cap_tpl:
                     my_kwargs = dict(kwargs)

@@ -959,6 +959,11 @@ async def market_callback(client, query):
             upi_icon = '✅' if 'upi' in pay_methods else '❌'
             rzp_icon = '✅' if 'razorpay' in pay_methods else '❌'
 
+            # Forwarding status
+            fwd_enabled = story.get('forwarding_enabled', True)
+            fwd_icon = '✅' if fwd_enabled else '❌'
+            fwd_label = 'ON' if fwd_enabled else 'OFF'
+
             detail_txt = (
                 f"<b>⟦ {sname_en} ⟧</b>\n\n"
                 f"<blockquote>"
@@ -969,6 +974,7 @@ async def market_callback(client, query):
                 f"<b>⨉ Episodes    ⟶</b> {episodes}\n"
                 f"<b>⨉ Status      ⟶</b> {status}\n"
                 f"<b>⨉ Payments    ⟶</b> UPI {upi_icon}  Razorpay {rzp_icon}\n"
+                f"<b>⨉ Forwarding  ⟶</b> {fwd_icon} {fwd_label}\n"
                 f"<b>⨉ DB ID       ⟶</b> <code>{s_id}</code>"
                 f"</blockquote>\n\n"
                 f"<i>{desc}</i>\n\n"
@@ -987,6 +993,8 @@ async def market_callback(client, query):
                 # Payment method toggles
                 [InlineKeyboardButton(f"{upi_icon} Manual UPI", callback_data=f"mk#st_pay_methods_{s_id}_upi"),
                  InlineKeyboardButton(f"{rzp_icon} Razorpay", callback_data=f"mk#st_pay_methods_{s_id}_razorpay")],
+                # Forwarding toggle
+                [InlineKeyboardButton(f"{fwd_icon} Forwarding: {fwd_label}", callback_data=f"mk#st_fwd_toggle_{s_id}")],
                 [InlineKeyboardButton("Remove Story", callback_data=f"mk#st_confirm_rm_{s_id}")],
                 [InlineKeyboardButton("« Back", callback_data="mk#ms_list_0")],
             ]
@@ -1019,6 +1027,22 @@ async def market_callback(client, query):
             await db.db.premium_stories.delete_one({"_id": ObjectId(s_id)})
             await _safe_answer(query, "Story removed!", show_alert=True)
             query.data = "mk#ms_list_0"
+            return await market_callback(client, query)
+
+        elif cmd.startswith("st_fwd_toggle_"):
+            s_id = cmd.split("_")[3]
+            from bson.objectid import ObjectId
+            story = await db.db.premium_stories.find_one({"_id": ObjectId(s_id)})
+            if not story: return await _safe_answer(query, "Story not found!", show_alert=True)
+            curr_fwd = story.get('forwarding_enabled', True)
+            new_fwd = not curr_fwd
+            await db.db.premium_stories.update_one(
+                {"_id": ObjectId(s_id)},
+                {"$set": {"forwarding_enabled": new_fwd}}
+            )
+            status_txt = "ON ✅" if new_fwd else "OFF ❌"
+            await _safe_answer(query, f"Forwarding set to {status_txt}", show_alert=True)
+            query.data = f"mk#st_view_{s_id}"
             return await market_callback(client, query)
 
         elif cmd == "pending":
@@ -1847,7 +1871,8 @@ async def _add_story_flow(client, user_id):
             sj["delivery_mode"] = "pool"
             sj["channel_pool"] = [c["channel_id"] for c in delivery_channels] if delivery_channels else []
 
-        # Save
+        # Save (forwarding_enabled defaults to True)
+        sj.setdefault("forwarding_enabled", True)
         result = await db.db.premium_stories.insert_one(sj)
         story_id = str(result.inserted_id)
         deep_link = f"https://t.me/{sj['bot_username']}?start=buy_{story_id}"
