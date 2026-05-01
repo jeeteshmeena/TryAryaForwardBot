@@ -201,11 +201,13 @@ def _build_ffmpeg_cmd(input_path, output_path, cover_path, meta: dict, deep_clea
             cmd += ["-c:v", "mjpeg", "-id3v2_version", "3", "-disposition:v", "attached_pic"]
         cmd += ["-metadata:s:v", "title=Album cover", "-metadata:s:v", "comment=Cover (front)"]
     else:
-        # If it's a video, map both video and audio from input 0
+        # Video: map both streams from input 0
         if out_ext in (".mp4", ".mkv", ".webm"):
             cmd += ["-map", "0:v:0?", "-map", "0:a:0?"]
         else:
-            cmd += ["-map", "0:a:0?"]
+            # Audio: map audio + any existing attached cover art (0:v:0? is optional — safe if no cover)
+            cmd += ["-map", "0:a:0?", "-map", "0:v:0?"]
+            cmd += ["-c:v", "copy"]  # preserve existing cover stream as-is
 
     # Global flags to prevent muxer errors from weird streams
     cmd += ["-sn", "-dn"]  # No subtitles, No data streams
@@ -223,7 +225,9 @@ def _build_ffmpeg_cmd(input_path, output_path, cover_path, meta: dict, deep_clea
     else:
         cmd += ["-c:a", "libmp3lame", "-b:a", "128k", "-ac", "1", "-threads", "1"]
 
-    cmd += ["-map_metadata", "-1"]
+    # Preserve all existing metadata from input (title, artist, album, cover, etc.)
+    # Individual -metadata flags below will override specific fields
+    cmd += ["-map_metadata", "0"]
 
     for k, v in meta.items():
         if v: cmd += ["-metadata", f"{k}={v}"]
@@ -375,27 +379,83 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
 
             if _ad_local:
                 import random as _random
-                _all_serials = list(range(curr_num, curr_num + total_files))
-                # Distribution: strictly 1:1:1:1 for ≤50 files, 2:2:1:1 for >50 files
-                # Priority order: hindi → eng → arya_premium → channel
-                _priority = ["hindi", "eng", "arya_premium", "channel"]
-                _ad_pool = []
-                if total_files <= 50:
-                    # Exactly 1 of each available type — guaranteed no duplicates
-                    _ad_pool = [k for k in _priority if k in _ad_local]
-                else:
-                    # 2 hindi + 2 eng + 1 arya_premium + 1 channel
-                    for _k in _priority:
-                        if _k in _ad_local:
-                            _ad_pool.extend([_k] * (2 if _k in ("hindi", "eng") else 1))
-                _pick_count = min(len(_ad_pool), len(_all_serials))
-                if _pick_count > 0:
-                    _chosen = _random.sample(_all_serials, _pick_count)
-                    _chosen.sort()
-                    _random.shuffle(_ad_pool)
-                    for _sn, _at in zip(_chosen, _ad_pool):
-                        _ad_schedule[_sn] = _at
-                    logger.info(f"[Cleaner {job_id}] Ad schedule ({len(_ad_schedule)} slots, {total_files} files): {_ad_schedule}")
+                import math as _math
+
+                # ── Per-100-episode chunk schedule ─────────────────────────────
+                # 6 ads per 100 episodes: 2 hindi + 2 eng + 1 arya_premium + 1 channel
+                # 50-ep subrule: within each 100-ep chunk, the two arya-bot ads are
+                #   placed in opposite 50-ep halves (randomly positioned inside each half).
+                # Partial final chunk: proportional count (min 1).
+                _CHUNK    = 100
+                _ADS_FULL = 6
+
+                _ARYA_T  = ["hindi", "eng"]
+                _OTHER_T = ["arya_premium", "channel"]
+
+                n_total_files = total_files
+                _base_serial  = curr_num
+
+                for _ci in range(_math.ceil(n_total_files / _CHUNK)):
+                    _cs   = _ci * _CHUNK
+                    _ce   = min(_cs + _CHUNK, n_total_files)
+                    _csz  = _ce - _cs
+                    _n_ads = _ADS_FULL if _csz >= 80 else max(1, round(_ADS_FULL * _csz / _CHUNK))
+
+                    # Build pool
+                    _pool: list = []
+                    if _csz >= 80:
+                        for _k in ["hindi", "hindi", "eng", "eng", "arya_premium", "channel"]:
+                            if _k in _ad_local: _pool.append(_k)
+                    elif _csz >= 50:
+                        for _k in ["hindi", "eng", "arya_premium", "channel"]:
+                            if _k in _ad_local: _pool.append(_k)
+                    elif _csz >= 25:
+                        for _k in ["hindi", "eng", "arya_premium"]:
+                            if _k in _ad_local: _pool.append(_k)
+                    else:
+                        _av = [k for k in _ARYA_T if k in _ad_local]
+                        if _av: _pool.append(_random.choice(_av))
+                        _ov = [k for k in _OTHER_T if k in _ad_local]
+                        if _ov: _pool.append(_random.choice(_ov))
+                    _pool = _pool[:_n_ads]
+                    if not _pool: continue
+
+                    _ch_sn   = list(range(_base_serial + _cs, _base_serial + _ce))
+                    _half    = len(_ch_sn) // 2
+                    _first_h = _ch_sn[:_half]
+                    _second_h = _ch_sn[_half:]
+
+                    _arya_ads  = [a for a in _pool if a in _ARYA_T]
+                    _other_ads = [a for a in _pool if a not in _ARYA_T]
+                    _used: set = set()
+
+                    def _pick(halv):
+                        avl = [s for s in halv if s not in _used and s not in _ad_schedule]
+                        return _random.choice(avl) if avl else None
+
+                    # 50-ep subrule: 1st arya ad → 1st half, 2nd → 2nd half
+                    _arem = list(_arya_ads)
+                    if _arem:
+                        sn = _pick(_first_h)
+                        if sn: _ad_schedule[sn] = _arem.pop(0); _used.add(sn)
+                    if _arem:
+                        sn = _pick(_second_h)
+                        if sn: _ad_schedule[sn] = _arem.pop(0); _used.add(sn)
+                    for _at in _arem:
+                        sn = _pick(_ch_sn)
+                        if sn: _ad_schedule[sn] = _at; _used.add(sn)
+
+                    # Other ads anywhere in chunk
+                    for _at in _other_ads:
+                        sn = _pick(_ch_sn)
+                        if sn: _ad_schedule[sn] = _at; _used.add(sn)
+
+                logger.info(
+                    f"[Cleaner {job_id}] Ad schedule: {len(_ad_schedule)} ads for {n_total_files} files "
+                    f"({_math.ceil(n_total_files/_CHUNK)} chunks × ~{_ADS_FULL}/100ep): {_ad_schedule}"
+                )
+
+
 
         _seen      = set()
         fail_count = 0
@@ -686,47 +746,88 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                 else:
                     shutil.move(dl_path, out_path)
 
-                # ── Audio Ad Injection — duration-aware marathon (1 ad per hour) ──
-                if inject_ads and _ad_schedule and curr_num in _ad_schedule and out_path and os.path.exists(out_path):
-                    try:
-                        import random as _rnd_inj
-                        _inj_loop = asyncio.get_event_loop()
+                # ── Audio Ad Injection ─────────────────────────────────────────
+                # Two paths:
+                #  A) Group file: filename contains ep range (e.g. "51-150") → compute
+                #     proportional ads from ep count, inject evenly across duration.
+                #  B) Single-ep file: inject only if curr_num is in _ad_schedule.
+                if inject_ads and _ad_local and out_path and os.path.exists(out_path):
+                  try:
+                    import random as _rnd_inj, math as _rnd_math, re as _re_inj
+                    _inj_loop = asyncio.get_event_loop()
 
-                        # Helper: probe duration synchronously in thread pool
-                        def _probe_dur_sync(_ppath):
-                            _pr = __import__("subprocess").run(
-                                ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-                                 "-of", "default=noprint_wrappers=1:nokey=1", _ppath],
-                                capture_output=True, text=True
-                            )
-                            return float(_pr.stdout.strip() or "0")
+                    def _probe_dur_sync(_ppath):
+                        _pr = __import__("subprocess").run(
+                            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                             "-of", "default=noprint_wrappers=1:nokey=1", _ppath],
+                            capture_output=True, text=True
+                        )
+                        return float(_pr.stdout.strip() or "0")
 
+                    # ── Detect group-file episode range ────────────────────────
+                    _grp_start = _grp_end = None
+                    _fname_check = orig_fn or orig_title or ""
+                    _m_range = _re_inj.search(
+                        r'(?:ep(?:isode)?s?|#)?\s*(\d+)\s*[-–to]+\s*(\d+)',
+                        _fname_check, _re_inj.IGNORECASE
+                    )
+                    if _m_range:
+                        _g1, _g2 = int(_m_range.group(1)), int(_m_range.group(2))
+                        if _g2 > _g1:
+                            _grp_start, _grp_end = _g1, _g2
+
+                    _is_group = _grp_start is not None
+
+                    # ── Decide whether to inject ───────────────────────────────
+                    _inj_types: list = []
+
+                    if _is_group:
+                        # Proportional ads based on episode count in group
+                        _grp_ep_cnt = _grp_end - _grp_start + 1
+                        _grp_n_ads  = max(1, round(6 * _grp_ep_cnt / 100))
+                        # Build an ad pool for this group
+                        _ARYA_TG  = ["hindi", "eng"]
+                        _OTHER_TG = ["arya_premium", "channel"]
+                        _grp_pool: list = []
+                        if _grp_ep_cnt >= 80:
+                            for _k in ["hindi", "hindi", "eng", "eng", "arya_premium", "channel"]:
+                                if _k in _ad_local: _grp_pool.append(_k)
+                        elif _grp_ep_cnt >= 50:
+                            for _k in ["hindi", "eng", "arya_premium", "channel"]:
+                                if _k in _ad_local: _grp_pool.append(_k)
+                        elif _grp_ep_cnt >= 25:
+                            for _k in ["hindi", "eng", "arya_premium"]:
+                                if _k in _ad_local: _grp_pool.append(_k)
+                        else:
+                            _av = [k for k in _ARYA_TG if k in _ad_local]
+                            if _av: _grp_pool.append(_rnd_inj.choice(_av))
+                            _ov = [k for k in _OTHER_TG if k in _ad_local]
+                            if _ov: _grp_pool.append(_rnd_inj.choice(_ov))
+                        _grp_pool = _grp_pool[:_grp_n_ads]
+                        _rnd_inj.shuffle(_grp_pool)
+                        _inj_types = _grp_pool
+                        logger.info(f"[Cleaner {job_id}] Group file ep {_grp_start}-{_grp_end} "
+                                    f"({_grp_ep_cnt} eps) → {len(_inj_types)} ads")
+                    elif _ad_schedule and curr_num in _ad_schedule:
+                        # Single-ep file scheduled for injection
+                        _inj_types = [_ad_schedule[curr_num]]
+
+                    if _inj_types:
                         _dur = await _inj_loop.run_in_executor(_FFMPEG_POOL, _probe_dur_sync, out_path)
-
-                        # Marathon rule: 1 injection per full hour (min 1, max 6)
-                        _n_inj = max(1, min(6, int(_dur // 3600))) if _dur >= 3600 else 1
-
-                        # Pick ad types: scheduled type first, then random extras
-                        _sched_type = _ad_schedule[curr_num]
-                        _avail_types = list(_ad_local.keys())
-                        _inj_types = [_sched_type] + _rnd_inj.choices(_avail_types, k=_n_inj - 1)
-
-                        # Evenly-spaced injection points as fractions (0..1) of original duration
+                        _n_inj = len(_inj_types)
+                        # Evenly-spaced injection points
                         _inj_pts_rel = [(i + 1) / (_n_inj + 1) for i in range(_n_inj)]
 
-                        # Chain injections —— each output becomes input of next pass
-                        _cur_path  = out_path
-                        _cur_dur   = _dur
+                        _cur_path = out_path
+                        _cur_dur  = _dur
                         _any_injected = False
 
                         for _i, (_rel_pt, _at) in enumerate(zip(_inj_pts_rel, _inj_types)):
                             _this_ad = _ad_local.get(_at)
                             if not _this_ad or not os.path.exists(_this_ad):
                                 continue
-
                             _pt_actual = max(30.0, min(_cur_dur * _rel_pt, _cur_dur - 30.0))
                             _inj_tmp   = os.path.abspath(f"temp_cl_inj_{job_id}_{active_mid}_{_i}.mp3")
-
                             _ff_inj = [
                                 "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
                                 "-i", _cur_path, "-i", _this_ad,
@@ -742,9 +843,7 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                                 _inj_tmp
                             ]
                             _inj_ok, _inj_err = await _ffmpeg_async(_ff_inj)
-
                             if _inj_ok and os.path.exists(_inj_tmp) and os.path.getsize(_inj_tmp) > 1024:
-                                # Remove previous intermediate (but NOT original out_path yet)
                                 if _cur_path != out_path and os.path.exists(_cur_path):
                                     try: os.remove(_cur_path)
                                     except: pass
@@ -752,7 +851,6 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                                 _any_injected = True
                                 _ad_report.append((curr_num, _at, f"{int(_pt_actual//60)}m{int(_pt_actual%60)}s"))
                                 logger.info(f"[Cleaner {job_id}] Inj {_i+1}/{_n_inj} serial={curr_num} type={_at} at={_pt_actual:.0f}s")
-                                # Re-probe duration for accurate placement of next injection
                                 _cur_dur = await _inj_loop.run_in_executor(_FFMPEG_POOL, _probe_dur_sync, _cur_path)
                             else:
                                 logger.warning(f"[Cleaner {job_id}] Inj {_i+1}/{_n_inj} failed serial={curr_num}: {_inj_err[:80]}")
@@ -761,14 +859,15 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                                 except: pass
 
                         if _any_injected:
-                            # Remove original file, promote final chained output
                             if os.path.exists(out_path) and _cur_path != out_path:
                                 try: os.remove(out_path)
                                 except: pass
                             out_path = _cur_path
 
-                    except Exception as _ae:
-                        logger.warning(f"[Cleaner {job_id}] Ad injection error serial={curr_num}: {_ae}")
+                  except Exception as _ae:
+                    logger.warning(f"[Cleaner {job_id}] Ad injection error serial={curr_num}: {_ae}")
+
+
 
                 # ── TRUE PARALLEL UPLOAD PIPELINE ──
                 # 1. Wait for PREVIOUS file to finish uploading (Strict Ordering)
