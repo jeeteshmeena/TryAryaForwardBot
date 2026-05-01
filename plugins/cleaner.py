@@ -430,8 +430,12 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                     _used: set = set()
 
                     def _pick(halv):
-                        avl = [s for s in halv if s not in _used and s not in _ad_schedule]
-                        return _random.choice(avl) if avl else None
+                        # Try to find a slot with a gap of at least 12 episodes from other ads
+                        for gap in [12, 8, 5, 2, 0]:
+                            avl = [s for s in halv if s not in _used and s not in _ad_schedule and all(abs(s - u) >= gap for u in _used)]
+                            if avl:
+                                return _random.choice(avl)
+                        return None
 
                     # 50-ep subrule: 1st arya ad → 1st half, 2nd → 2nd half
                     _arem = list(_arya_ads)
@@ -445,7 +449,7 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                         sn = _pick(_ch_sn)
                         if sn: _ad_schedule[sn] = _at; _used.add(sn)
 
-                    # Other ads anywhere in chunk
+                    # Other ads anywhere in chunk, respecting the gap
                     for _at in _other_ads:
                         sn = _pick(_ch_sn)
                         if sn: _ad_schedule[sn] = _at; _used.add(sn)
@@ -839,6 +843,8 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                                     f"[bef][adx][aft]concat=n=3:v=0:a=1[outa]"
                                 ),
                                 "-map", "[outa]",
+                                "-map", "0:v:0?", "-c:v", "copy",
+                                "-map_metadata", "0",
                                 "-c:a", "libmp3lame", "-b:a", "128k", "-ac", "1",
                                 _inj_tmp
                             ]
