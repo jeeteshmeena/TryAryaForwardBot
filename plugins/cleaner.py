@@ -834,7 +834,14 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                             _inj_tmp   = os.path.abspath(f"temp_cl_inj_{job_id}_{active_mid}_{_i}.mp3")
                             _ff_inj = [
                                 "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-                                "-i", _cur_path, "-i", _this_ad,
+                                "-i", _cur_path, "-i", _this_ad
+                            ]
+                            
+                            _has_cover = local_cover and os.path.exists(local_cover) and os.path.getsize(local_cover) > 1024
+                            if _has_cover:
+                                _ff_inj += ["-i", local_cover]
+
+                            _ff_inj += [
                                 "-filter_complex",
                                 (
                                     f"[0:a]atrim=0:{_pt_actual:.3f},asetpts=PTS-STARTPTS[bef];"
@@ -842,8 +849,16 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                                     f"[1:a]asetpts=PTS-STARTPTS[adx];"
                                     f"[bef][adx][aft]concat=n=3:v=0:a=1[outa]"
                                 ),
-                                "-map", "[outa]",
-                                "-map", "0:v:0?", "-c:v", "copy",
+                                "-map", "[outa]"
+                            ]
+
+                            if _has_cover:
+                                _ff_inj += ["-map", "2:v:0", "-c:v", "mjpeg", "-id3v2_version", "3", "-disposition:v", "attached_pic"]
+                                _ff_inj += ["-metadata:s:v", "title=Album cover", "-metadata:s:v", "comment=Cover (front)"]
+                            else:
+                                _ff_inj += ["-map", "0:v:0?", "-c:v", "copy"]
+
+                            _ff_inj += [
                                 "-map_metadata", "0",
                                 "-c:a", "libmp3lame", "-b:a", "128k", "-ac", "1",
                                 _inj_tmp
