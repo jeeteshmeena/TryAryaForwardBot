@@ -904,11 +904,17 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                 out_size = os.path.getsize(out_path) if os.path.exists(out_path) else 0
                 bg_up = _bot if (_bot and out_size < 50 * 1024 * 1024 and not repl_mode) else client
                 bg_th = local_cover if (local_cover and os.path.exists(local_cover)) else None
+                import re as _fn_re
                 if job.get("ad_inject_only"):
-                    bg_cap  = orig_cap
-                    # Preserve original metadata: performer (filename is now cleaned)
-                    bg_art  = getattr(m_obj, 'performer', '') or ''
-                    bg_file = clean_file
+                    bg_cap   = orig_cap
+                    bg_art   = getattr(m_obj, 'performer', '') or ''
+                    bg_title = orig_title
+                    
+                    # If original filename is an ugly Telegram ID (e.g. 5_6314...), use the title instead
+                    if orig_fn and _fn_re.match(r'^\d+_\d+', orig_fn):
+                        bg_file = f"{orig_title}{out_ext}" if orig_title else clean_file
+                    else:
+                        bg_file = orig_fn or clean_file
                 else:
                     bg_cap  = f"**{clean_file}**" if use_cap else ""
                     bg_art  = art
@@ -987,7 +993,7 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                 _upload_task = asyncio.create_task(
                     _background_upload_and_done(
                         bg_up, out_path, use_ff, is_audio, is_video, bg_cap,
-                        clean_title, bg_art, bg_file, bg_th, active_mid, ep_label, done
+                        bg_title, bg_art, bg_file, bg_th, active_mid, ep_label, done
                     )
                 )
 
