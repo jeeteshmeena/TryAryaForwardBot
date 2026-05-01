@@ -43,6 +43,11 @@ _auto_resume_tasks: dict[str, asyncio.Task] = {}
 # even if the file was re-uploaded (different file_unique_id).
 _live_seen_names: dict[str, set] = {}
 
+# In-memory per-job episode-number index (job_id → set of int episode numbers).
+# Populated from DB on job start; updated after each successful forward.
+# Keyed by job_id so multiple concurrent jobs are fully isolated.
+_dest_ep_cache: dict[str, set] = {}
+
 #  Future-based ask() — immune to pyrofork stale-listener bug 
 _lj_waiting: dict[int, asyncio.Future] = {}
 
@@ -263,6 +268,60 @@ def _get_unique_id(msg) -> str | None:
             if isinstance(obj, list) and len(obj) > 0: obj = obj[-1]
             return getattr(obj, 'file_unique_id', getattr(obj, 'file_id', None))
     return None
+
+
+def _extract_ep_nums_from_msg(msg) -> set:
+    """Extract all episode/file numbers from a message's media filename.
+    Returns a set of ints (empty set if no media or no number found).
+    Works for document, video, audio, voice, animation.
+    """
+    from plugins.utils import extract_ep_label_robust
+    nums: set = set()
+    if not msg or not getattr(msg, 'media', None):
+        return nums
+    for attr in ('document', 'video', 'audio', 'voice', 'animation'):
+        obj = getattr(msg, attr, None)
+        if obj:
+            fname = getattr(obj, 'file_name', None)
+            if fname:
+                result = extract_ep_label_robust(fname)
+                nums.update(result.get('numbers', []))
+            break
+    return nums
+
+
+async def _scan_dest_ep_index(client, to_chat, to_thread, job_id: str,
+                              limit: int = 8000) -> set:
+    """Scan destination channel/group and collect all episode numbers from filenames.
+
+    Works for:
+      - Regular channels  (to_thread = None)
+      - Normal groups     (to_thread = None)
+      - Group topics      (to_thread = thread_id  → filters by message_thread_id)
+    """
+    from plugins.utils import extract_ep_label_robust
+    ep_numbers: set = set()
+    count = 0
+    try:
+        async for msg in client.get_chat_history(to_chat, limit=limit):
+            count += 1
+            if msg.empty or msg.service:
+                continue
+            # For group topics: only count messages in the right thread
+            if to_thread:
+                tid = getattr(msg, 'message_thread_id', None)
+                if tid is None or int(tid) != int(to_thread):
+                    continue
+            nums = _extract_ep_nums_from_msg(msg)
+            ep_numbers.update(nums)
+    except Exception as e:
+        logger.warning(f"[Job {job_id}] Dest ep-scan error after {count} msgs: {e}")
+    logger.info(
+        f"[Job {job_id}] Dest ep-scan: scanned {count} msgs → "
+        f"{len(ep_numbers)} unique episode numbers found."
+    )
+    return ep_numbers
+
 
 def _passes_filters(msg, disabled_types: list) -> bool:
     """Return True if message passes the user's content-type filters."""
@@ -588,7 +647,10 @@ async def _run_job(job_id: str, user_id: int):
         to_thread_2  = job.get("to_thread_id_2", None)
         max_size_mb  = int(job.get("max_size_mb", 0) or 0)
         max_dur_secs = int(job.get("max_duration_secs", 0) or 0)
-        min_dur_secs = int(job.get("min_duration_secs", 0) or 0)
+        # DEFAULT: always skip files shorter than 50 seconds in live mode
+        min_dur_secs = int(job.get("min_duration_secs", 50) or 50)
+        if min_dur_secs < 50:
+            min_dur_secs = 50   # floor — never forward files shorter than 50s
         notify_large_mb = int(job.get("notify_large_file_mb", 0) or 0)
         last_seen    = job.get("last_seen_id", 0)
 
@@ -705,6 +767,51 @@ async def _run_job(job_id: str, user_id: int):
         except Exception:
             pass
 
+        # ── Dedup state initialisation (runs on every job start / restart) ───────
+        # When skip_duplicates is ON we restore all seen data from MongoDB so
+        # the bot never re-forwards a file even after a restart.
+        _skip_dupes_init = (await _get_job(job_id) or {}).get("skip_duplicates", False)
+        if _skip_dupes_init:
+            _init_doc = await _get_job(job_id) or {}
+            # 1. Restore episode-number index from DB → in-memory cache
+            _stored_eps = _init_doc.get("seen_ep_numbers") or []
+            _dest_ep_cache[job_id] = set(
+                int(n) for n in _stored_eps if isinstance(n, (int, float)) or str(n).lstrip('-').isdigit()
+            )
+            # 2. Restore filename seen-set from DB → in-memory (Layer 1 persistence fix)
+            if job_id not in _live_seen_names:
+                _live_seen_names[job_id] = set()
+            _live_seen_names[job_id].update(_init_doc.get("seen_file_names") or [])
+            # 3. Scan destination channel once to build ep index (idempotent)
+            if not _init_doc.get("dest_ep_index_scanned", False):
+                logger.info(f"[Job {job_id}] skip_duplicates ON — scanning destination for existing episodes…")
+                try:
+                    await BOT_INSTANCE.send_message(
+                        user_id,
+                        f"🔍 <b>Live Job</b>: Scanning destination for existing files…\n"
+                        f"<i>This runs once. Future restarts will load from cache instantly.</i>"
+                    )
+                except Exception:
+                    pass
+                try:
+                    _scanned_eps = await _scan_dest_ep_index(client, to_chat, to_thread, job_id)
+                    _dest_ep_cache[job_id].update(_scanned_eps)
+                    await _update_job(
+                        job_id,
+                        dest_ep_index_scanned=True,
+                        seen_ep_numbers=list(_dest_ep_cache[job_id])
+                    )
+                    logger.info(f"[Job {job_id}] Dest scan complete: {len(_dest_ep_cache[job_id])} ep numbers cached.")
+                except Exception as _scan_e:
+                    logger.warning(f"[Job {job_id}] Dest scan failed (will retry next start): {_scan_e}")
+        else:
+            # skip_duplicates OFF — still initialise in-memory dicts so they exist
+            if job_id not in _dest_ep_cache:
+                _dest_ep_cache[job_id] = set()
+            if job_id not in _live_seen_names:
+                _live_seen_names[job_id] = set()
+        # ── End dedup init ───────────────────────────────────────────────────────
+
         #  BATCH PHASE 
         if job.get("batch_mode") and not job.get("batch_done"):
             batch_cursor = int(job.get("batch_cursor") or job.get("batch_start_id") or 1)
@@ -797,11 +904,24 @@ async def _run_job(job_id: str, user_id: int):
                         continue
 
                     skip_dupes = fresh.get("skip_duplicates", False)
-                    uniq_id = _get_unique_id(msg) if skip_dupes else None
-                    if skip_dupes and uniq_id and uniq_id in (fresh.get("seen_file_ids") or []):
-                        logger.debug(f"[Job {job_id}] DM Batch: skipping duplicate {uniq_id}")
-                        await _update_job(job_id, batch_cursor=msg.id + 1)
-                        continue
+                    uniq_id  = _get_unique_id(msg) if skip_dupes else None
+                    _ep_nums = _extract_ep_nums_from_msg(msg)
+                    # Extract filename key (needed for both always-on guard and skip_dupes)
+                    _fn_key_dm = None
+                    if msg.media:
+                        _ma = getattr(msg.media, 'value', str(msg.media))
+                        _mo = getattr(msg, _ma, None)
+                        if _mo:
+                            _fr = getattr(_mo, 'file_name', None)
+                            if _fr: _fn_key_dm = _fr.strip().lower()
+                    if skip_dupes:
+                        _s_ids  = fresh.get("seen_file_ids")  or []
+                        _s_nms  = fresh.get("seen_file_names") or []
+                        _ep_hit = bool(_ep_nums and _ep_nums & _dest_ep_cache.get(job_id, set()))
+                        if _ep_hit or (uniq_id and uniq_id in _s_ids) or (_fn_key_dm and _fn_key_dm in _s_nms):
+                            logger.debug(f"[Job {job_id}] DM Batch: skip dup ep={_ep_nums} id={uniq_id} fn={_fn_key_dm}")
+                            await _update_job(job_id, batch_cursor=msg.id + 1)
+                            continue
 
                     try:
                         success = await _forward_message(client, msg, to_chat, remove_caption, cap_tpl, forward_tag,
@@ -818,12 +938,24 @@ async def _run_job(job_id: str, user_id: int):
                         success = False
 
                     upd = {"batch_cursor": msg.id + 1}
-                    if success and uniq_id:
-                        seen = fresh.get("seen_file_ids") or []
-                        if uniq_id not in seen:
-                            seen.append(uniq_id)
-                            if len(seen) > 5000: seen.pop(0)
-                        upd["seen_file_ids"] = seen
+                    if success:
+                        if uniq_id:
+                            seen = fresh.get("seen_file_ids") or []
+                            if uniq_id not in seen:
+                                seen.append(uniq_id)
+                                if len(seen) > 5000: seen.pop(0)
+                            upd["seen_file_ids"] = seen
+                        if _fn_key_dm:
+                            seen_nms = fresh.get("seen_file_names") or []
+                            if _fn_key_dm not in seen_nms:
+                                seen_nms.append(_fn_key_dm)
+                                if len(seen_nms) > 5000: seen_nms.pop(0)
+                            upd["seen_file_names"] = seen_nms
+                            _live_seen_names.setdefault(job_id, set()).add(_fn_key_dm)
+                        if _ep_nums:
+                            _dest_ep_cache.setdefault(job_id, set()).update(_ep_nums)
+                            upd["seen_ep_numbers"] = list(_dest_ep_cache[job_id])
+
 
                     await _update_job(job_id, **upd)
 
@@ -982,7 +1114,7 @@ async def _run_job(job_id: str, user_id: int):
                     skip_dupes = fresh2.get("skip_duplicates", False)
                     uniq_id = _get_unique_id(msg) if skip_dupes else None
                     _fn_key = None
-                    if skip_dupes and getattr(msg, 'media', None):
+                    if getattr(msg, 'media', None):
                         _m_attr = getattr(msg.media, 'value', str(msg.media))
                         _m_obj = getattr(msg, _m_attr, None)
                         if _m_obj:
@@ -991,12 +1123,14 @@ async def _run_job(job_id: str, user_id: int):
                                 _fn_raw = getattr(_m_obj[-1], 'file_name', None)
                             if _fn_raw:
                                 _fn_key = _fn_raw.strip().lower()
+                    _ep_nums_b = _extract_ep_nums_from_msg(msg)
 
                     if skip_dupes:
                         seen_ids = fresh2.get("seen_file_ids") or []
                         seen_names = fresh2.get("seen_file_names") or []
-                        if (uniq_id and uniq_id in seen_ids) or (_fn_key and _fn_key in seen_names):
-                            logger.debug(f"[Job {job_id}] Batch: skipping duplicate {uniq_id or _fn_key}")
+                        _ep_hit_b = bool(_ep_nums_b and _ep_nums_b & _dest_ep_cache.get(job_id, set()))
+                        if _ep_hit_b or (uniq_id and uniq_id in seen_ids) or (_fn_key and _fn_key in seen_names):
+                            logger.debug(f"[Job {job_id}] Batch: skip dup ep={_ep_nums_b} id={uniq_id} fn={_fn_key}")
                             await _update_job(job_id, batch_cursor=msg.id + 1)
                             continue
 
@@ -1028,6 +1162,10 @@ async def _run_job(job_id: str, user_id: int):
                                 seen_names.append(_fn_key)
                                 if len(seen_names) > 5000: seen_names.pop(0)
                             upd["seen_file_names"] = seen_names
+                            _live_seen_names.setdefault(job_id, set()).add(_fn_key)
+                        if _ep_nums_b:
+                            _dest_ep_cache.setdefault(job_id, set()).update(_ep_nums_b)
+                            upd["seen_ep_numbers"] = list(_dest_ep_cache[job_id])
 
                     await _update_job(job_id, **upd)
 
@@ -1360,11 +1498,13 @@ async def _run_job(job_id: str, user_id: int):
 
                 # ── Optional: file_unique_id-based dedup (exact binary match) ─
                 uniq_id = _get_unique_id(msg) if skip_dupes else None
+                _ep_nums_l = _extract_ep_nums_from_msg(msg)
                 if skip_dupes:
                     seen_names = fresh.get("seen_file_names") or []
                     seen_ids = fresh.get("seen_file_ids") or []
-                    if (uniq_id and uniq_id in seen_ids) or (_fn_key and _fn_key in seen_names):
-                        logger.debug(f"[Job {job_id}] Live: skipping duplicate {uniq_id or _fn_key}")
+                    _ep_hit_l = bool(_ep_nums_l and _ep_nums_l & _dest_ep_cache.get(job_id, set()))
+                    if _ep_hit_l or (uniq_id and uniq_id in seen_ids) or (_fn_key and _fn_key in seen_names):
+                        logger.debug(f"[Job {job_id}] Live: skip dup ep={_ep_nums_l} id={uniq_id} fn={_fn_key}")
                         last_seen = max(last_seen, msg.id)
                         await _update_job(job_id, last_seen_id=last_seen)
                         continue
@@ -1439,6 +1579,10 @@ async def _run_job(job_id: str, user_id: int):
                             if len(seen) > 5000: seen.pop(0)
                         upd["seen_file_ids"] = seen
                         fresh["seen_file_ids"] = seen
+                    # Track ep numbers for episode-aware dedup
+                    if _ep_nums_l:
+                        _dest_ep_cache.setdefault(job_id, set()).update(_ep_nums_l)
+                        upd["seen_ep_numbers"] = list(_dest_ep_cache[job_id])
 
                 await _update_job(job_id, **upd)
                 await asyncio.sleep(1)
@@ -1950,41 +2094,111 @@ async def job_limits_cb(bot, query):
     cur_min_dur = job.get("min_duration_secs", 0) or 0
     cur_notify  = job.get("notify_large_file_mb", 0) or 0
 
-    r = await _ask(bot, user_id,
+    # ── Sub-step A: Min Duration (most important, shown first) ──────────
+    _cur_min_label = f"{cur_min_dur // 60}m {cur_min_dur % 60}s" if cur_min_dur else "50s (default)"
+    r_min = await _ask(bot, user_id,
         f"<b>⚙️ Edit Limits — Job {job_id[-6:]}</b>\n\n"
-        f"<b>Current settings:</b>\n"
-        f"• Max size: <code>{cur_max_sz} MB</code>\n"
-        f"• Max duration: <code>{cur_max_dur} seconds</code>\n"
-        f"• Min duration: <code>{cur_min_dur} seconds</code> (skip shorter files)\n"
-        f"• Large file alert: <code>{cur_notify} MB</code> (0 = off)\n\n"
-        "<b>Send new limits in format:</b>\n"
-        "<code>max_mb : max_seconds : min_seconds : alert_mb</code>\n\n"
-        "Examples:\n"
-        "• <code>0:0:0:0</code> — remove all limits\n"
-        "• <code>200:0:10:0</code> — max 200MB, skip files under 10 seconds, no alert\n"
-        "• <code>0:3600:60:300</code> — max 3600sec, skip files under 60 sec, alert at 300MB\n"
-        "• <code>0:0:30:0</code> — just skip files shorter than 30 seconds\n\n"
-        "<i>Send 0 for any field to remove that limit.</i>",
+        f"<b>Step 1/3 — Minimum Duration</b>\n"
+        f"Files <b>shorter</b> than this will be <b>skipped</b> silently.\n"
+        f"Current: <code>{_cur_min_label}</code>\n\n"
+        "Choose a preset or type custom seconds:",
         reply_markup=ReplyKeyboardMarkup(
-            [[KeyboardButton(f"{cur_max_sz}:{cur_max_dur}:{cur_min_dur}:{cur_notify}")],
-             [KeyboardButton("⛔ Cᴀɴᴄᴇʟ")]],
+            [
+                [KeyboardButton("✅ 50 seconds (Default)")],
+                [KeyboardButton("1 minute (60s)")],
+                [KeyboardButton("2 minutes (120s)")],
+                [KeyboardButton("5 minutes (300s)")],
+                [KeyboardButton("❌ No minimum (0s)")],
+                [KeyboardButton("⛔ Cᴀɴᴄᴇʟ")],
+            ],
             resize_keyboard=True, one_time_keyboard=True)
     )
-
-    txt = r.text.strip() if r and r.text else ""
-    if "⛔" in txt or "/cancel" in txt.lower():
+    _t = (r_min.text or "").strip()
+    if "⛔" in _t or "/cancel" in _t.lower():
         await bot.send_message(user_id, "<i>Cancelled.</i>", reply_markup=ReplyKeyboardRemove())
-        return await _render_jobs_list(bot, user_id, r)
+        return await _render_jobs_list(bot, user_id, r_min)
+    _min_map = {
+        "✅ 50 seconds (Default)": 50,
+        "1 minute (60s)": 60,
+        "2 minutes (120s)": 120,
+        "5 minutes (300s)": 300,
+        "❌ No minimum (0s)": 0,
+    }
+    if _t in _min_map:
+        new_min_dur = _min_map[_t]
+    else:
+        try: new_min_dur = max(0, int(_t.split()[0]))
+        except: new_min_dur = 50
 
-    parts = [p.strip() for p in txt.split(":")]
-    def _int(v, default=0):
-        try: return max(0, int(v))
-        except: return default
+    # ── Sub-step B: Max File Size ───────────────────────────────────────
+    _cur_sz_label = f"{cur_max_sz} MB" if cur_max_sz else "No limit"
+    r_sz = await _ask(bot, user_id,
+        f"<b>Step 2/3 — Maximum File Size</b>\n"
+        f"Files <b>larger</b> than this will be skipped.\n"
+        f"Current: <code>{_cur_sz_label}</code>\n\n"
+        "Choose a preset or type custom MB:",
+        reply_markup=ReplyKeyboardMarkup(
+            [
+                [KeyboardButton("❌ No limit (0)")],
+                [KeyboardButton("100 MB")],
+                [KeyboardButton("500 MB")],
+                [KeyboardButton("1000 MB (1 GB)")],
+                [KeyboardButton("2000 MB (2 GB)")],
+                [KeyboardButton("⛔ Cᴀɴᴄᴇʟ")],
+            ],
+            resize_keyboard=True, one_time_keyboard=True)
+    )
+    _t2 = (r_sz.text or "").strip()
+    if "⛔" in _t2 or "/cancel" in _t2.lower():
+        await bot.send_message(user_id, "<i>Cancelled.</i>", reply_markup=ReplyKeyboardRemove())
+        return await _render_jobs_list(bot, user_id, r_sz)
+    _sz_map = {
+        "❌ No limit (0)": 0,
+        "100 MB": 100,
+        "500 MB": 500,
+        "1000 MB (1 GB)": 1000,
+        "2000 MB (2 GB)": 2000,
+    }
+    if _t2 in _sz_map:
+        new_max_sz = _sz_map[_t2]
+    else:
+        try: new_max_sz = max(0, int(_t2.split()[0]))
+        except: new_max_sz = cur_max_sz
 
-    new_max_sz  = _int(parts[0] if len(parts) > 0 else 0)
-    new_max_dur = _int(parts[1] if len(parts) > 1 else 0)
-    new_min_dur = _int(parts[2] if len(parts) > 2 else 0)
-    new_notify  = _int(parts[3] if len(parts) > 3 else 0)
+    # ── Sub-step C: Max Duration ────────────────────────────────────────
+    _cur_dur_label = f"{cur_max_dur // 60}m {cur_max_dur % 60}s" if cur_max_dur else "No limit"
+    r_dur = await _ask(bot, user_id,
+        f"<b>Step 3/3 — Maximum Duration</b>\n"
+        f"Files <b>longer</b> than this will be skipped.\n"
+        f"Current: <code>{_cur_dur_label}</code>\n\n"
+        "Choose a preset or type custom seconds:",
+        reply_markup=ReplyKeyboardMarkup(
+            [
+                [KeyboardButton("❌ No limit (0)")],
+                [KeyboardButton("30 minutes (1800s)")],
+                [KeyboardButton("1 hour (3600s)")],
+                [KeyboardButton("2 hours (7200s)")],
+                [KeyboardButton("⛔ Cᴀɴᴄᴇʟ")],
+            ],
+            resize_keyboard=True, one_time_keyboard=True)
+    )
+    _t3 = (r_dur.text or "").strip()
+    if "⛔" in _t3 or "/cancel" in _t3.lower():
+        await bot.send_message(user_id, "<i>Cancelled.</i>", reply_markup=ReplyKeyboardRemove())
+        return await _render_jobs_list(bot, user_id, r_dur)
+    _dur_map = {
+        "❌ No limit (0)": 0,
+        "30 minutes (1800s)": 1800,
+        "1 hour (3600s)": 3600,
+        "2 hours (7200s)": 7200,
+    }
+    if _t3 in _dur_map:
+        new_max_dur = _dur_map[_t3]
+    else:
+        try: new_max_dur = max(0, int(_t3.split()[0]))
+        except: new_max_dur = cur_max_dur
+
+    new_notify = cur_notify  # keep existing notify setting
 
     await _update_job(job_id,
         max_size_mb=new_max_sz,
@@ -1993,16 +2207,16 @@ async def job_limits_cb(bot, query):
         notify_large_file_mb=new_notify
     )
 
+    _min_lbl = f"{new_min_dur}s" if new_min_dur else "No minimum"
     summary = (
         f"✅ <b>Limits updated for Job {job_id[-6:]}</b>\n\n"
+        f"• Min duration: <code>{_min_lbl}</code> (shorter files skipped)\n"
         f"• Max size: <code>{'No limit' if not new_max_sz else str(new_max_sz)+' MB'}</code>\n"
-        f"• Max duration: <code>{'No limit' if not new_max_dur else str(new_max_dur)+' secs'}</code>\n"
-        f"• Min duration: <code>{'Off' if not new_min_dur else str(new_min_dur)+' secs (shorter files skipped)'}</code>\n"
-        f"• Large file alert: <code>{'Off' if not new_notify else '≥ '+str(new_notify)+' MB → DM owner'}</code>\n\n"
+        f"• Max duration: <code>{'No limit' if not new_max_dur else str(new_max_dur)+' secs'}</code>\n\n"
         f"<i>Changes take effect on the next poll cycle.</i>"
     )
     await bot.send_message(user_id, summary, reply_markup=ReplyKeyboardRemove())
-    await _render_jobs_list(bot, user_id, r)
+    await _render_jobs_list(bot, user_id, r_dur)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2302,49 +2516,98 @@ async def _create_job_flow(bot, user_id: int):
                 try: batch_start_id = int(rtext)
                 except Exception: pass
 
-    # ── Step 7: Size / Duration Limit ─────────────────────────────
-    while True:
-        limit_r = await _ask(bot, user_id,
-            "<b>Step 7/8 — Size & Duration Limits</b>\n\n"
-            "Set limits for this job. Files outside the limits will be <b>silently skipped</b>.\n\n"
-            "<blockquote expandable>"
-            "Format: <code>max_mb : max_seconds : min_seconds</code>\n\n"
-            "• <code>0</code> — no limits (forward everything)\n"
-            "• <code>2000:0:0</code> — skip files larger than 2000 MB\n"
-            "• <code>0:0:30</code> — skip files shorter than 30 seconds (best for voice notes)\n"
-            "• <code>100:3600:60</code> — Max 100MB, Max 3600sec, Skip under 60sec\n\n"
-            "<b>Tip:</b> If you want to skip 10 seconds or 30 seconds voice messages, just send <code>0:0:10</code> or <code>0:0:30</code>"
-            "</blockquote>",
+    # ── Step 7A: Min Duration (default 50s) ─────────────────────────────
+    _st7a = await _ask(bot, user_id,
+        "<b>Step 7/8 — Minimum Duration Filter</b>\n\n"
+        "Files <b>shorter</b> than this will be <b>automatically skipped</b>.\n"
+        "<b>Default is 50 seconds</b> — protects against forwarding short voice notes or clips.\n\n"
+        "Select or type custom seconds:",
+        reply_markup=ReplyKeyboardMarkup(
+            [
+                [KeyboardButton("✅ 50 seconds (Recommended)")],
+                [KeyboardButton("1 minute (60s)")],
+                [KeyboardButton("2 minutes (120s)")],
+                [KeyboardButton("5 minutes (300s)")],
+                [KeyboardButton("❌ No minimum (0s)")],
+                [UNDO_BTN, CANCEL_BTN],
+            ],
+            resize_keyboard=True, one_time_keyboard=True
+        ))
+    if _cancel(_st7a.text):
+        return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
+    if _undo(_st7a.text):
+        # redo batch mode
+        batch_r3 = await _ask(bot, user_id,
+            "<b>↩️ Redo — Step 6/8: Batch Mode</b>\n\nON or OFF?",
             reply_markup=ReplyKeyboardMarkup(
-                [[KeyboardButton("0 (No limit)")], [UNDO_BTN, CANCEL_BTN]],
+                [[KeyboardButton("✅ ON")], [KeyboardButton("❌ OFF")], [CANCEL_BTN]],
+                resize_keyboard=True, one_time_keyboard=True))
+        if _cancel(batch_r3.text):
+            return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
+        batch_mode = "on" in batch_r3.text.lower()
+        # Re-ask this step
+        _st7a = await _ask(bot, user_id,
+            "<b>Step 7/8 — Minimum Duration Filter</b>\n\nSelect or type custom seconds:",
+            reply_markup=ReplyKeyboardMarkup(
+                [
+                    [KeyboardButton("✅ 50 seconds (Recommended)")],
+                    [KeyboardButton("1 minute (60s)")],
+                    [KeyboardButton("2 minutes (120s)")],
+                    [KeyboardButton("5 minutes (300s)")],
+                    [KeyboardButton("❌ No minimum (0s)")],
+                    [CANCEL_BTN],
+                ],
                 resize_keyboard=True, one_time_keyboard=True
             ))
-
-        if _cancel(limit_r.text):
+        if _cancel(_st7a.text):
             return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
-        if _undo(limit_r.text):
-            # redo batch mode
-            batch_r3 = await _ask(bot, user_id,
-                "<b>↩️ Redo — Step 6/8: Batch Mode</b>\n\nON or OFF?",
-                reply_markup=ReplyKeyboardMarkup(
-                    [[KeyboardButton("✅ ON")], [KeyboardButton("❌ OFF")], [CANCEL_BTN]],
-                    resize_keyboard=True, one_time_keyboard=True))
-            if _cancel(batch_r3.text):
-                return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
-            batch_mode = "on" in batch_r3.text.lower()
-            continue
-        break
 
-    ltext = (limit_r.text or "").strip()
-    max_size_mb, max_duration_s, min_duration_s = 0, 0, 0
-    if ltext not in ("0", "0 (No limit)"):
-        parts_l = [p.strip() for p in ltext.split(":")]
-        def _lim_int(v):
-            try: return max(0, int(v))
-            except: return 0
-        max_size_mb    = _lim_int(parts_l[0] if len(parts_l) > 0 else "0")
-        max_duration_s = _lim_int(parts_l[1] if len(parts_l) > 1 else "0")
-        min_duration_s = _lim_int(parts_l[2] if len(parts_l) > 2 else "0")
+    _min_preset_map = {
+        "✅ 50 seconds (Recommended)": 50,
+        "1 minute (60s)": 60,
+        "2 minutes (120s)": 120,
+        "5 minutes (300s)": 300,
+        "❌ No minimum (0s)": 0,
+    }
+    _t7a = (_st7a.text or "").strip()
+    if _t7a in _min_preset_map:
+        min_duration_s = _min_preset_map[_t7a]
+    else:
+        try: min_duration_s = max(0, int(_t7a.split()[0]))
+        except: min_duration_s = 50  # fallback to safe default
+
+    # ── Step 7B: Max File Size ──────────────────────────────────────────
+    _st7b = await _ask(bot, user_id,
+        "<b>Step 7B/8 — Maximum File Size</b>\n\n"
+        "Files <b>larger</b> than this will be skipped.\n"
+        "Select a preset or type custom MB:",
+        reply_markup=ReplyKeyboardMarkup(
+            [
+                [KeyboardButton("❌ No size limit (Recommended)")],
+                [KeyboardButton("500 MB")],
+                [KeyboardButton("1000 MB (1 GB)")],
+                [KeyboardButton("2000 MB (2 GB)")],
+                [CANCEL_BTN],
+            ],
+            resize_keyboard=True, one_time_keyboard=True
+        ))
+    if _cancel(_st7b.text):
+        return await bot.send_message(user_id, "<i>Process Cancelled Successfully!</i>", reply_markup=ReplyKeyboardRemove())
+    _sz_preset_map = {
+        "❌ No size limit (Recommended)": 0,
+        "500 MB": 500,
+        "1000 MB (1 GB)": 1000,
+        "2000 MB (2 GB)": 2000,
+    }
+    _t7b = (_st7b.text or "").strip()
+    if _t7b in _sz_preset_map:
+        max_size_mb = _sz_preset_map[_t7b]
+    else:
+        try: max_size_mb = max(0, int(_t7b.split()[0]))
+        except: max_size_mb = 0
+
+    # Max duration kept at 0 (no upper limit) — user can change later via Edit Limits
+    max_duration_s = 0
 
     # ── Step 8: Skip Duplicates ─────────────────────────────
     while True:
@@ -2412,7 +2675,7 @@ async def _create_job_flow(bot, user_id: int):
         "batch_done":         False,
         "max_size_mb":        max_size_mb,
         "max_duration_secs":  max_duration_s,
-        "min_duration_secs":  min_duration_s,
+        "min_duration_secs":  max(min_duration_s, 50),  # never below 50s default
         "notify_large_file_mb": 0,
         "status":             "running",
         "created":            int(time.time()),
@@ -2430,15 +2693,12 @@ async def _create_job_flow(bot, user_id: int):
     batch_lbl  = (f"\n<b>Batch:</b> ✅ ON — copying from ID {batch_start_id}"
                   + (f" to {batch_end_id}" if batch_end_id else " to latest")
                   + " first") if batch_mode else "\n<b>Batch:</b> ❌ OFF (live only)"
-    size_lbl   = ""
+    _saved_min = max(min_duration_s, 50)
+    size_lbl   = f"\n<b>Min duration:</b> {_saved_min}s (shorter files skipped)"
     if max_size_mb:
         size_lbl += f"\n<b>Max size:</b> {max_size_mb} MB"
     if max_duration_s:
-        size_lbl += f"\n<b>Max duration:</b> {max_duration_s} seconds"
-    if min_duration_s:
-        size_lbl += f"\n<b>Min duration:</b> {min_duration_s} seconds"
-    if not size_lbl:
-        size_lbl = "\n<b>Size limit:</b> None"
+        size_lbl += f"\n<b>Max duration:</b> {max_duration_s}s"
     dupe_lbl = "\n<b>Skip Dupes:</b> ✅ ON" if skip_dupelicates else "\n<b>Skip Dupes:</b> ❌ OFF"
 
     kind = "Bot" if is_bot else "Userbot"
