@@ -433,13 +433,24 @@ def extract_ep_label_robust(fname: str) -> dict:
         return {"label": str(n_val), "numbers": [n_val], "is_range": False}
 
     # ── Priority 6: Any lone number not looking like a year or bitrate ───────
+    # Strategy: prefer non-bitrate numbers; only fall back to bitrate-matching
+    # numbers as last resort (e.g. episode 128 / 256 / 320 in a series).
+    # This prevents genuine episode numbers like 32, 64, 128, 256, 320, 512
+    # from being silently dropped when they are the only number in the filename.
     nums_all = re.findall(r'(?<!\d)(\d{1,5})(?!\d)', b_norm)
+    # First pass: exclude years AND known audio bitrates (safe, avoids false positives)
     filtered = [
         n for n in nums_all
         if not (1900 <= int(n) <= 2100)   # exclude years
-        and int(n) not in _BITRATES        # exclude audio bitrates
+        and int(n) not in _BITRATES        # prefer non-bitrate numbers first
     ]
     if filtered:
         return {"label": filtered[0], "numbers": [int(filtered[0])], "is_range": False}
+    # Last-resort fallback: if ALL numbers were bitrate-shaped, use the best
+    # non-year one anyway — it is almost certainly the actual episode number.
+    # (A real bitrate string like '128kbps' would have been noise-cleaned earlier.)
+    fallback = [n for n in nums_all if not (1900 <= int(n) <= 2100)]
+    if fallback:
+        return {"label": fallback[0], "numbers": [int(fallback[0])], "is_range": False}
 
     return {"label": "", "numbers": [], "is_range": False}
