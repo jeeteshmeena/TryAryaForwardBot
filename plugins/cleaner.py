@@ -40,9 +40,9 @@ _cl_bot_ref: dict[str, object] = {}
 _cl_cancel_users: set = set()
 MAX_CONCURRENT = 100  # Allow up to 100 jobs to run visibly without artificial blocks
 _cl_semaphore = asyncio.Semaphore(MAX_CONCURRENT)
-_cl_dl_sem = asyncio.Semaphore(4)   # 4 concurrent downloads — prevents bandwidth saturation across multiple jobs
-_cl_ul_sem = asyncio.Semaphore(8)
-_cl_ff_sem = asyncio.Semaphore(4)  # 4GB RAM VPS: allow up to 4 parallel FFmpeg processes
+_cl_dl_sem = asyncio.Semaphore(12)  # 12 concurrent downloads across all jobs (6 jobs × 2 slots)
+_cl_ul_sem = asyncio.Semaphore(12)
+_cl_ff_sem = asyncio.Semaphore(8)   # 8 parallel FFmpeg processes (single-pass ad injection is much lighter)
 IST_OFFSET = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
 
 # Thread pool for FFmpeg — runs in OS threads so asyncio loop stays free
@@ -882,73 +882,111 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                         _inj_types = [_ad_schedule[curr_num]]
 
                     if _inj_types:
+                        # ── ONE-SHOT multi-ad injection ───────────────────────
+                        # Probe duration ONCE (not once per ad like before).
+                        # Build a single filter_complex that splits the audio around
+                        # ALL ad positions and concatenates them in one FFmpeg call.
+                        # Replaces N sequential FFmpeg calls (each re-encoding the
+                        # growing file) with a single decode+encode pass → ~8× faster.
                         _dur = await _inj_loop.run_in_executor(_FFMPEG_POOL, _probe_dur_sync, out_path)
                         _n_inj = len(_inj_types)
-                        # Evenly-spaced injection points
-                        _inj_pts_rel = [(i + 1) / (_n_inj + 1) for i in range(_n_inj)]
 
-                        _cur_path = out_path
-                        _cur_dur  = _dur
-                        _any_injected = False
+                        # Calculate all split points relative to total duration
+                        _split_pts = [
+                            max(30.0, min(_dur * (i + 1) / (_n_inj + 1), _dur - 30.0))
+                            for i in range(_n_inj)
+                        ]
 
-                        for _i, (_rel_pt, _at) in enumerate(zip(_inj_pts_rel, _inj_types)):
-                            _this_ad = _ad_local.get(_at)
-                            if not _this_ad or not os.path.exists(_this_ad):
-                                continue
-                            _pt_actual = max(30.0, min(_cur_dur * _rel_pt, _cur_dur - 30.0))
-                            _inj_tmp   = os.path.abspath(f"temp_cl_inj_{job_id}_{active_mid}_{_i}.mp3")
-                            _ff_inj = [
-                                "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-                                "-i", _cur_path, "-i", _this_ad
-                            ]
-                            
-                            _has_cover = local_cover and os.path.exists(local_cover) and os.path.getsize(local_cover) > 1024
-                            if _has_cover:
-                                _ff_inj += ["-i", local_cover]
+                        # Build ffmpeg command: -i main_file, -i ad1, -i ad2, ...
+                        _inj_out = os.path.abspath(f"temp_cl_inj_{job_id}_{active_mid}_out.mp3")
+                        _ff_inj_one = [
+                            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                            "-analyzeduration", "2M", "-probesize", "2M",
+                            "-i", out_path,  # input 0: main file
+                        ]
+                        _valid_ads = []
+                        for _at in _inj_types:
+                            _ap = _ad_local.get(_at)
+                            if _ap and os.path.exists(_ap):
+                                _ff_inj_one += ["-i", _ap]  # inputs 1..N: ad files
+                                _valid_ads.append(_at)
 
-                            _ff_inj += [
-                                "-filter_complex",
-                                (
-                                    f"[0:a]atrim=0:{_pt_actual:.3f},asetpts=PTS-STARTPTS[bef];"
-                                    f"[0:a]atrim={_pt_actual:.3f},asetpts=PTS-STARTPTS[aft];"
-                                    f"[1:a]asetpts=PTS-STARTPTS[adx];"
-                                    f"[bef][adx][aft]concat=n=3:v=0:a=1[outa]"
-                                ),
-                                "-map", "[outa]"
+                        if _valid_ads:
+                            _n_valid = len(_valid_ads)
+                            # Recalculate split points for valid ads only
+                            _split_pts = [
+                                max(30.0, min(_dur * (i + 1) / (_n_valid + 1), _dur - 30.0))
+                                for i in range(_n_valid)
                             ]
 
-                            if _has_cover:
-                                _ff_inj += ["-map", "2:v:0", "-c:v", "mjpeg", "-id3v2_version", "3", "-disposition:v", "attached_pic"]
-                                _ff_inj += ["-metadata:s:v", "title=Album cover", "-metadata:s:v", "comment=Cover (front)"]
+                            # Build filter_complex: split main audio at each point,
+                            # interleave each segment with corresponding ad.
+                            # Segments: seg0 | ad1 | seg1 | ad2 | seg2 | ... | segN
+                            _fc_parts = []
+                            _concat_inputs = []
+
+                            # Split the main audio into N+1 segments
+                            _prev_pt = 0.0
+                            for _si in range(_n_valid + 1):
+                                if _si < _n_valid:
+                                    _end_pt = _split_pts[_si]
+                                    _fc_parts.append(
+                                        f"[0:a]atrim={_prev_pt:.3f}:{_end_pt:.3f},asetpts=PTS-STARTPTS[seg{_si}]"
+                                    )
+                                    _prev_pt = _end_pt
+                                else:
+                                    _fc_parts.append(
+                                        f"[0:a]atrim={_prev_pt:.3f},asetpts=PTS-STARTPTS[seg{_si}]"
+                                    )
+
+                            # Build concat input list: seg0, ad1, seg1, ad2, ...
+                            for _si in range(_n_valid + 1):
+                                _concat_inputs.append(f"[seg{_si}]")
+                                if _si < _n_valid:
+                                    _fc_parts.append(
+                                        f"[{_si + 1}:a]asetpts=PTS-STARTPTS[ad{_si}]"
+                                    )
+                                    _concat_inputs.append(f"[ad{_si}]")
+
+                            _n_concat = 2 * _n_valid + 1  # segs + ads
+                            _fc_str = ";".join(_fc_parts) + ";" + "".join(_concat_inputs) + f"concat=n={_n_concat}:v=0:a=1[outa]"
+
+                            _ff_inj_one += ["-filter_complex", _fc_str, "-map", "[outa]"]
+
+                            # Cover art
+                            _has_cov = local_cover and os.path.exists(local_cover) and os.path.getsize(local_cover) > 1024
+                            if _has_cov:
+                                _ff_inj_one += [
+                                    "-i", local_cover,
+                                    "-map", f"{_n_valid + 1}:v:0",
+                                    "-c:v", "mjpeg", "-id3v2_version", "3",
+                                    "-disposition:v", "attached_pic",
+                                    "-metadata:s:v", "title=Album cover",
+                                    "-metadata:s:v", "comment=Cover (front)",
+                                ]
                             else:
-                                _ff_inj += ["-map", "0:v:0?", "-c:v", "copy"]
+                                _ff_inj_one += ["-map", "0:v:0?", "-c:v", "copy"]
 
-                            _ff_inj += [
+                            _ff_inj_one += [
                                 "-map_metadata", "0",
                                 "-c:a", "libmp3lame", "-b:a", "128k", "-ac", "1",
-                                _inj_tmp
+                                _inj_out
                             ]
-                            _inj_ok, _inj_err = await _ffmpeg_async(_ff_inj)
-                            if _inj_ok and os.path.exists(_inj_tmp) and os.path.getsize(_inj_tmp) > 1024:
-                                if _cur_path != out_path and os.path.exists(_cur_path):
-                                    try: os.remove(_cur_path)
-                                    except: pass
-                                _cur_path = _inj_tmp
-                                _any_injected = True
-                                _ad_report.append((curr_num, _at, f"{int(_pt_actual//60)}m{int(_pt_actual%60)}s"))
-                                logger.info(f"[Cleaner {job_id}] Inj {_i+1}/{_n_inj} serial={curr_num} type={_at} at={_pt_actual:.0f}s")
-                                _cur_dur = await _inj_loop.run_in_executor(_FFMPEG_POOL, _probe_dur_sync, _cur_path)
-                            else:
-                                logger.warning(f"[Cleaner {job_id}] Inj {_i+1}/{_n_inj} failed serial={curr_num}: {_inj_err[:80]}")
-                                try:
-                                    if os.path.exists(_inj_tmp): os.remove(_inj_tmp)
-                                except: pass
 
-                        if _any_injected:
-                            if os.path.exists(out_path) and _cur_path != out_path:
-                                try: os.remove(out_path)
+                            _inj_ok, _inj_err = await _ffmpeg_async(_ff_inj_one)
+                            if _inj_ok and os.path.exists(_inj_out) and os.path.getsize(_inj_out) > 1024:
+                                if os.path.exists(out_path):
+                                    try: os.remove(out_path)
+                                    except: pass
+                                out_path = _inj_out
+                                for _si, _at in enumerate(_valid_ads):
+                                    _ad_report.append((curr_num, _at, f"{int(_split_pts[_si]//60)}m{int(_split_pts[_si]%60)}s"))
+                                logger.info(f"[Cleaner {job_id}] One-shot injected {_n_valid} ads into serial={curr_num}")
+                            else:
+                                logger.warning(f"[Cleaner {job_id}] One-shot ad inject failed serial={curr_num}: {_inj_err[:120]}")
+                                try:
+                                    if os.path.exists(_inj_out): os.remove(_inj_out)
                                 except: pass
-                            out_path = _cur_path
 
                   except Exception as _ae:
                     logger.warning(f"[Cleaner {job_id}] Ad injection error serial={curr_num}: {_ae}")
