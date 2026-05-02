@@ -328,7 +328,10 @@ async def status(bot, query):
     data_usage = humanbytes(stats.get('total_data_usage_bytes', 0))
     
     from main import START_TIME
-    uptime = get_readable_time(int(time.time() - START_TIME))
+    # Prefer bot_start_time persisted in DB at startup (accurate across restarts).
+    # Fall back to in-process START_TIME if DB value is unavailable.
+    _db_start = stats.get('bot_start_time') or START_TIME
+    uptime = get_readable_time(int(time.time() - _db_start))
     
     kwargs = {
         'users_count': users_count,

@@ -561,6 +561,13 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                         dp = await asyncio.wait_for(coro, timeout=dl_timeout)
 
                     if dp and os.path.exists(str(dp)):
+                        # Track download in global stats (shown in /status)
+                        try:
+                            _dl_bytes = os.path.getsize(str(dp))
+                            asyncio.create_task(db.update_global_stats(
+                                total_files_downloaded=1, total_data_usage_bytes=_dl_bytes
+                            ))
+                        except Exception: pass
                         return m, str(dp), m_obj, m.id, lbl, ext   # ✓ success
                     else:
                         logger.warning(f"[Cleaner {job_id}] mid={m.id}: download resolved to None (media expired)")
@@ -1046,6 +1053,11 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
 
                         try: os.remove(p_out)
                         except: pass
+
+                        # Track upload in global stats (shown in /status)
+                        try:
+                            asyncio.create_task(db.update_global_stats(total_files_uploaded=1))
+                        except Exception: pass
 
                         # Access safely via nonlocal
                         nonlocal done, curr_num, fail_count, msg_id

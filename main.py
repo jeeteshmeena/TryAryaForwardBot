@@ -106,6 +106,20 @@ async def main():
     bot = Bot()
     await bot.start()
 
+    # Persist actual startup time to DB immediately — this makes uptime
+    # in the Status section always count from real bot start, not from the
+    # first time a user opens the Status page (lazy-init issue).
+    try:
+        from database import db as _startdb
+        await _startdb.stats.update_one(
+            {'_id': 'bot_stats'},
+            {'$set': {'bot_start_time': START_TIME}},
+            upsert=True
+        )
+        logging.info(f"[Startup] bot_start_time persisted to DB: {START_TIME}")
+    except Exception as _e:
+        logging.warning(f"[Startup] Could not persist start time: {_e}")
+
     try:
         from plugins.share_bot import start_share_bot
         await start_share_bot()
