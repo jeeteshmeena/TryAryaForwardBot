@@ -691,30 +691,15 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                 orig_title = getattr(m_obj, 'title', '') or ''
                 orig_cap   = (getattr(msg, 'caption', '') or '').strip()
 
-                # ── Garbage filename detection (for smart_rename) ──────────
-                def _is_garbage(fn, tt):
-                    """Return True if the filename/title looks random/garbage."""
-                    candidate = (os.path.splitext(fn)[0] if fn else '') or tt or ''
-                    candidate = candidate.strip()
-                    if not candidate:
-                        return True
-                    # Pure digits (e.g. '6746684757646')
-                    if re.match(r'^\d+$', candidate):
-                        return True
-                    # All hex/random alphanumeric with no spaces or readable words
-                    # (e.g. 'aB3xK9mQ2p1z' — no 3+ letter word sequence)
-                    stripped = re.sub(r'[^a-zA-Z0-9]', '', candidate)
-                    if len(stripped) >= 10 and not re.search(r'[a-zA-Z]{3,}', candidate):
-                        return True
-                    return False
-
                 if rename:
                     ep_use = ep_label if ep_label else str(curr_num)
                     if   fmt == "format_2": clean_title = f"{ep_use} - {base_name}"
                     elif fmt == "format_3": clean_title = f"{base_name} EP {ep_use}"
                     else:                  clean_title = f"{base_name} {ep_use}"
-                elif smart_rename and _is_garbage(orig_fn, orig_title):
-                    # Garbage filename → apply configured base_name + curr_num
+                elif smart_rename:
+                    # Force sequential rename — completely ignores existing filename/ep label.
+                    # Uses pure curr_num (which starts from user-configured start_num).
+                    # Every file gets: base_name + sequential_number, no exceptions.
                     _sr_num = str(curr_num)
                     if   fmt == "format_2": clean_title = f"{_sr_num} - {base_name}"
                     elif fmt == "format_3": clean_title = f"{base_name} EP {_sr_num}"
@@ -1496,25 +1481,28 @@ async def _create_cl_flow(bot, user_id):
         smart_rename = False
         if not rename_files:
             r_sr = await _cl_ask(bot, user_id,
-                "<b>» Step 5d — 🔧 Smart-Fix Random Filenames?</b>\n\n"
-                "<i>If a file has a garbage/random name (e.g. <code>6746684757646.mp3</code>), "
-                "the bot will auto-rename it using your configured base name + episode number.\n"
-                "Files with proper names are left unchanged.</i>",
+                "<b>» Step 5d — 🔢 Auto Sequential Rename?</b>\n\n"
+                "<i>Rename ALL files to: <code>[Name] [Number]</code> in order.\n"
+                "e.g. if you enter 'My Story' + start 322 → files become:\n"
+                "<code>My Story 322</code>, <code>My Story 323</code>, <code>My Story 324</code>…\n\n"
+                "✅ Existing names/numbers are completely wiped and replaced.\n"
+                "✅ Works on any filename — garbage or proper.</i>",
                 reply_markup=ReplyKeyboardMarkup(
-                    [["✅ Yes, Fix Random Names", "❌ No, Keep As-Is"], [CANCEL_BTN]],
+                    [["✅ Yes, Auto Rename All", "❌ No, Keep As-Is"], [CANCEL_BTN]],
                     resize_keyboard=True, one_time_keyboard=True))
             if _cancelled(r_sr): return await _abort()
             smart_rename = "yes" in (r_sr.text or "").lower()
             if smart_rename:
-                # Ask for base name + starting number + format for smart rename
+                # Ask for base name + starting number + format
                 rb2 = await _cl_ask(bot, user_id,
-                    "<b>» Step 5d-i — Base Name for Fixed Files</b>\n"
-                    "<i>Enter the story/series name to use for random-named files:</i>",
+                    "<b>» Step 5d-i — Base Name</b>\n"
+                    "<i>Enter the story/series name (e.g. <code>My Story</code>):</i>",
                     reply_markup=mk_c)
                 if _cancelled(rb2): return await _abort()
                 base_name = re.sub(r'[<>:"/\\|?*]', '_', (rb2.text or "Cleaned").strip())
                 rn2 = await _cl_ask(bot, user_id,
-                    "<b>» Step 5d-ii — Starting Number</b>",
+                    "<b>» Step 5d-ii — Starting Number</b>\n"
+                    "<i>First file gets this number. e.g. <code>322</code></i>",
                     reply_markup=mk_b)
                 if _cancelled(rn2): return await _abort()
                 try: start_num = int((rn2.text or "1").strip())
