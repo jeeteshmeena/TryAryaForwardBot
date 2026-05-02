@@ -1246,7 +1246,18 @@ async def _cl_callbacks(bot, update: CallbackQuery):
     elif action == "new":
         try: await update.message.delete()
         except: pass
-        asyncio.create_task(_create_cl_flow(bot, uid)); return True
+        _task = asyncio.create_task(_create_cl_flow(bot, uid))
+        def _cl_flow_err(t):
+            exc = t.exception()
+            if exc and not isinstance(exc, asyncio.CancelledError):
+                import logging as _lg
+                _lg.getLogger(__name__).error(f"[Cleaner wizard] unhandled exception: {exc}", exc_info=exc)
+                asyncio.create_task(bot.send_message(uid,
+                    f"<b>❌ Cleaner wizard crashed!</b>\n"
+                    f"<code>{type(exc).__name__}: {str(exc)[:200]}</code>\n\n"
+                    "<i>Please start again with /settings.</i>"))
+        _task.add_done_callback(_cl_flow_err)
+        return True
 
     elif action == "view":
         jid = data[2]
@@ -1405,6 +1416,7 @@ async def _create_cl_flow(bot, user_id):
     if _cancelled(r_mode): return await _abort()
     ad_inject_only = "inject" in (r_mode.text or "").lower() or "existing" in (r_mode.text or "").lower()
 
+    smart_rename = False  # always initialize — set properly below if not ad_inject_only
     if ad_inject_only:
         dest_chat = from_chat
         replace_mode = True
