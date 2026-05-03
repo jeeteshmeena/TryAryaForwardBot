@@ -1108,19 +1108,21 @@ async def _cl_run_job_inner(job_id: str, bot=None, skip_sem: bool = False):
                 )
 
             except Exception as e:
-                logger.error(f"[Cleaner {job_id}] ✗ mid={active_mid}: {e}")
+                _safe_mid = locals().get('active_mid', msg_id)
+                logger.error(f"[Cleaner {job_id}] ✗ mid={_safe_mid}: {e}")
                 err_msg = str(e)[:200]
                 
                 # If we threw this exception because NEXT loop's wait-for-upload failed:
-                save_mid = active_mid
+                save_mid = _safe_mid
                 if "Upload task failed (mid=" in str(e):
                     import re
                     match = re.search(r"mid=(\d+)", str(e))
                     if match: save_mid = int(match.group(1))
 
                 await _cl_update_job(job_id, {"status": "paused", "error": err_msg, "current_msg_id": save_mid})
-                if os.path.exists(dl_path):
-                    try: os.remove(dl_path)
+                _safe_dl = locals().get('dl_path', '')
+                if _safe_dl and os.path.exists(_safe_dl):
+                    try: os.remove(_safe_dl)
                     except: pass
                 if _bot:
                     try:
