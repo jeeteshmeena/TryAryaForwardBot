@@ -134,140 +134,139 @@ async def start_clone_bot(FwdBot, data=None, force_restart=False):
            asyncio.ensure_future(_warm())
    except Exception:
        pass
-   #
-   async def iter_messages(
-      chat_id: Union[int, str], 
-      limit: int, 
-      offset: int = 0,
-      search: str = None,
-      filter: "types.TypeMessagesFilter" = None,
-      continuous: bool = False,
-      reverse_order: bool = False
-      ) -> Optional[AsyncGenerator["types.Message", None]]:
-        """Iterate through a chat sequentially. Bot-safe implementation."""
-        import pyrogram
-        
-        # Detect if this client is a normal bot — bots CANNOT use get_chat_history (user-only API).
-        me = await FwdBot.get_me()
-        is_bot = getattr(me, 'is_bot', False)
-        
-        chat = await FwdBot.get_chat(chat_id)
-        is_channel_or_supergroup = chat.type in [
-            pyrogram.enums.ChatType.CHANNEL,
-            pyrogram.enums.ChatType.SUPERGROUP,
-        ]
-        
-        # Lock in numeric ID to prevent string resolution bugs later
-        if str(chat_id).lower() not in ("me", "saved"):
-            chat_id = chat.id
-
-        BATCH_SIZE = 200  # Max IDs per get_messages call
-
-        offset = offset if offset else getattr(FwdBot, "offset", 0)
-        limit = limit if limit else getattr(FwdBot, "limit", getattr(FwdBot, "last_msg_id", 0))
-
-        BATCH_SIZE = 200
-
-        # 1. Determine REAL upper bound (top_id)
-        if limit > 0 and limit != 10000000:
-            top_id = limit
-        else:
-            # Binary search to find top message ID
-            lo, hi = 1, 9_999_999
-            for _ in range(25):
-                if hi - lo <= BATCH_SIZE:
-                    break
-                mid = (lo + hi) // 2
-                try:
-                    probe = await FwdBot.get_messages(chat_id, [mid])
-                    if not isinstance(probe, list): probe = [probe]
-                    if any(m and not m.empty for m in probe):
-                        lo = mid
-                    else:
-                        hi = mid
-                except Exception as e:
-                    import logging
-                    err_str = str(e).upper()
-                    if "PEER" in err_str or "CHANNEL" in err_str or "ACCESS" in err_str:
-                        logging.getLogger(__name__).error(f"Binary search failed on {chat_id}: {e}")
-                        raise e
-                    hi = mid
-            top_id = hi
-
-        # 2. Determine bounds
-        start_id = max(1, offset if offset > 0 else 1)
-        end_id = top_id
-
-        if not reverse_order:
-            # ── Old to New: ascend ──
-            current = start_id
-            while current <= end_id:
-                batch_end_val = min(current + BATCH_SIZE - 1, end_id)
-                batch_ids = list(range(current, batch_end_val + 1))
-                
-                try:
-                    msgs = await FwdBot.get_messages(chat_id, batch_ids)
-                except FloodWait as e:
-                    await asyncio.sleep(e.value + 2)
-                    continue 
-
-                if not isinstance(msgs, list):
-                    msgs = [msgs]
-                
-                valid = []
-                for m in msgs:
-                    if not m or m.empty: continue
-                    if isinstance(chat_id, int) and getattr(m, 'chat', None) and m.chat.id != chat_id:
-                        continue
-                    valid.append(m)
-                    
-                valid.sort(key=lambda m: m.id)
-                
-                for message in valid:
-                    yield message
-                    
-                current = batch_end_val + 1
-        else:
-            # ── New to Old: descend (iter_messages default) ──
-            # (If offset is passed, start from there going downwards)
-            if start_id > 1:
-                # Normal descend starts from top_id
-                start_desc = end_id
-                end_desc = start_id
-            else:
-                start_desc = end_id
-                end_desc = 1
-                
-            current = start_desc
-            while current >= end_desc:
-                batch_start_val = max(current - BATCH_SIZE + 1, end_desc)
-                batch_ids = list(range(batch_start_val, current + 1))
-                
-                try:
-                    msgs = await FwdBot.get_messages(chat_id, batch_ids)
-                except FloodWait as e:
-                    await asyncio.sleep(e.value + 2)
-                    continue 
-                
-                if not isinstance(msgs, list):
-                    msgs = [msgs]
-                    
-                valid = []
-                for m in msgs:
-                    if not m or m.empty: continue
-                    if isinstance(chat_id, int) and getattr(m, 'chat', None) and m.chat.id != chat_id:
-                        continue
-                    valid.append(m)
-                    
-                valid.sort(key=lambda m: m.id, reverse=True)
-                
-                for message in valid:
-                    yield message
-                    
-                current = batch_start_val - 1
-   #
-   FwdBot.iter_messages = iter_messages
    return FwdBot
+
+async def iter_messages(
+    self,
+    chat_id: Union[int, str], 
+    limit: int, 
+    offset: int = 0,
+    search: str = None,
+    filter: "typing.Any" = None,
+    continuous: bool = False,
+    reverse_order: bool = False
+) -> Optional[AsyncGenerator["typing.Any", None]]:
+    """Iterate through a chat sequentially. Bot-safe implementation."""
+    import pyrogram
+    
+    # Detect if this client is a normal bot — bots CANNOT use get_chat_history (user-only API).
+    me = await self.get_me()
+    is_bot = getattr(me, 'is_bot', False)
+    
+    chat = await self.get_chat(chat_id)
+    is_channel_or_supergroup = chat.type in [
+        pyrogram.enums.ChatType.CHANNEL,
+        pyrogram.enums.ChatType.SUPERGROUP,
+    ]
+    
+    # Lock in numeric ID to prevent string resolution bugs later
+    if str(chat_id).lower() not in ("me", "saved"):
+        chat_id = chat.id
+
+    BATCH_SIZE = 200  # Max IDs per get_messages call
+
+    offset = offset if offset else getattr(self, "offset", 0)
+    limit = limit if limit else getattr(self, "limit", getattr(self, "last_msg_id", 0))
+
+    # 1. Determine REAL upper bound (top_id)
+    if limit > 0 and limit != 10000000:
+        top_id = limit
+    else:
+        # Binary search to find top message ID
+        lo, hi = 1, 9_999_999
+        for _ in range(25):
+            if hi - lo <= BATCH_SIZE:
+                break
+            mid = (lo + hi) // 2
+            try:
+                probe = await self.get_messages(chat_id, [mid])
+                if not isinstance(probe, list): probe = [probe]
+                if any(m and not m.empty for m in probe):
+                    lo = mid
+                else:
+                    hi = mid
+            except Exception as e:
+                import logging
+                err_str = str(e).upper()
+                if "PEER" in err_str or "CHANNEL" in err_str or "ACCESS" in err_str:
+                    logging.getLogger(__name__).error(f"Binary search failed on {chat_id}: {e}")
+                    raise e
+                hi = mid
+        top_id = hi
+
+    # 2. Determine bounds
+    start_id = max(1, offset if offset > 0 else 1)
+    end_id = top_id
+
+    if not reverse_order:
+        # ── Old to New: ascend ──
+        current = start_id
+        while current <= end_id:
+            batch_end_val = min(current + BATCH_SIZE - 1, end_id)
+            batch_ids = list(range(current, batch_end_val + 1))
+            
+            try:
+                msgs = await self.get_messages(chat_id, batch_ids)
+            except FloodWait as e:
+                await asyncio.sleep(e.value + 2)
+                continue 
+
+            if not isinstance(msgs, list):
+                msgs = [msgs]
+            
+            valid = []
+            for m in msgs:
+                if not m or m.empty: continue
+                if isinstance(chat_id, int) and getattr(m, 'chat', None) and m.chat.id != chat_id:
+                    continue
+                valid.append(m)
+                
+            valid.sort(key=lambda m: m.id)
+            
+            for message in valid:
+                yield message
+                
+            current = batch_end_val + 1
+    else:
+        # ── New to Old: descend (iter_messages default) ──
+        # (If offset is passed, start from there going downwards)
+        if start_id > 1:
+            # Normal descend starts from top_id
+            start_desc = end_id
+            end_desc = start_id
+        else:
+            start_desc = end_id
+            end_desc = 1
+            
+        current = start_desc
+        while current >= end_desc:
+            batch_start_val = max(current - BATCH_SIZE + 1, end_desc)
+            batch_ids = list(range(batch_start_val, current + 1))
+            
+            try:
+                msgs = await self.get_messages(chat_id, batch_ids)
+            except FloodWait as e:
+                await asyncio.sleep(e.value + 2)
+                continue 
+            
+            if not isinstance(msgs, list):
+                msgs = [msgs]
+                
+            valid = []
+            for m in msgs:
+                if not m or m.empty: continue
+                if isinstance(chat_id, int) and getattr(m, 'chat', None) and m.chat.id != chat_id:
+                    continue
+                valid.append(m)
+                
+            valid.sort(key=lambda m: m.id, reverse=True)
+            
+            for message in valid:
+                yield message
+                
+            current = batch_start_val - 1
+
+Client.iter_messages = iter_messages
 
 
 class CLIENT: 
