@@ -2660,6 +2660,7 @@ async def _process_callback(client, query):
                     "status": "pending_gateway",
                     "bot_username": client.me.username,
                     "method": "upi",
+                    "amount": int(story["price"]),
                     "upi_uri": upi_uri,
                     "pay_link_copy": button_url,
                     "updated_at": datetime.utcnow(),

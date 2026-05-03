@@ -2108,6 +2108,9 @@ async def _approve_payment_flow(client, user_id, p_id):
         import random, string
         order_id = f"OD-{checkout['user_id']}-{''.join(random.choices(string.ascii_uppercase + string.digits, k=6))}"
 
+        story = await db.db.premium_stories.find_one({"_id": checkout.get("story_id")})
+        real_amt = checkout.get("amount") or (int(story.get("price", 0)) if story else 0)
+
         await db.add_purchase(checkout['user_id'], str(checkout.get('story_id')))
         await db.db.premium_purchases.insert_one({
             "user_id": checkout['user_id'],
@@ -2115,7 +2118,7 @@ async def _approve_payment_flow(client, user_id, p_id):
             "bot_id": checkout.get('bot_id'),
             "purchased_at": datetime.utcnow(),
             "source": checkout.get("method", "upi"),
-            "amount": checkout.get("amount", 0),
+            "amount": real_amt,
             "order_id": order_id
         })
 
@@ -2124,12 +2127,13 @@ async def _approve_payment_flow(client, user_id, p_id):
         story = await db.db.premium_stories.find_one({"_id": checkout.get("story_id")})
         user_info = await db.get_user(checkout['user_id'])
         s_name = story.get("story_name_en") if story else "Unknown"
+        real_amt = checkout.get("amount") or (int(story.get("price", 0)) if story else 0)
         
         asyncio.create_task(log_arya_event(
             event_type="MANUAL UPI VERIFIED",
             user_id=checkout['user_id'],
             user_info=user_info,
-            details=f"Story: {s_name}\nOrder ID: <code>{order_id}</code>\nAmount: ₹{checkout.get('amount', 0)}\nApproved by Admin ID: {user_id}"
+            details=f"Story: {s_name}\nOrder ID: <code>{order_id}</code>\nAmount: ₹{real_amt}\nApproved by Admin ID: {user_id}"
         ))
         
         asyncio.create_task(log_payment(
@@ -2137,7 +2141,7 @@ async def _approve_payment_flow(client, user_id, p_id):
             user_first_name=user_info.get("first_name", "User"),
             username=user_info.get('username', ''),
             s_name=s_name,
-            amount=checkout.get("amount", 0),
+            amount=real_amt,
             method=checkout.get("method", "upi"),
             receipt_id=str(checkout.get("_id", "")),
             photo_path=checkout.get("proof_path"),
