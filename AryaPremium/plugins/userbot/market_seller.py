@@ -839,8 +839,17 @@ async def _show_tc(client, user_id, story_id, lang='en'):
         iaadnsa_btn = "𝗜𝗔𝗔𝗗𝗡𝗦𝗔"
         back_btn = "‹ Back"
 
+    from bson.objectid import ObjectId
+    u_obj = await client.get_users(user_id)
+    s_obj = await db.db.premium_stories.find_one({"_id": ObjectId(story_id)})
+    s_name = s_obj.get(f'story_name_{lang}', s_obj.get('story_name_en', 'Unknown')) if s_obj else 'Unknown'
+    uname_str = f"@{u_obj.username}" if getattr(u_obj, "username", None) else "N/A"
+    full_name = f"{getattr(u_obj, 'first_name', '') or ''} {getattr(u_obj, 'last_name', '') or ''}".strip() or "User"
+    user_details = f"👤 <b>User:</b> {full_name} ({uname_str}) | <b>ID:</b> <code>{user_id}</code>\n📖 <b>Story:</b> {s_name}\n"
+
     tc_text = (
         f"{tc_title}\n\n"
+        f"{user_details}\n"
         f"{tc_subtitle}\n\n"
         f"<blockquote expandable>{missing_title}\n{missing_desc}</blockquote>\n"
         f"<blockquote expandable>{quality_title}\n{quality_desc}</blockquote>\n"
@@ -1081,6 +1090,10 @@ async def _process_start(client, message):
     
     args = message.command
     arg_p = f"#{args[1]}" if len(args) > 1 and args[1] else ""
+    if len(args) > 1 and args[1]:
+        from utils import log_arya_event
+        asyncio.create_task(log_arya_event("START LINK CLICKED", user_id, {"first_name": getattr(message.from_user, "first_name", ""), "last_name": getattr(message.from_user, "last_name", ""), "username": getattr(message.from_user, "username", "")}, f"User clicked start link with payload: {args[1]}"))
+
     lang = user.get('lang', 'en')
 
     # ── Deep Link Handler (Bypass Force Join & Lang Prompt) ──
@@ -1169,6 +1182,12 @@ async def _process_start(client, message):
     await _send_main_menu(client, user_id, message.from_user, lang, reply_to_message_id=message.id)
 
 async def _submit_feedback(client, message, user_id: int, user: dict, lang: str, content_type: str, text: str):
+    try:
+        from utils import log_arya_event
+        ui = {"first_name": getattr(message.from_user, "first_name", ""), "last_name": getattr(message.from_user, "last_name", ""), "username": getattr(message.from_user, "username", "")}
+        asyncio.create_task(log_arya_event("USER FEEDBACK", user_id, ui, f"User submitted feedback: {text}"))
+    except Exception: pass
+
     """Shared helper: saves feedback to DB and notifies admins. Handles text/photo/video/animation/document."""
     from datetime import datetime, timezone as _tz
     caption_or_text = text or (getattr(message, 'caption', None) or "")
@@ -1375,6 +1394,21 @@ async def _process_text(client, message):
     user = await db.get_user(user_id)
     lang = user.get('lang', 'en')
     txt = message.text.strip()
+
+    try:
+        from utils import log_arya_event
+        ui = {"first_name": getattr(message.from_user, "first_name", ""), "last_name": getattr(message.from_user, "last_name", ""), "username": getattr(message.from_user, "username", "")}
+        if " [ ₹ " in txt:
+            sName = txt.split(" [ ₹ ")[0].split(". ", 1)[-1].strip()
+            asyncio.create_task(log_arya_event("STORY SELECTED", user_id, ui, f"User selected story: {sName}"))
+        elif txt in ["🔎 SEARCH", "🔎 खोजें"]:
+            asyncio.create_task(log_arya_event("USER INTERACTION", user_id, ui, "Clicked Search in Marketplace"))
+        elif user.get("state") == "searching" and not txt.startswith("✖️") and not txt.startswith("❮"):
+            asyncio.create_task(log_arya_event("USER INTERACTION", user_id, ui, f"Searched for: {txt}"))
+        elif txt in ["Pocket FM", "Kuku FM", "Other"] or any(txt == p for p in await db.db.premium_stories.distinct('platform', {"bot_id": client.me.id})):
+            asyncio.create_task(log_arya_event("USER INTERACTION", user_id, ui, f"Selected Platform: {txt}"))
+    except Exception: pass
+
 
     # Intercept direct section commands
     cmd_text = txt.lower()
@@ -1852,6 +1886,32 @@ async def _process_callback(client, query):
     data = query.data.split('#')
     cmd = data[1]
 
+    try:
+        from utils import log_arya_event
+        ui = {"first_name": getattr(query.from_user, "first_name", ""), "last_name": getattr(query.from_user, "last_name", ""), "username": getattr(query.from_user, "username", "")}
+        act = ""
+        if cmd.startswith("about_arya_"): act = "Viewed Arya About Page"
+        elif cmd == "my_buys": act = "Opened My Stories"
+        elif cmd == "main_profile": act = "Opened Profile"
+        elif cmd == "main_settings": act = "Opened Settings"
+        elif cmd == "main_help": act = "Opened Support"
+        elif cmd == "main_close": act = "Clicked Close Button"
+        elif cmd == "main_marketplace": act = "Opened Marketplace"
+        elif cmd.startswith("my_reqs_"): act = "Checked My Requests"
+        elif cmd == "toggle_sub": act = "Toggled New Story Alerts"
+        elif cmd == "lang": act = f"Changed Language to {data[2] if len(data)>2 else 'Unknown'}"
+        elif cmd == "show_tc": act = f"Proceeded to Confirm Story Details (T&C) for Story ID {data[2] if len(data)>2 else ''}"
+        elif cmd == "demo": act = f"Viewed Demo Files for Story ID {data[2] if len(data)>2 else ''}"
+        elif cmd == "help_tc": act = "Viewed T&C from Support"
+        elif cmd == "help_refund": act = "Viewed Refund Policy from Support"
+        elif cmd == "feedback": act = "Clicked Feedback/Suggestions"
+        elif cmd == "pay": act = f"Selected Payment Method: {data[2] if len(data)>2 else ''} for Story ID {data[3] if len(data)>3 else ''}"
+        elif cmd.endswith("_check"): act = f"Clicked Verify Payment for Story ID {data[2] if len(data)>2 else ''}"
+        elif cmd == "upi_done": act = f"Clicked Payment Done for Manual UPI (Story ID {data[2] if len(data)>2 else ''})"
+        if act: asyncio.create_task(log_arya_event("USER INTERACTION", user_id, ui, act))
+    except Exception: pass
+
+
     # ── Joined Check ──
     if cmd == "jchk" or cmd == "joined_check":
         try:
@@ -2195,7 +2255,14 @@ async def _process_callback(client, query):
         story = await db.db.premium_stories.find_one({"_id": ObjectId(s_id)})
         if not story: return await query.answer("Story not found!", show_alert=True)
         await query.answer()
+        try:
+            from utils import log_arya_event
+            ui = {"first_name": getattr(query.from_user, "first_name", ""), "last_name": getattr(query.from_user, "last_name", ""), "username": getattr(query.from_user, "username", "")}
+            sName = story.get(f'story_name_{lang}', story.get('story_name_en', 'Unknown'))
+            asyncio.create_task(log_arya_event("VIEWED DEMO", user_id, ui, f"User viewed demo files for story: {sName}"))
+        except: pass
         asyncio.create_task(_send_demo_files(client, user_id, story, lang))
+
 
     # -- My Buys (My Stories) --
     elif cmd == "my_buys" or cmd.startswith("my_buys_page_"):
@@ -2690,6 +2757,12 @@ async def _process_callback(client, query):
             else:
                 url, pl_id = await _create_easebuzz_link(price, desc, ref_id, user.get('first_name', "User"))
             
+            if url and method == "razorpay":
+                try:
+                    from utils import log_arya_event
+                    u_info = {"first_name": user.get('first_name', ''), "last_name": user.get('last_name', ''), "username": user.get('username', '')}
+                    asyncio.create_task(log_arya_event("PAYMENT LINK GENERATED", user_id, u_info, f"Generated Razorpay link for story: {desc}\nAmount: {price}\nLink: {url}"))
+                except: pass
             if not url or (method == "razorpay" and not url.startswith("http")):
                 empty_key_msg = f"{method.capitalize()} API keys not found in .env!"
                 err_msg = pl_id if pl_id else empty_key_msg
@@ -3129,6 +3202,12 @@ async def _process_callback(client, query):
 # Screenshot Handler
 # ─────────────────────────────────────────────────────────────────
 async def _process_screenshot(client, message):
+    try:
+        from utils import log_arya_event
+        ui = {"first_name": getattr(message.from_user, "first_name", ""), "last_name": getattr(message.from_user, "last_name", ""), "username": getattr(message.from_user, "username", "")}
+        asyncio.create_task(log_arya_event("PAYMENT SCREENSHOT", message.from_user.id, ui, "User uploaded a payment screenshot."))
+    except Exception: pass
+
     user_id = message.from_user.id
     user = await db.get_user(user_id)
     lang = user.get('lang', 'en')
@@ -3241,6 +3320,11 @@ async def _process_screenshot(client, message):
 # Delivery Choice (now fully Inline — no native_ask needed!)
 # ─────────────────────────────────────────────────────────────────
 async def dispatch_delivery_choice(client, user_id, story):
+    try:
+        from utils import log_arya_event
+        asyncio.create_task(log_arya_event("DELIVERY REQUEST", user_id, {"first_name": "User", "last_name": "", "username": ""}, f"User requested delivery options for story: {story.get('story_name_en', 'Unknown')}"))
+    except Exception: pass
+
     """
     Called when Admin approves OR user already owns. Shows inline delivery options.
     """
