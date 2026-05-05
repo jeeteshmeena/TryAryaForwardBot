@@ -511,6 +511,67 @@ async def verify_payment(payload: dict):
     }
 
 
+# ── My Purchases — Bot + Mini App synced ──────────────────────────
+@app.get("/api/my-purchases")
+async def my_purchases(telegram_id: int):
+    """
+    Return all purchased stories for a user.
+    Merges:
+      - Bot purchases (stored via arya_db.add_purchase)
+      - Mini App Razorpay purchases (stored in orders collection)
+    """
+    if not telegram_id:
+        raise HTTPException(400, "telegram_id required")
+
+    try:
+        # 1. Get purchased story_ids from user record
+        user = await arya_db.db.users.find_one({"user_id": int(telegram_id)})
+        user_story_ids: list = []
+        if user:
+            user_story_ids = user.get("purchased_stories", []) or user.get("stories", []) or []
+
+        # 2. Also get story_ids from orders (razorpay paid)
+        order_story_ids: list = []
+        async for order in arya_db.db.orders.find(
+            {"user_id": int(telegram_id), "status": "paid"},
+            {"story_ids": 1}
+        ):
+            order_story_ids.extend(order.get("story_ids", []))
+
+        # 3. Merge all unique story IDs
+        all_ids = list(dict.fromkeys(user_story_ids + order_story_ids))
+        if not all_ids:
+            return {"success": True, "data": []}
+
+        # 4. Fetch story details for each ID
+        results = []
+        for sid in all_ids:
+            try:
+                story = await arya_db.db.premium_stories.find_one({"_id": ObjectId(str(sid))})
+                if not story:
+                    continue
+                formatted = _format_story(story)
+                if not formatted:
+                    continue
+                results.append({
+                    "story_id":  formatted["id"],
+                    "title":     formatted["title"],
+                    "poster":    formatted.get("poster"),
+                    "price":     formatted.get("price"),
+                    "platform":  formatted.get("platform"),
+                    "genre":     formatted.get("genre"),
+                })
+            except Exception:
+                continue
+
+        logger.info(f"my-purchases: user={telegram_id} → {len(results)} stories")
+        return {"success": True, "data": results}
+
+    except Exception as e:
+        logger.error(f"my-purchases error: {e}", exc_info=True)
+        raise HTTPException(500, "Failed to load purchases")
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("mini_app_api:app", host="0.0.0.0", port=8000, reload=True)
