@@ -1,18 +1,13 @@
 """
-Arya Premium Mini App API
-Run from AryaPremium/ directory:
-    BOT_USERNAME=UseAryaBot python3 mini_app_api.py
+Arya Premium Mini App API — Production Grade
+Run: BOT_USERNAME=UseAryaBot python3 mini_app_api.py
 """
-import os
-import uuid
-import random
-import string
-import logging
+import os, random, string, hmac, hashlib, logging, base64
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, Response
+from fastapi.responses import Response
 
 try:
     from dotenv import load_dotenv
@@ -23,63 +18,63 @@ except ImportError:
 from config import Config
 from database import db as arya_db
 
-logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
-logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+logger = logging.getLogger("arya_api")
 
 BOT_USERNAME = os.environ.get("BOT_USERNAME", "UseAryaBot")
+RZP_KEY      = Config.RAZORPAY_KEY
+RZP_SECRET   = Config.RAZORPAY_SECRET
 
-# ── Lifespan ─────────────────────────────────────────────────────
+# ── Lifespan ──────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await arya_db.connect()
-    logger.info("✅ MongoDB connected")
+    logger.info(f"✅ MongoDB connected | bot={BOT_USERNAME}")
     yield
     if arya_db.client:
         arya_db.client.close()
 
-app = FastAPI(title="Arya Premium Mini App API", lifespan=lifespan)
-
+app = FastAPI(title="Arya Premium API", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=False,
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
-    expose_headers=["*"],
 )
 
 
-# ── Image helper: is this a real HTTP URL? ────────────────────────
-def _is_url(v: str | None) -> bool:
-    return bool(v and (v.startswith("http://") or v.startswith("https://")))
+# ═══════════════════════════════════════════════════════════════════
+# UTILITIES
+# ═══════════════════════════════════════════════════════════════════
 
+def _rand(n=6): return "".join(random.choices(string.ascii_uppercase + string.digits, k=n))
 
-# ── Story formatter ───────────────────────────────────────────────
-def _format(s: dict) -> dict | None:
+def _is_url(v): return bool(v and (str(v).startswith("http://") or str(v).startswith("https://")))
+
+def _make_order_id(uid): return f"OD-{uid}-{_rand(6)}"
+
+def _format_story(s: dict) -> dict | None:
     story_id = str(s["_id"]) if s.get("_id") else None
-    if not story_id:
-        return None
+    if not story_id: return None
 
     title = (
-        s.get("story_name_en") or s.get("story_name_hi")
-        or s.get("story_name") or s.get("name") or s.get("title")
+        s.get("story_name_en") or s.get("story_name_hi") or
+        s.get("story_name") or s.get("name") or s.get("title")
     )
-    if title:
-        title = str(title).strip()
-    if not title:
-        return None
+    if not title or not str(title).strip(): return None
+    title = str(title).strip()
 
     description = (s.get("description") or s.get("description_hi") or "").strip()
 
-    # Poster: use HTTP URL if available, else proxy via /api/image/{id}
-    poster_url = s.get("poster_url") or s.get("cover") or s.get("image_url")
-    if _is_url(poster_url):
-        poster = poster_url
+    # Poster URL: prefer HTTP URL; else proxy via /api/image/{id}
+    raw_poster = s.get("poster_url") or s.get("cover") or s.get("image_url")
+    if _is_url(raw_poster):
+        poster = raw_poster
     elif s.get("image"):
-        # Telegram file_id → serve via API image proxy
         poster = f"/api/image/{story_id}"
     else:
-        poster = None  # frontend will use genre gradient
+        poster = None
 
     return {
         "id":            story_id,
@@ -96,257 +91,282 @@ def _format(s: dict) -> dict | None:
         "episodes":      s.get("episodes") or s.get("ep_count") or s.get("total_eps") or "?",
         "totalEpisodes": s.get("episodes") or s.get("total_eps") or s.get("ep_count") or "?",
         "size":          s.get("total_size") or s.get("size") or None,
-        "isCompleted":   bool(
-            s.get("is_completed") or s.get("completed")
-            or str(s.get("status", "")).lower() == "completed"
-        ),
+        "isCompleted":   bool(s.get("is_completed") or s.get("completed")),
+        "bot_id":        s.get("bot_id"),
     }
 
 
-# ── GET /api/health ───────────────────────────────────────────────
+async def _get_bot_token(bot_id) -> str | None:
+    """Get the Telegram bot token for image proxy."""
+    if bot_id:
+        try:
+            bot = await arya_db.db.premium_bots.find_one({"id": int(bot_id)})
+            if bot and bot.get("token"):
+                return bot["token"]
+        except Exception:
+            pass
+    # Fallback to mgmt bot token
+    return Config.MGMT_BOT_TOKEN or os.environ.get("MGMT_BOT_TOKEN")
+
+
+async def _get_stories_from_ids(story_ids: list) -> list:
+    """Fetch story documents from DB given a list of string ObjectIds."""
+    from bson.objectid import ObjectId
+    result = []
+    for sid in story_ids:
+        try:
+            doc = await arya_db.db.premium_stories.find_one({"_id": ObjectId(str(sid))})
+            if doc:
+                result.append(doc)
+        except Exception:
+            pass
+    return result
+
+
+# ═══════════════════════════════════════════════════════════════════
+# ENDPOINTS
+# ═══════════════════════════════════════════════════════════════════
+
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "bot": BOT_USERNAME}
+    return {"status": "ok", "bot": BOT_USERNAME, "razorpay": bool(RZP_KEY)}
 
 
-# ── GET /api/stories ──────────────────────────────────────────────
+# ── Stories ───────────────────────────────────────────────────────
 @app.get("/api/stories")
 async def get_stories():
     try:
-        stories = await arya_db.get_all_stories()
-        result = [r for r in (_format(s) for s in stories) if r]
-        logger.info(f"Returning {len(result)} stories")
-        return {"success": True, "data": result}
+        raw = await arya_db.get_all_stories()
+        stories = [r for r in (_format_story(s) for s in raw) if r]
+        logger.info(f"Serving {len(stories)} stories")
+        return {"success": True, "data": stories}
     except Exception as e:
-        logger.error(f"/api/stories error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"stories error: {e}", exc_info=True)
+        raise HTTPException(500, str(e))
 
 
-# ── GET /api/image/{story_id} — Telegram image proxy ─────────────
+# ── Image Proxy ───────────────────────────────────────────────────
 @app.get("/api/image/{story_id}")
-async def get_story_image(story_id: str):
-    """Proxy Telegram file_id images so browser can display them."""
+async def image_proxy(story_id: str):
+    """
+    Proxy Telegram file_id images so browser can render them.
+    Flow: getFile → file_path → download → stream bytes.
+    """
     import httpx
     from bson.objectid import ObjectId
+
+    # 1. Load story
     try:
         story = await arya_db.db.premium_stories.find_one({"_id": ObjectId(story_id)})
     except Exception:
         raise HTTPException(404, "Invalid story id")
-
     if not story:
         raise HTTPException(404, "Story not found")
 
     file_id = story.get("image")
-    if not file_id or _is_url(file_id):
-        raise HTTPException(404, "No Telegram image for this story")
+    if not file_id:
+        raise HTTPException(404, "No image for this story")
+    if _is_url(file_id):
+        # It's already a URL — redirect
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(file_id)
 
-    # Get bot token from the story's assigned store bot, fallback to mgmt token
-    bot_token = None
-    bot_id = story.get("bot_id")
-    if bot_id:
-        bot_doc = await arya_db.db.premium_bots.find_one({"id": bot_id})
-        if bot_doc:
-            bot_token = bot_doc.get("token")
-    if not bot_token:
-        bot_token = os.environ.get("MGMT_BOT_TOKEN") or Config.MGMT_BOT_TOKEN
+    # 2. Get bot token
+    token = await _get_bot_token(story.get("bot_id"))
+    if not token:
+        raise HTTPException(500, "No bot token configured")
 
-    if not bot_token:
-        raise HTTPException(500, "No bot token available for image proxy")
-
+    # 3. Fetch via Telegram Bot API
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            # Step 1: get file path from Telegram
+        async with httpx.AsyncClient(timeout=15) as client:
+            # Step A: getFile
             r = await client.get(
-                f"https://api.telegram.org/bot{bot_token}/getFile",
-                params={"file_id": file_id}
+                f"https://api.telegram.org/bot{token}/getFile",
+                params={"file_id": file_id},
             )
             data = r.json()
             if not data.get("ok"):
-                raise HTTPException(404, "Telegram getFile failed")
+                err = data.get("description", "getFile failed")
+                logger.error(f"Telegram getFile error: {err} | file_id={file_id}")
+                raise HTTPException(404, f"Telegram error: {err}")
+
             file_path = data["result"]["file_path"]
 
-            # Step 2: download the file
-            img_r = await client.get(
-                f"https://api.telegram.org/file/bot{bot_token}/{file_path}"
+            # Step B: download
+            img = await client.get(
+                f"https://api.telegram.org/file/bot{token}/{file_path}"
             )
-            content_type = img_r.headers.get("content-type", "image/jpeg")
-            return Response(content=img_r.content, media_type=content_type)
+            if img.status_code != 200:
+                raise HTTPException(502, "Image download failed")
+
+            ct = img.headers.get("content-type", "image/jpeg")
+            return Response(
+                content=img.content,
+                media_type=ct,
+                headers={"Cache-Control": "public, max-age=86400"},
+            )
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Image proxy error for {story_id}: {e}")
+        logger.error(f"Image proxy error [{story_id}]: {e}", exc_info=True)
         raise HTTPException(500, "Image fetch failed")
 
 
-# ── POST /api/checkout ────────────────────────────────────────────
+# ── Checkout (Bot UPI flow) ───────────────────────────────────────
 @app.post("/api/checkout")
 async def checkout(payload: dict):
-    """Create order and return deep-link to bot for payment."""
-    telegram_id = payload.get("telegram_id")
-    story_ids = payload.get("story_ids", [])
-    username = payload.get("username", "")
-
-    if not story_ids:
-        raise HTTPException(status_code=400, detail="Cart is empty")
-
-    # Allow null telegram_id (testing outside Telegram) — use 0 as placeholder
-    if not telegram_id:
-        telegram_id = 0
-
-    from bson.objectid import ObjectId
-    valid_stories = []
-    for sid in story_ids:
-        try:
-            doc = await arya_db.db.premium_stories.find_one({"_id": ObjectId(str(sid))})
-            if doc:
-                valid_stories.append(doc)
-        except Exception:
-            pass
-
-    if not valid_stories:
-        raise HTTPException(status_code=400, detail="No valid stories found")
-
-    total_price = sum(float(s.get("price") or 0) for s in valid_stories)
-
-    # Order ID matching Arya Premium bot format: OD-{user_id}-{RANDOM6}
-    suffix = "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
-    order_id = f"OD-{telegram_id}-{suffix}"
-
-    await arya_db.db.orders.insert_one({
-        "order_id":     order_id,
-        "user_id":      telegram_id,
-        "username":     username,
-        "story_ids":    story_ids,
-        "story_names":  [s.get("story_name_en", "") for s in valid_stories],
-        "total_amount": total_price,
-        "status":       "pending",
-        "source":       "mini_app",
-        "created_at":   datetime.now(timezone.utc),
-    })
-    logger.info(f"Order {order_id} created for user {telegram_id}, ₹{total_price}")
-
-    bot_un = os.environ.get("BOT_USERNAME", "UseAryaBot")
-    return {
-        "success":      True,
-        "checkout_url": f"https://t.me/{bot_un}?start=order_{order_id}",
-        "order_id":     order_id,
-        "total":        total_price,
-    }
-
-
-# ── POST /api/razorpay/order ──────────────────────────────────────
-@app.post("/api/razorpay/order")
-async def create_razorpay_order(payload: dict):
-    """Create a Razorpay order for in-app payment."""
-    story_ids = payload.get("story_ids", [])
-    telegram_id = payload.get("telegram_id") or 0
+    """Create pending order → return Telegram bot deep-link for UPI payment."""
+    story_ids  = payload.get("story_ids", [])
+    tg_id      = payload.get("telegram_id") or 0
+    username   = payload.get("username", "")
 
     if not story_ids:
         raise HTTPException(400, "Cart is empty")
 
-    from bson.objectid import ObjectId
-    valid_stories = []
-    for sid in story_ids:
-        try:
-            doc = await arya_db.db.premium_stories.find_one({"_id": ObjectId(str(sid))})
-            if doc:
-                valid_stories.append(doc)
-        except Exception:
-            pass
-
-    if not valid_stories:
+    stories = await _get_stories_from_ids(story_ids)
+    if not stories:
         raise HTTPException(400, "No valid stories")
 
-    total_paise = int(sum(float(s.get("price") or 0) for s in valid_stories) * 100)
+    total  = sum(float(s.get("price") or 0) for s in stories)
+    oid    = _make_order_id(tg_id)
 
-    rzp_key = Config.RAZORPAY_KEY
-    rzp_secret = Config.RAZORPAY_SECRET
-    if not rzp_key or not rzp_secret:
-        raise HTTPException(500, "Razorpay not configured")
+    await arya_db.db.orders.insert_one({
+        "order_id":    oid,
+        "user_id":     tg_id,
+        "username":    username,
+        "story_ids":   story_ids,
+        "story_names": [s.get("story_name_en", "") for s in stories],
+        "total":       total,
+        "status":      "pending",
+        "source":      "bot_upi",
+        "created_at":  datetime.now(timezone.utc),
+    })
+    logger.info(f"Order {oid} created (UPI/bot) for {tg_id}, ₹{total}")
 
-    import httpx, base64
-    auth = base64.b64encode(f"{rzp_key}:{rzp_secret}".encode()).decode()
-
-    suffix = "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
-    receipt = f"OD-{telegram_id}-{suffix}"
-
-    async with httpx.AsyncClient() as client:
-        r = await client.post(
-            "https://api.razorpay.com/v1/orders",
-            json={"amount": total_paise, "currency": "INR", "receipt": receipt},
-            headers={"Authorization": f"Basic {auth}", "Content-Type": "application/json"}
-        )
-        if r.status_code != 200:
-            logger.error(f"Razorpay error: {r.text}")
-            raise HTTPException(500, "Razorpay order creation failed")
-        rzp_order = r.json()
-
+    bot = os.environ.get("BOT_USERNAME", BOT_USERNAME)
     return {
-        "success":        True,
-        "razorpay_order_id": rzp_order["id"],
-        "amount":         total_paise,
-        "currency":       "INR",
-        "key":            rzp_key,
-        "receipt":        receipt,
-        "story_names":    [s.get("story_name_en", "") for s in valid_stories],
+        "success":      True,
+        "order_id":     oid,
+        "total":        total,
+        "checkout_url": f"https://t.me/{bot}?start=order_{oid}",
     }
 
 
-# ── POST /api/razorpay/verify ─────────────────────────────────────
-@app.post("/api/razorpay/verify")
-async def verify_razorpay(payload: dict):
-    """Verify Razorpay payment signature and create order."""
-    import hmac, hashlib
-    rzp_order_id  = payload.get("razorpay_order_id", "")
+# ── Razorpay: Create Order ────────────────────────────────────────
+@app.post("/api/create-order")
+async def create_razorpay_order(payload: dict):
+    """Create a Razorpay order. Returns order_id, key, amount for frontend."""
+    story_ids = payload.get("story_ids", [])
+    tg_id     = payload.get("telegram_id") or 0
+
+    if not story_ids:
+        raise HTTPException(400, "Cart is empty")
+    if not RZP_KEY or not RZP_SECRET:
+        raise HTTPException(500, "Razorpay not configured on server")
+
+    stories = await _get_stories_from_ids(story_ids)
+    if not stories:
+        raise HTTPException(400, "No valid stories")
+
+    total_paise = int(sum(float(s.get("price") or 0) for s in stories) * 100)
+    receipt     = _make_order_id(tg_id)
+
+    import httpx
+    auth_header = "Basic " + base64.b64encode(f"{RZP_KEY}:{RZP_SECRET}".encode()).decode()
+
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.post(
+                "https://api.razorpay.com/v1/orders",
+                json={
+                    "amount":   total_paise,
+                    "currency": "INR",
+                    "receipt":  receipt,
+                    "notes":    {"telegram_id": str(tg_id), "story_ids": ",".join(story_ids)},
+                },
+                headers={"Authorization": auth_header, "Content-Type": "application/json"},
+            )
+            if r.status_code != 200:
+                logger.error(f"Razorpay create-order failed: {r.text}")
+                raise HTTPException(502, "Razorpay order creation failed")
+            rzp = r.json()
+
+        return {
+            "success":          True,
+            "razorpay_order_id": rzp["id"],
+            "amount":           total_paise,
+            "currency":         "INR",
+            "key":              RZP_KEY,
+            "receipt":          receipt,
+            "story_names":      [s.get("story_name_en", "") for s in stories],
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"create-order error: {e}", exc_info=True)
+        raise HTTPException(500, str(e))
+
+
+# ── Razorpay: Verify Payment ──────────────────────────────────────
+@app.post("/api/verify-payment")
+async def verify_payment(payload: dict):
+    """
+    Verify Razorpay HMAC signature.
+    On success: store order in DB (status=paid) + return bot deep-link for delivery.
+    """
+    rzp_order_id   = payload.get("razorpay_order_id", "")
     rzp_payment_id = payload.get("razorpay_payment_id", "")
     rzp_signature  = payload.get("razorpay_signature", "")
     story_ids      = payload.get("story_ids", [])
-    telegram_id    = payload.get("telegram_id") or 0
+    tg_id          = payload.get("telegram_id") or 0
     username       = payload.get("username", "")
 
-    secret = Config.RAZORPAY_SECRET
-    generated = hmac.new(
-        secret.encode(), f"{rzp_order_id}|{rzp_payment_id}".encode(), hashlib.sha256
+    if not all([rzp_order_id, rzp_payment_id, rzp_signature]):
+        raise HTTPException(400, "Missing payment fields")
+
+    # HMAC-SHA256 verification
+    expected = hmac.new(
+        RZP_SECRET.encode("utf-8"),
+        f"{rzp_order_id}|{rzp_payment_id}".encode("utf-8"),
+        hashlib.sha256,
     ).hexdigest()
 
-    if generated != rzp_signature:
-        raise HTTPException(400, "Invalid payment signature")
+    if not hmac.compare_digest(expected, rzp_signature):
+        logger.warning(f"Invalid Razorpay signature for {rzp_payment_id}")
+        raise HTTPException(400, "Payment verification failed — invalid signature")
 
-    # Create order record
-    suffix = "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
-    order_id = f"OD-{telegram_id}-{suffix}"
-
-    from bson.objectid import ObjectId
-    valid_stories = []
-    for sid in story_ids:
-        try:
-            doc = await arya_db.db.premium_stories.find_one({"_id": ObjectId(str(sid))})
-            if doc:
-                valid_stories.append(doc)
-        except Exception:
-            pass
-
-    total_price = sum(float(s.get("price") or 0) for s in valid_stories)
+    # Store verified order
+    stories = await _get_stories_from_ids(story_ids)
+    total   = sum(float(s.get("price") or 0) for s in stories)
+    oid     = _make_order_id(tg_id)
 
     await arya_db.db.orders.insert_one({
-        "order_id":          order_id,
-        "user_id":           telegram_id,
-        "username":          username,
-        "story_ids":         story_ids,
-        "total_amount":      total_price,
-        "status":            "paid",
-        "source":            "razorpay",
-        "razorpay_order_id": rzp_order_id,
+        "order_id":            oid,
+        "user_id":             tg_id,
+        "username":            username,
+        "story_ids":           story_ids,
+        "story_names":         [s.get("story_name_en", "") for s in stories],
+        "total":               total,
+        "status":              "paid",
+        "source":              "razorpay",
+        "razorpay_order_id":   rzp_order_id,
         "razorpay_payment_id": rzp_payment_id,
-        "created_at":        datetime.now(timezone.utc),
+        "created_at":          datetime.now(timezone.utc),
     })
-    logger.info(f"Razorpay order {order_id} verified for {telegram_id}")
 
-    bot_un = os.environ.get("BOT_USERNAME", "UseAryaBot")
+    # Mark purchases in user record
+    if tg_id:
+        for sid in story_ids:
+            await arya_db.add_purchase(int(tg_id), sid)
+
+    logger.info(f"Payment verified: {oid} | {rzp_payment_id} | user={tg_id} | ₹{total}")
+
+    bot = os.environ.get("BOT_USERNAME", BOT_USERNAME)
     return {
         "success":      True,
-        "order_id":     order_id,
-        "checkout_url": f"https://t.me/{bot_un}?start=order_{order_id}",
+        "order_id":     oid,
+        "total":        total,
+        "checkout_url": f"https://t.me/{bot}?start=order_{oid}",
     }
 
 
