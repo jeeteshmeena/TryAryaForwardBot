@@ -21,9 +21,12 @@ from database import db as arya_db
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("arya_api")
 
+from bson.objectid import ObjectId
+
 BOT_USERNAME = os.environ.get("BOT_USERNAME", "UseAryaBot")
 RZP_KEY      = Config.RAZORPAY_KEY
 RZP_SECRET   = Config.RAZORPAY_SECRET
+BANNER_SIZE  = (1184, 556)  # enforced by mgmt bot
 
 # ── Lifespan ──────────────────────────────────────────────────────
 @asynccontextmanager
@@ -130,6 +133,144 @@ async def _get_stories_from_ids(story_ids: list) -> list:
 @app.get("/api/health")
 async def health():
     return {"status": "ok", "bot": BOT_USERNAME, "razorpay": bool(RZP_KEY)}
+
+
+# ── Banners ───────────────────────────────────────────────────────
+@app.get("/api/banners")
+async def get_banners():
+    """
+    Returns up to 10 hero banners:
+     - 1 auto: most-purchased story (trending)
+     - 1 auto: newest story added
+     - up to 8 manual: from mini_app_banners collection
+    """
+    try:
+        result = []
+
+        # Auto: Trending (most purchased story)
+        try:
+            top_order = await arya_db.db.orders.find_one(
+                {"status": {"$in": ["paid", "delivered"]}},
+                sort=[("created_at", -1)]
+            )
+            if top_order:
+                # find most common story across all paid orders
+                pipeline = [
+                    {"$match": {"status": {"$in": ["paid", "delivered"]}}},
+                    {"$unwind": "$story_ids"},
+                    {"$group": {"_id": "$story_ids", "count": {"$sum": 1}}},
+                    {"$sort": {"count": -1}},
+                    {"$limit": 1}
+                ]
+                agg = await arya_db.db.orders.aggregate(pipeline).to_list(1)
+                if agg:
+                    trend_story = await arya_db.db.premium_stories.find_one(
+                        {"_id": ObjectId(str(agg[0]["_id"]))}
+                    )
+                    if trend_story:
+                        fmt = _format_story(trend_story)
+                        if fmt:
+                            result.append({
+                                "id": f"trending_{fmt['id']}",
+                                "type": "trending",
+                                "story_id": fmt["id"],
+                                "image": fmt["poster"] or fmt["banner"],
+                                "title": fmt["title"],
+                                "subtitle": "🔥 Trending Now",
+                                "badge": "TRENDING",
+                            })
+        except Exception as e:
+            logger.warning(f"Trending banner error: {e}")
+
+        # Auto: Newest story
+        try:
+            newest = await arya_db.db.premium_stories.find_one(
+                {}, sort=[("_id", -1)]
+            )
+            if newest:
+                fmt = _format_story(newest)
+                if fmt:
+                    result.append({
+                        "id": f"new_{fmt['id']}",
+                        "type": "new",
+                        "story_id": fmt["id"],
+                        "image": fmt["poster"] or fmt["banner"],
+                        "title": fmt["title"],
+                        "subtitle": "✨ New Release",
+                        "badge": "NEW",
+                    })
+        except Exception as e:
+            logger.warning(f"Newest banner error: {e}")
+
+        # Manual banners from DB (up to 8)
+        try:
+            cursor = arya_db.db.mini_app_banners.find({}).sort("order", 1).limit(8)
+            manual = await cursor.to_list(length=8)
+            for b in manual:
+                bid = str(b["_id"])
+                result.append({
+                    "id": bid,
+                    "type": "manual",
+                    "story_id": b.get("story_id"),
+                    "image": f"/api/image/banner/{bid}",
+                    "title": b.get("title", ""),
+                    "subtitle": b.get("subtitle", ""),
+                    "badge": b.get("badge", ""),
+                })
+        except Exception as e:
+            logger.warning(f"Manual banners error: {e}")
+
+        return {"success": True, "data": result[:10]}
+    except Exception as e:
+        logger.error(f"/api/banners error: {e}", exc_info=True)
+        raise HTTPException(500, str(e))
+
+
+# ── Banner Image Proxy ────────────────────────────────────────────
+@app.get("/api/image/banner/{banner_id}")
+async def banner_image_proxy(banner_id: str):
+    """Proxy banner image from Telegram file_id."""
+    import httpx
+    try:
+        banner = await arya_db.db.mini_app_banners.find_one({"_id": ObjectId(banner_id)})
+    except Exception:
+        raise HTTPException(404, "Invalid banner id")
+    if not banner:
+        raise HTTPException(404, "Banner not found")
+
+    file_id = banner.get("file_id")
+    if not file_id:
+        raise HTTPException(404, "No image")
+    if _is_url(file_id):
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(file_id)
+
+    token = await _get_bot_token(None)  # use mgmt bot token
+    if not token:
+        raise HTTPException(500, "No bot token")
+
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.get(
+                f"https://api.telegram.org/bot{token}/getFile",
+                params={"file_id": file_id}
+            )
+            data = r.json()
+            if not data.get("ok"):
+                raise HTTPException(404, data.get("description", "getFile failed"))
+            file_path = data["result"]["file_path"]
+            img = await client.get(
+                f"https://api.telegram.org/file/bot{token}/{file_path}"
+            )
+            return Response(
+                content=img.content,
+                media_type=img.headers.get("content-type", "image/jpeg"),
+                headers={"Cache-Control": "public, max-age=86400"}
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Banner image fetch failed: {e}")
 
 
 # ── Stories ───────────────────────────────────────────────────────
