@@ -94,7 +94,7 @@ def _format_story(s: dict) -> dict | None:
         "episodes":      s.get("episodes") or s.get("ep_count") or s.get("total_eps") or "?",
         "totalEpisodes": s.get("episodes") or s.get("total_eps") or s.get("ep_count") or "?",
         "size":          s.get("total_size") or s.get("size") or None,
-        "isCompleted":   bool(s.get("is_completed") or s.get("completed")),
+        "isCompleted":   bool(s.get("is_completed") or s.get("completed") or s.get("isCompleted")),
         "bot_id":        s.get("bot_id"),
     }
 
@@ -554,12 +554,14 @@ async def my_purchases(telegram_id: int):
                 if not formatted:
                     continue
                 results.append({
-                    "story_id":  formatted["id"],
-                    "title":     formatted["title"],
-                    "poster":    formatted.get("poster"),
-                    "price":     formatted.get("price"),
-                    "platform":  formatted.get("platform"),
-                    "genre":     formatted.get("genre"),
+                    "story_id":    formatted["id"],
+                    "title":       formatted["title"],
+                    "poster":      formatted.get("poster"),
+                    "price":       formatted.get("price"),
+                    "platform":    formatted.get("platform"),
+                    "genre":       formatted.get("genre"),
+                    "isCompleted": formatted.get("isCompleted", False),
+                    "episodes":    formatted.get("episodes"),
                 })
             except Exception:
                 continue
