@@ -39,7 +39,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.get("/api/stories")
+@app.get("/stories")
 async def get_stories():
     """Fetch all premium stories from the database"""
     try:
@@ -68,7 +68,7 @@ async def get_stories():
         logger.error(f"Error fetching stories: {e}")
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
-@app.post("/api/checkout")
+@app.post("/checkout")
 async def checkout(payload: dict):
     """Secure Order-based Checkout System"""
     telegram_id = payload.get("telegram_id")
