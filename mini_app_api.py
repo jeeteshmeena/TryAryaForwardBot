@@ -76,9 +76,10 @@ async def get_stories():
             except Exception:
                 description = "No description available."
 
-            # --- COVER IMAGE ---
+            # --- COVER IMAGE: 'image' is what mgmt bot saves (Telegram file_id), poster_url is URL ---
             cover = (
-                s.get("poster_url")
+                s.get("poster_url")     # URL form (if set manually)
+                or s.get("image")       # Telegram file_id (saved by mgmt bot)
                 or s.get("cover")
                 or s.get("image_url")
                 or "https://images.unsplash.com/photo-1614729939124-032f0b56c9ce"
@@ -100,8 +101,8 @@ async def get_stories():
                 "platform": s.get("platform", "Pocket FM"),
                 "genre": s.get("genre", "Romance"),
                 "status": "available",  # frontend expects: "available" | "coming_soon"
-                "episodes": int(s.get("ep_count") or s.get("total_eps") or 0),
-                "totalEpisodes": s.get("total_eps") or s.get("ep_count") or "?",
+                "episodes": s.get("episodes") or s.get("ep_count") or s.get("total_eps") or 0,
+                "totalEpisodes": s.get("episodes") or s.get("total_eps") or s.get("ep_count") or "?",
                 "size": s.get("total_size") or s.get("size") or "Unknown",
                 "isCompleted": bool(s.get("is_completed") or s.get("completed")),
             })
