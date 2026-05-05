@@ -511,6 +511,43 @@ async def verify_payment(payload: dict):
     }
 
 
+# ── Delete Account (30-day grace) ────────────────────────────────
+@app.post("/api/delete-account")
+async def delete_account(payload: dict):
+    """
+    Schedule account deletion with 30-day grace period.
+    User data is NOT deleted immediately — a flag is set.
+    A background job / admin can purge after 30 days.
+    """
+    from datetime import timedelta
+    tg_id = payload.get("telegram_id")
+    if not tg_id:
+        raise HTTPException(400, "telegram_id required")
+    try:
+        tg_id = int(tg_id)
+    except Exception:
+        raise HTTPException(400, "Invalid telegram_id")
+
+    scheduled_at = datetime.now(timezone.utc)
+    delete_at    = scheduled_at + timedelta(days=30)
+
+    await arya_db.db.users.update_one(
+        {"user_id": tg_id},
+        {"$set": {
+            "deletion_scheduled":   True,
+            "deletion_scheduled_at": scheduled_at,
+            "scheduled_delete_at":  delete_at,
+        }},
+        upsert=True
+    )
+    logger.info(f"Account deletion scheduled: user={tg_id}, delete_at={delete_at.isoformat()}")
+    return {
+        "success":     True,
+        "message":     "Account scheduled for deletion in 30 days",
+        "delete_at":   delete_at.isoformat(),
+    }
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("mini_app_api:app", host="0.0.0.0", port=8000, reload=True)
