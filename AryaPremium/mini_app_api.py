@@ -79,11 +79,22 @@ def _format_story(s: dict) -> dict | None:
     else:
         poster = None
 
-    # isCompleted: read from 'status' field — bot stores "Completed" / "Ongoing" / "Upcoming" etc.
-    story_status = str(s.get("status") or "").strip().lower()
-    is_completed = story_status in ("completed", "complete", "done", "finished")
+    # isCompleted: read from 'status' field, 'completed' field, or episode comparison
+    story_status = str(s.get("status") or s.get("completed") or "").strip().lower()
+    if story_status in ("completed", "complete", "done", "finished", "true", "1"):
+        is_completed = True
+    elif story_status in ("ongoing", "false", "0"):
+        is_completed = False
+    else:
+        # Fallback logic: total_episodes == released_episodes
+        eps = str(s.get("episodes") or s.get("ep_count") or "").strip()
+        t_eps = str(s.get("total_episodes") or s.get("total_eps") or "").strip()
+        if eps and t_eps and eps.isdigit() and t_eps.isdigit():
+            is_completed = (int(eps) >= int(t_eps))
+        else:
+            is_completed = False
 
-    # fileCount: computed from channel message range if available
+    # fileCount: computed from channel message range if available, or direct fields
     start_id = s.get("start_id")
     end_id   = s.get("end_id")
     if start_id and end_id:
@@ -92,7 +103,7 @@ def _format_story(s: dict) -> dict | None:
         except Exception:
             file_count = None
     else:
-        file_count = s.get("file_count") or s.get("total_files") or None
+        file_count = s.get("files_count") or s.get("file_count") or s.get("episodes_count") or s.get("total_files") or None
 
     return {
         "id":            story_id,
@@ -106,10 +117,10 @@ def _format_story(s: dict) -> dict | None:
         "platform":      s.get("platform") or "Pocket FM",
         "genre":         s.get("genre") or "Drama",
         "status":        "available",
-        "storyStatus":   str(s.get("status") or "Ongoing").strip(),   # raw status string
+        "storyStatus":   str(s.get("status") or ("Completed" if is_completed else "Ongoing")).strip(),
         "episodes":      s.get("episodes") or s.get("ep_count") or s.get("total_eps") or "?",
-        "totalEpisodes": s.get("episodes") or s.get("total_eps") or s.get("ep_count") or "?",
-        "size":          s.get("total_size") or s.get("size") or None,
+        "totalEpisodes": s.get("total_eps") or s.get("total_episodes") or "?",
+        "size":          s.get("size") or s.get("total_size") or None,
         "fileCount":     file_count,
         "isCompleted":   is_completed,
         "bot_id":        s.get("bot_id"),
