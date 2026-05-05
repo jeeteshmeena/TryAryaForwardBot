@@ -8,6 +8,30 @@ from utils import to_smallcap, native_ask
 async def user_start(bot: Client, message):
     user_id = message.from_user.id
     
+    # --- ORDER CHECKOUT LOGIC ---
+    if len(message.command) > 1:
+        arg = message.command[1]
+        if arg.startswith("order_"):
+            order_id = arg.split("order_")[1]
+            order = await db.db.orders.find_one({"order_id": order_id})
+            
+            if not order:
+                return await message.reply_text("❌ Invalid Order! Please try again from the Mini App.")
+            if order.get("status") == "completed":
+                return await message.reply_text("✅ This order is already paid and delivered.")
+                
+            total_amount = order.get("total_amount", 0)
+            stories_count = len(order.get("story_ids", []))
+            
+            await message.reply_text(
+                f"🛒 **Your Order: {order_id}**\n"
+                f"📚 Total Stories: {stories_count}\n"
+                f"💰 Total Amount: ₹{total_amount}\n\n"
+                f"Please contact admin to complete your payment and instantly get your files!"
+            )
+            return
+    # ----------------------------
+
     text = (
         f"**Welcome to the Arya Premium Store!** 🛍️\n\n"
         f"Here you can purchase exclusive premium stories directly.\n"
