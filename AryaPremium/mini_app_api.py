@@ -79,6 +79,21 @@ def _format_story(s: dict) -> dict | None:
     else:
         poster = None
 
+    # isCompleted: read from 'status' field — bot stores "Completed" / "Ongoing" / "Upcoming" etc.
+    story_status = str(s.get("status") or "").strip().lower()
+    is_completed = story_status in ("completed", "complete", "done", "finished")
+
+    # fileCount: computed from channel message range if available
+    start_id = s.get("start_id")
+    end_id   = s.get("end_id")
+    if start_id and end_id:
+        try:
+            file_count = abs(int(end_id) - int(start_id)) + 1
+        except Exception:
+            file_count = None
+    else:
+        file_count = s.get("file_count") or s.get("total_files") or None
+
     return {
         "id":            story_id,
         "title":         title,
@@ -91,10 +106,12 @@ def _format_story(s: dict) -> dict | None:
         "platform":      s.get("platform") or "Pocket FM",
         "genre":         s.get("genre") or "Drama",
         "status":        "available",
+        "storyStatus":   str(s.get("status") or "Ongoing").strip(),   # raw status string
         "episodes":      s.get("episodes") or s.get("ep_count") or s.get("total_eps") or "?",
         "totalEpisodes": s.get("episodes") or s.get("total_eps") or s.get("ep_count") or "?",
         "size":          s.get("total_size") or s.get("size") or None,
-        "isCompleted":   bool(s.get("is_completed") or s.get("completed") or s.get("isCompleted")),
+        "fileCount":     file_count,
+        "isCompleted":   is_completed,
         "bot_id":        s.get("bot_id"),
     }
 
