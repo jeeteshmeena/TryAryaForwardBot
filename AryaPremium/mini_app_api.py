@@ -92,7 +92,7 @@ def _format_story(s: dict) -> dict | None:
         if eps and t_eps and eps.isdigit() and t_eps.isdigit():
             is_completed = (int(eps) >= int(t_eps))
         else:
-            is_completed = False
+            is_completed = None
 
     # fileCount: computed from channel message range if available, or direct fields
     start_id = s.get("start_id")
@@ -117,7 +117,7 @@ def _format_story(s: dict) -> dict | None:
         "platform":      s.get("platform") or "Pocket FM",
         "genre":         s.get("genre") or "Drama",
         "status":        "available",
-        "storyStatus":   str(s.get("status") or ("Completed" if is_completed else "Ongoing")).strip(),
+        "storyStatus":   str(s.get("status") or ("Completed" if is_completed is True else ("Ongoing" if is_completed is False else ""))).strip(),
         "episodes":      s.get("episodes") or s.get("ep_count") or s.get("total_eps") or "?",
         "totalEpisodes": s.get("total_eps") or s.get("total_episodes") or "?",
         "size":          s.get("size") or s.get("total_size") or None,

@@ -74,24 +74,16 @@ async def start_clone_bot(FwdBot, data=None, force_restart=False):
        curr_refs = _client_refcount.get(cache_key, 0)
        
        if force_restart:
-           if curr_refs > 0:
-               # If heavily utilized, do NOT forcefully restart and kill others!
-               logger.warning(f"[ClientCache] Force restart ignored for {cache_key} (in use by {curr_refs} jobs).")
-               _client_refcount[cache_key] = curr_refs + 1
-               return _client_cache[cache_key]
-           else:
-               # Explicitly bypass cache to force a fresh connection since nobody uses it
-               logger.warning(f"[ClientCache] Force restart requested for {cache_key}, popping from cache.")
-               _client_refcount.pop(cache_key, None)
-               old_client = _client_cache.pop(cache_key, None)
-               if old_client:
-                   try: await old_client.stop()
-                   except Exception: pass
+           logger.warning(f"[ClientCache] Force restart requested for {cache_key}, popping from cache.")
+           _client_refcount.pop(cache_key, None)
+           old_client = _client_cache.pop(cache_key, None)
+           if old_client:
+               try: await old_client.stop()
+               except Exception: pass
                
        existing = _client_cache.get(cache_key)
        if existing is not None:
            # Verify the cached client is still alive using a cheap MTProto Ping
-           # (NOT get_me/GetFullUser which causes FLOOD_WAIT_X when many jobs restart together)
            try:
                from pyrogram.raw.functions import Ping
                await asyncio.wait_for(existing.invoke(Ping(ping_id=0)), timeout=10)
@@ -100,11 +92,14 @@ async def start_clone_bot(FwdBot, data=None, force_restart=False):
                return existing   # ← return cached, skip new start entirely
            except Exception as e:
                err_str = str(e).lower()
-               # If it's a timeout or other active jobs exist, do NOT wipe it
-               if isinstance(e, asyncio.TimeoutError) or "timeout" in err_str or curr_refs > 0:
+               # If it's explicitly disconnected, we MUST drop it regardless of curr_refs
+               if "not been started" in err_str or "not connected" in err_str or "disconnected" in err_str:
+                   logger.warning(f"[ClientCache] Cached client {cache_key} explicitly dead ({e}). Dropping.")
+               elif isinstance(e, asyncio.TimeoutError) or "timeout" in err_str or curr_refs > 0:
                    logger.warning(f"[ClientCache] Cached client {cache_key} failed ping ({e}) but assumed alive/in-use. Returning existing.")
                    _client_refcount[cache_key] = _client_refcount.get(cache_key, 1) + 1
                    return existing
+               
                # Dead — clean up and fall through to start a fresh one
                logger.warning(f"[ClientCache] Cached client {cache_key} dead ({e}), restarting.")
                _client_cache.pop(cache_key, None)

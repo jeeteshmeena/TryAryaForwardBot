@@ -18,12 +18,18 @@ logging.config.fileConfig('logging.conf')
 logging.getLogger().setLevel(logging.INFO)
 logging.getLogger("pyrogram").setLevel(logging.ERROR)
 
-BOT_INSTANCE = None
+import concurrent.futures
 
 class Bot(Client): 
     def __init__(self):
         global BOT_INSTANCE
         BOT_INSTANCE = self
+        
+        try:
+            loop = asyncio.get_running_loop()
+            loop.set_default_executor(concurrent.futures.ThreadPoolExecutor(max_workers=100))
+        except RuntimeError:
+            pass
         super().__init__(
             Config.BOT_SESSION,
             api_hash=Config.API_HASH,
@@ -32,7 +38,8 @@ class Bot(Client):
                 "root": "plugins"
             },
             workers=50,
-            bot_token=Config.BOT_TOKEN
+            bot_token=Config.BOT_TOKEN,
+            max_concurrent_transmissions=50
         )
         self.log = logging
 
