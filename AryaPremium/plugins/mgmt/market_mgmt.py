@@ -1865,6 +1865,12 @@ async def _add_story_flow(client, user_id):
             return await client.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
         sj['genre'] = (msg_genre.text or "Unknown").strip()
 
+        # Language selection
+        kb_lang = ReplyKeyboardMarkup([["Hindi", "English", "Hinglish"], ["Tamil", "Telugu", "Marathi"], ["⛔ Cᴀɴᴄᴇʟ"]], resize_keyboard=True)
+        msg_lang = await native_ask(client, user_id, "<b>❪ STEP 6.6: LANGUAGE ❫</b>\n\nSelect or type the language of this story:", reply_markup=kb_lang)
+        if getattr(msg_lang, 'text', None) and "Cᴀɴᴄᴇʟ" in msg_lang.text:
+            return await client.send_message(user_id, "<i>Cancelled!</i>", reply_markup=ReplyKeyboardRemove())
+        sj['language'] = (msg_lang.text or "Hindi").strip()
 
         while True:
             msg_price = await native_ask(client, user_id, "<b>❪ STEP 7: PRICE IN INR ❫</b>\n\nEnter price (e.g. 100):", reply_markup=cancel_kb)
